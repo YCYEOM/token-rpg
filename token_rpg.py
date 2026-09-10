@@ -7,7 +7,7 @@
 import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, webbrowser
 from datetime import datetime, timezone
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -23,6 +23,26 @@ def data_dir():
 
 def game_path():
     return os.path.join(data_dir(), "game.html")
+
+def config_path():
+    return os.path.join(data_dir(), "config.json")
+
+
+def load_config():
+    try:
+        with open(config_path(), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg):
+    tmp = config_path() + f".{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, config_path())
+
 
 def snap_dir():
     """PC별 스냅샷 폴더. 클라우드 동기화 폴더로 지정하면 여러 기기가 합산된다."""
@@ -78,53 +98,187 @@ def tier_of(lv):
     return [t for t in TIERS if lv >= t[0]][-1]
 
 
-def collect(root):
+# ── 프로바이더 ────────────────────────────────────────────────────
+# 툴마다 로그 위치와 형식이 다르다. 각 프로바이더는 "파일 하나를 읽어
+# 토큰 합계를 돌려주는 함수" 하나만 제공하면 된다.
+
+def _lines(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.strip():
+                    yield line
+    except OSError:
+        return
+
+
+def read_claude(path):
+    """Claude Code: ~/.claude/projects/<프로젝트>/<세션>.jsonl
+    message.usage 를 읽고 message.id 로 중복(재시도·사이드체인)을 제거한다."""
+    agg, days, models, seen = collections.Counter(), set(), collections.Counter(), set()
+    for line in _lines(path):
+        if '"usage"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        msg = d.get("message") or {}
+        u = msg.get("usage")
+        if not isinstance(u, dict):
+            continue
+        mid = msg.get("id")
+        if mid:
+            if mid in seen:
+                continue
+            seen.add(mid)
+        agg["input"] += u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+        agg["output"] += u.get("output_tokens", 0)
+        agg["cache_read"] += u.get("cache_read_input_tokens", 0)
+        agg["thinking"] += (u.get("output_tokens_details") or {}).get("thinking_tokens", 0)
+        agg["calls"] += 1
+        models[msg.get("model") or "unknown"] += 1
+        ts = d.get("timestamp") or ""
+        if ts:
+            days.add(ts[:10])
+    proj = os.path.basename(os.path.dirname(path))
+    return agg, proj, days, models
+
+
+_CODEX_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens",
+               "reasoning_output_tokens", "total_tokens")
+
+
+def _codex_counts(d):
+    """token_count 이벤트에서 숫자를 꺼낸다. 중첩 위치가 버전마다 달라 둘 다 본다."""
+    p = d.get("payload") or d
+    if p.get("type") != "token_count":
+        return None
+    for cand in (p.get("info"), p.get("usage"), p):
+        if isinstance(cand, dict) and any(k in cand for k in _CODEX_KEYS):
+            return cand
+    return None
+
+
+def read_codex(path):
+    """Codex CLI: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+
+    token_count 이벤트가 회차별 증분인지 세션 누적인지 버전마다 다르다.
+    ponytail: 파일 안에서 total_tokens 가 줄지 않으면 누적으로 보고 마지막 값만,
+    아니면 증분으로 보고 전부 더한다. 실제 로그로 확인되면 이 분기는 지워도 된다.
+    """
+    events, days, models, proj = [], set(), collections.Counter(), None
+    for line in _lines(path):
+        if '"token_count"' not in line and '"cwd"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        proj = proj or d.get("cwd") or (d.get("payload") or {}).get("cwd")
+        ts = d.get("timestamp") or ""
+        if ts:
+            days.add(str(ts)[:10])
+        m = (d.get("payload") or {}).get("model") or d.get("model")
+        c = _codex_counts(d)
+        if c:
+            events.append(c)
+            if m:
+                models[m] += 1
+    agg = collections.Counter()
+    if events:
+        totals = [e.get("total_tokens") or 0 for e in events]
+        cumulative = len(totals) > 1 and all(b >= a for a, b in zip(totals, totals[1:])) \
+            and totals[-1] > 0
+        picked = [events[-1]] if cumulative else events
+        for c in picked:
+            agg["input"] += c.get("input_tokens", 0)
+            agg["output"] += c.get("output_tokens", 0)
+            agg["cache_read"] += c.get("cached_input_tokens", 0)
+            agg["thinking"] += c.get("reasoning_output_tokens", 0)
+        agg["calls"] += len(events)          # 호출 수는 이벤트 수 그대로
+    name = os.path.basename(proj.rstrip("/")) if proj else "codex"
+    return agg, name or "codex", days, models
+
+
+PROVIDERS = {
+    "claude-code": {
+        "label": "Claude Code",
+        "roots": lambda: [TRANSCRIPTS],
+        "glob": os.path.join("*", "*.jsonl"),
+        "read": read_claude,
+        "verified": True,
+    },
+    "codex": {
+        "label": "Codex CLI",
+        "roots": lambda: [os.path.expanduser("~/.codex/sessions")],
+        "glob": os.path.join("**", "rollout-*.jsonl"),
+        "read": read_codex,
+        "verified": False,      # 문서 기준 구현. 실제 로그로 아직 검증 안 됨
+    },
+}
+
+
+def provider_roots(pid, cfg=None):
+    """기본 위치 + 사용자가 추가한 스캔 폴더."""
+    cfg = cfg if cfg is not None else load_config()
+    extra = (cfg.get("providers", {}).get(pid, {}) or {}).get("extra", [])
+    out = list(PROVIDERS[pid]["roots"]())
+    for p in extra:
+        out.extend(sorted(glob.glob(os.path.expanduser(p))) or [os.path.expanduser(p)])
+    return [p for p in out if os.path.isdir(p)]
+
+
+def collect(root=None, pid="claude-code", roots=None):
+    """한 프로바이더의 로그를 훑어 합계를 낸다."""
+    spec = PROVIDERS[pid]
     agg = collections.Counter()
     days, projects, models = set(), collections.Counter(), collections.Counter()
-    seen = set()
-    for path in glob.glob(os.path.join(root, "*", "*.jsonl")):
-        proj = os.path.basename(os.path.dirname(path))
-        for line in open(path, encoding="utf-8", errors="replace"):
-            if '"usage"' not in line:
+    files = 0
+    for r in ([root] if root else (roots if roots is not None else provider_roots(pid))):
+        for path in glob.glob(os.path.join(r, spec["glob"]), recursive=True):
+            a, proj, d, m = spec["read"](path)
+            if not a:
                 continue
-            try:
-                d = json.loads(line)
-            except ValueError:
-                continue
-            msg = d.get("message") or {}
-            u = msg.get("usage")
-            if not isinstance(u, dict):
-                continue
-            mid = msg.get("id")
-            if mid:
-                if mid in seen:
-                    continue
-                seen.add(mid)
-            inp = u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
-            out = u.get("output_tokens", 0)
-            agg["input"] += inp
-            agg["output"] += out
-            agg["cache_read"] += u.get("cache_read_input_tokens", 0)
-            agg["thinking"] += (u.get("output_tokens_details") or {}).get("thinking_tokens", 0)
-            agg["calls"] += 1
-            projects[proj] += inp + out
-            models[msg.get("model") or "unknown"] += inp + out
-            ts = d.get("timestamp") or ""
-            if ts:
-                days.add(ts[:10])
-    agg["sessions"] = len(glob.glob(os.path.join(root, "*", "*.jsonl")))
+            files += 1
+            agg.update(a); days |= d; models.update(m)
+            projects[proj] += a["input"] + a["output"]
+    agg["sessions"] = files
     return agg, projects, models, days
+
+
+def collect_all(cfg=None):
+    """켜져 있는 프로바이더 전부를 합산한다."""
+    cfg = cfg if cfg is not None else load_config()
+    agg = collections.Counter()
+    projects, models, days, per = collections.Counter(), collections.Counter(), set(), {}
+    for pid in PROVIDERS:
+        if not cfg.get("providers", {}).get(pid, {}).get("enabled", True):
+            continue
+        roots = provider_roots(pid, cfg)
+        if not roots:
+            continue
+        a, p, m, d = collect(pid=pid, roots=roots)
+        if not a.get("calls"):
+            continue
+        agg.update(a); projects.update(p); models.update(m); days |= d
+        per[pid] = a["input"] + a["output"]
+    return agg, projects, models, days, per
 
 
 def save_snapshot(root=TRANSCRIPTS, snaps=None):
     """이 PC의 집계만 작은 JSON으로 남긴다. 190MB 트랜스크립트는 옮기지 않는다."""
     snaps = snaps or snap_dir()
     os.makedirs(snaps, exist_ok=True)      # 명시로 넘긴 경로도 없으면 만든다
-    agg, projects, models, days = collect(root)
+    if root:                                # 테스트용 단일 경로
+        agg, projects, models, days = collect(root)
+        per = {"claude-code": agg["input"] + agg["output"]}
+    else:
+        agg, projects, models, days, per = collect_all()
     snap = {"host": socket.gethostname(),
             "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "agg": dict(agg), "projects": dict(projects), "models": dict(models),
-            "days": sorted(days)}
+            "days": sorted(days), "providers": per}
     path = os.path.join(snaps, snap["host"].replace(os.sep, "_") + ".json")
     tmp = path + f".{os.getpid()}.tmp"          # 원자적 교체: 훅이 동시에 돌 수 있다
     with open(tmp, "w", encoding="utf-8") as f:
@@ -137,15 +291,18 @@ def merge(snaps=None):
     """snapshots/*.json 전부 합산. 파일당 PC 하나라 중복 없음."""
     snaps = snaps or snap_dir()
     agg, projects, models = collections.Counter(), collections.Counter(), collections.Counter()
-    days, hosts = set(), []
+    days, hosts, provs = set(), [], {}
     for p in sorted(glob.glob(os.path.join(snaps, "*.json"))):
         with open(p, encoding="utf-8") as f:
             snap = json.load(f)
         agg.update(snap["agg"]); projects.update(snap["projects"]); models.update(snap["models"])
         days |= set(snap.get("days", []))
+        for k, v in (snap.get("providers") or {}).items():
+            provs[k] = provs.get(k, 0) + v
         hosts.append((snap["host"], snap["updated"],
                       snap["agg"].get("input", 0) + snap["agg"].get("output", 0)))
     agg["days"] = len(days)
+    merge.providers = provs        # 부가 정보 — 호출부가 필요할 때만 본다
     return agg, projects, models, hosts
 
 
@@ -286,6 +443,8 @@ def build(root=TRANSCRIPTS, out=None):
     agg, projects, models, hosts = merge()
     h = hero(agg)
     data = {"hero": h, "dungeons": dungeons(projects), "hosts": hosts,
+            "providers": sorted(getattr(merge, "providers", {}).items(),
+                                key=lambda kv: -kv[1]),
             "models": models.most_common(),
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
@@ -388,7 +547,8 @@ margin-top:10px;padding-top:8px}
 </div>
 
 <div class="card"><h2 id="floorTitle">던전</h2><div id="stages"></div><div id="wall"></div></div>
-<div class="card"><h2>합산된 기기</h2><div id="hosts" style="font-size:12px"></div></div>
+<div class="card"><h2>합산된 기기</h2><div id="hosts" style="font-size:12px"></div>
+  <div id="provs" style="font-size:12px;margin-top:10px"></div></div>
 </div>
 
 <div id="fight"><div class="arena">
@@ -474,6 +634,10 @@ $("lv").textContent = "Lv." + H.level;
 $("xpbar").style.width = H.pct + "%";
 $("exp").textContent = n(H.exp) + " EXP";
 $("tonext").textContent = "다음까지 " + n(H.toNext);
+$("provs").innerHTML = (D.providers || []).length < 2 ? "" :
+  '<div class="dim" style="margin-bottom:4px">프로바이더별</div>' +
+  D.providers.map(([p,v]) =>
+    `<div class="row"><span>${p}</span><span class="gold">${n(v)}</span></div>`).join("");
 $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
   `<div class="row"><span>${h} <span class="dim">${u.slice(0,10)}</span></span><span class="gold">${n(v)}</span></div>`).join("");
 
@@ -764,14 +928,76 @@ def uninstall_hook():
 
 
 def _no_data_hint():
-    print("Claude Code 대화 기록을 찾지 못했다.")
-    print(f"  찾은 곳: {TRANSCRIPTS}")
-    print("Claude Code로 작업을 한 번 한 뒤 다시 실행해라 — 그 사용량이 캐릭터가 된다.")
+    print("어떤 프로바이더에서도 사용 기록을 찾지 못했다. 찾아본 곳:")
+    for pid, spec in PROVIDERS.items():
+        for r in PROVIDERS[pid]["roots"]():
+            print(f"  {spec['label']:14} {r}")
+    print("\n로그가 다른 곳에 있으면:  token-rpg scan add <프로바이더> <경로>")
+    print("목록 보기:                token-rpg providers")
+
+
+def cmd_providers(args):
+    cfg = load_config()
+    print(f"{'ID':14} {'이름':14} {'상태':6} 스캔 위치")
+    for pid, spec in PROVIDERS.items():
+        on = cfg.get("providers", {}).get(pid, {}).get("enabled", True)
+        roots = provider_roots(pid, cfg)
+        state = "켬" if on else "끔"
+        note = "" if spec["verified"] else "  (실제 로그 미검증)"
+        where = ", ".join(roots) if roots else "— 없음 (설치 안 됨)"
+        print(f"{pid:14} {spec['label']:14} {state:6} {where}{note}")
+        extra = (cfg.get("providers", {}).get(pid, {}) or {}).get("extra", [])
+        for e in extra:
+            print(f"{'':36} 추가: {e}")
+    print(f"\n설정 파일: {config_path()}")
+    return 0
+
+
+def _cfg_slot(cfg, pid):
+    return cfg.setdefault("providers", {}).setdefault(pid, {})
+
+
+def cmd_scan(args):
+    if args.provider not in PROVIDERS:
+        print(f"모르는 프로바이더: {args.provider}")
+        print("가능한 값: " + ", ".join(PROVIDERS))
+        return 1
+    cfg = load_config()
+    slot = _cfg_slot(cfg, args.provider)
+    extra = slot.setdefault("extra", [])
+    if args.action == "add":
+        if args.path in extra:
+            print("이미 등록돼 있다.")
+            return 0
+        extra.append(args.path)
+        save_config(cfg)
+        hits = sorted(glob.glob(os.path.expanduser(args.path)))
+        print(f"추가: {args.path}")
+        print(f"  일치하는 폴더 {len(hits)}개" + (f" — 첫 항목 {hits[0]}" if hits else " (지금은 없음)"))
+    elif args.action == "remove":
+        if args.path not in extra:
+            print("등록돼 있지 않다.")
+            return 1
+        extra.remove(args.path)
+        save_config(cfg)
+        print(f"제거: {args.path}")
+    return 0
+
+
+def cmd_toggle(args, on):
+    if args.provider not in PROVIDERS:
+        print(f"모르는 프로바이더: {args.provider}")
+        return 1
+    cfg = load_config()
+    _cfg_slot(cfg, args.provider)["enabled"] = on
+    save_config(cfg)
+    print(f"{PROVIDERS[args.provider]['label']} {'켬' if on else '끔'}")
+    return 0
 
 
 def cmd_build(args):
-    if not glob.glob(os.path.join(TRANSCRIPTS, "*", "*.jsonl")) and not glob.glob(
-            os.path.join(snap_dir(), "*.json")):
+    agg, _, _, _, _ = collect_all()
+    if not agg.get("calls") and not glob.glob(os.path.join(snap_dir(), "*.json")):
         _no_data_hint()
         return 1
     path, d = build()
@@ -806,6 +1032,14 @@ def main(argv=None):
     sub.add_parser("where", help="데이터 위치 출력")
     sub.add_parser("install-hook", help="Claude Code Stop 훅에 자동 갱신 등록")
     sub.add_parser("uninstall-hook", help="등록한 훅 제거")
+    sub.add_parser("providers", help="프로바이더 목록과 스캔 위치")
+    sc = sub.add_parser("scan", help="추가 스캔 폴더 등록/해제")
+    sc.add_argument("action", choices=["add", "remove"])
+    sc.add_argument("provider")
+    sc.add_argument("path", help="폴더 경로. * 와일드카드 가능")
+    for name, on in (("enable", True), ("disable", False)):
+        q = sub.add_parser(name, help=f"프로바이더 {'켜기' if on else '끄기'}")
+        q.add_argument("provider")
     p.add_argument("-q", "--quiet", action="store_true", help="출력 억제")
     a = p.parse_args(argv)
 
@@ -830,6 +1064,14 @@ def main(argv=None):
         print(f"기록원본 {TRANSCRIPTS}")
         print(f"설정     {SETTINGS}")
         return 0
+    if cmd == "providers":
+        return cmd_providers(a)
+    if cmd == "scan":
+        return cmd_scan(a)
+    if cmd == "enable":
+        return cmd_toggle(a, True)
+    if cmd == "disable":
+        return cmd_toggle(a, False)
     if cmd == "install-hook":
         return install_hook()
     if cmd == "uninstall-hook":
@@ -859,6 +1101,46 @@ def demo():
         m, mp, _, hs = merge(snaps)
         assert m["input"] == 30 and mp["proj"] == 70 and m["days"] == 1 and len(hs) == 2
 
+    # 프로바이더 리더: 각자 자기 형식을 제대로 읽는지 픽스처로 확인
+    with tempfile.TemporaryDirectory() as d:
+        # Codex: token_count 가 '세션 누적'인 경우 -> 마지막 값만 세야 한다
+        cx = os.path.join(d, "2026", "09", "10")
+        os.makedirs(cx)
+        cum = os.path.join(cx, "rollout-cum.jsonl")
+        with open(cum, "w") as f:
+            f.write(json.dumps({"timestamp": "2026-09-10T00:00:00Z", "cwd": "/x/myproj"}) + "\n")
+            for tot, inp, out in ((100, 60, 40), (250, 150, 100)):
+                f.write(json.dumps({"type": "event_msg", "payload": {
+                    "type": "token_count", "info": {
+                        "input_tokens": inp, "output_tokens": out, "cached_input_tokens": 10,
+                        "reasoning_output_tokens": 5, "total_tokens": tot}}}) + "\n")
+        a, proj, days, _ = read_codex(cum)
+        assert (a["input"], a["output"]) == (150, 100), f"누적 판정 실패: {dict(a)}"
+        assert a["calls"] == 2 and proj == "myproj" and days == {"2026-09-10"}
+
+        # Codex: 회차별 '증분'인 경우 -> 전부 더해야 한다
+        inc = os.path.join(cx, "rollout-inc.jsonl")
+        with open(inc, "w") as f:
+            for tot, inp, out in ((100, 60, 40), (50, 30, 20)):   # total 이 줄어든다
+                f.write(json.dumps({"type": "event_msg", "payload": {
+                    "type": "token_count", "info": {
+                        "input_tokens": inp, "output_tokens": out,
+                        "total_tokens": tot}}}) + "\n")
+        a2, _, _, _ = read_codex(inc)
+        assert (a2["input"], a2["output"]) == (90, 60), f"증분 판정 실패: {dict(a2)}"
+
+        # 추가 스캔 폴더가 실제로 반영되는지 (와일드카드 포함)
+        cfg = {"providers": {"codex": {"extra": [os.path.join(d, "20*", "*", "*")]}}}
+        roots = provider_roots("codex", cfg)
+        assert cx in roots, f"추가 스캔 폴더 미반영: {roots}"
+        agg, projects, _, _ = collect(pid="codex", roots=[cx])
+        assert agg["input"] == 240 and projects["myproj"] == 250, (dict(agg), dict(projects))
+
+        # 끈 프로바이더는 합산에서 빠진다
+        off = {"providers": {"claude-code": {"enabled": False}, "codex": {"enabled": False}}}
+        a3, _, _, _, per = collect_all(off)
+        assert not a3.get("calls") and per == {}, (dict(a3), per)
+
     # 밸런스: 환생 설계가 성립하는지 검증한다.
     agg, projects, _, _ = merge()
     if not projects:
@@ -869,16 +1151,28 @@ def demo():
     assert [boss(g)["hp"] for g in range(1, 30)] == sorted(boss(g)["hp"] for g in range(1, 30)), \
         "보스 난이도가 단조 증가하지 않는다 (층 경계 급락)"
 
-    # 1) 환생 없이는 딱 1층까지 — 2층 첫 스테이지가 벽이어야 한다
+    # 1) 환생 없이는 얕은 곳에서 막혀야 한다.
+    #    토큰이 늘면 캐릭터도 강해지므로 정확한 스테이지 수를 못박으면 안 된다
+    #    (사용자마다, 그리고 같은 사용자도 시간이 지나면 달라진다).
+    #    지켜야 할 성질은 "벽이 존재하고, 그 벽이 초반에 있다"이다.
     base = reach(h)
-    assert base == n, f"무환생 도달 {base} != 1층 완주 {n} (B_HP/B_ATK/B_DEF 재조정 필요)"
+    assert base > 0, "1스테이지조차 못 깬다 — 기준 난이도가 과하다"
+    assert base <= 2 * n, \
+        f"무환생으로 {base}스테이지({(base-1)//n+1}층)까지 간다 — 벽이 너무 늦다"
 
-    # 2) 환생을 거듭하면 실제로 더 깊이 간다
+    # 2) 환생을 거듭해야 더 깊이 간다. 여기서도 절대 층수를 못박지 않는다 —
+    #    무환생으로 닿는 층(base_floor)이 사람마다 다르므로 "그 다음 층부터는
+    #    환생을 여러 번 해야 한다"는 상대적 성질만 검사한다.
+    base_floor = (base - 1) // n + 1
     rows = simulate(h, n, rebirths=32)
-    floors = {fl: r for r, g, fl, _, _ in reversed(rows)}   # 층 -> 첫 도달 환생 횟수
-    assert floors.get(2, 99) >= 1, "2층을 환생 없이 간다"
-    assert floors.get(3, 99) > floors.get(2, 0), "3층이 2층보다 쉽다"
-    assert floors.get(4, 99) >= 8, f"4층이 환생 {floors.get(4)}회로 뚫린다 — 벽이 너무 낮다"
+    floors = {}
+    for r, g, fl, _, _ in rows:
+        floors.setdefault(fl, r)
+    nxt = floors.get(base_floor + 1, 99)
+    assert nxt >= 5, \
+        f"{base_floor + 1}층이 환생 {nxt}회로 뚫린다 — 층 벽(STEP)이 너무 낮다"
+    seq = [floors[f] for f in sorted(floors) if f >= base_floor]
+    assert seq == sorted(seq), f"깊은 층이 얕은 층보다 먼저 열린다: {floors}"
     assert rows[-1][1] > base, "환생을 거듭해도 도달 스테이지가 늘지 않는다"
 
     # 3) 원정(방치)은 보조 수입이어야 한다 — 최대 배율 8시간으로도 환생을 대체 못 함

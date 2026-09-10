@@ -82,13 +82,32 @@ export TOKEN_RPG_SNAPSHOTS=~/Dropbox/token-rpg
 `~/.local/share/token-rpg/`(또는 `$XDG_DATA_HOME`)에 저장되고, 진행 상황은
 브라우저 localStorage에 있다.
 
-## 다른 AI 툴
+## 프로바이더
 
-현재는 Claude Code 전용이다. Cursor와 GitHub Copilot은 토큰 사용량을 로컬에
-남기지 않고 서버에서 집계하므로 읽어올 값이 없다.
+여러 AI 툴의 사용량을 한 캐릭터로 합산한다.
 
-다만 스냅샷 JSON이 사실상 공개 인터페이스라, 사용량을 로컬에 남기는 툴이라면
-이 모양으로 뱉는 스크립트를 붙여 합산할 수 있다:
+```bash
+token-rpg providers                          # 목록과 스캔 위치
+token-rpg scan add codex '~/backup/*/sessions'   # 로그가 기본 위치 밖일 때
+token-rpg disable codex                      # 특정 프로바이더 끄기
+```
+
+| 프로바이더 | 기본 위치 | 상태 |
+|---|---|---|
+| `claude-code` | `~/.claude/projects` | 검증됨 |
+| `codex` | `~/.codex/sessions` | 문서 기준 구현, 실제 로그 미검증 |
+
+Codex CLI는 `cached_input_tokens`·`reasoning_output_tokens`를 남겨 DEF·CRIT까지
+그대로 대응된다. `token_count` 이벤트가 세션 누적인지 회차 증분인지 버전마다
+달라, 파일 안에서 `total_tokens`가 줄지 않으면 누적으로 보고 마지막 값만 센다.
+
+**웹에서 쓴 것은 잡히지 않는다.** ChatGPT·Gemini 웹, Cursor, GitHub Copilot은
+토큰 집계를 서버에서만 하고 로컬에 숫자를 남기지 않는다. CLI 툴을 설치해서
+써야 기록이 생긴다. Gemini CLI는 텔레메트리를 켜야 하고(기본 꺼짐),
+OTel 형식이라 아직 지원하지 않는다.
+
+새 툴을 붙이려면 `PROVIDERS`에 "파일 하나를 읽어 토큰 합계를 돌려주는 함수"
+하나만 추가하면 된다. 또는 스냅샷 JSON을 직접 뱉어도 된다:
 
 ```json
 {"host": "내PC", "updated": "2026-09-10T00:00:00+00:00",

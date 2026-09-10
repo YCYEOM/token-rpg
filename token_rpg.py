@@ -7,7 +7,7 @@
 import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, webbrowser
 from datetime import datetime, timezone
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -415,7 +415,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 let save = {alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
-            exped:{since:Date.now(), seenExp:0}};
+            best:0, exped:{since:Date.now(), seenExp:0}};
 try { Object.assign(save, JSON.parse(localStorage.getItem("trpg") || "{}")); } catch(e) {}
 const put = () => { try { localStorage.setItem("trpg", JSON.stringify(save)); } catch(e) {} };
 
@@ -452,13 +452,14 @@ const CAP_S = K.idleCapH * 3600;
 const tokenMul = () => 1 + Math.min(K.idleTokenMax,
   Math.max(0, H.exp - save.exped.seenExp) / K.idleTokenDiv);
 const idleRate = () => {                      // 초당 혼
-  const g = maxCleared();
+  const g = save.best;          // 역대 최고 — 환생해도 원정은 여기서 계속 캔다
   return g ? soulOf(g) / K.idleDiv * tokenMul() : 0;
 };
 const idleSecs = () => Math.min(CAP_S, Math.max(0, (Date.now() - save.exped.since) / 1000));
 const pending  = () => idleRate() * idleSecs();
 
 const maxCleared = () => save.cleared.length ? Math.max(...save.cleared) : 0;
+const markBest = g => { if (g > (save.best || 0)) save.best = g; };
 const floorNow   = () => Math.floor(maxCleared() / N) + 1;
 const points     = () => H.level * K.ptPerLevel + save.traits.pt * K.tpt;
 const used       = () => STATS.reduce((s,[k]) => s + save.alloc[k], 0);
@@ -531,7 +532,8 @@ function drawRebirth(){
        rbArmed ? `정말 환생한다 — ${floorNow()}층까지의 진행을 버린다 (다시 누르면 실행)`
                : `환생 — 혼 ${n(gain)} 획득`}</button>
      <div class="dim" style="font-size:11px;margin-top:6px">
-       클리어 기록과 스탯 배분을 버리고 1층부터 다시 시작한다. 영구 특성과 혼은 남는다.
+       클리어 기록과 스탯 배분을 버리고 1층부터 다시 시작한다.
+       영구 특성·혼·원정(역대 최고 ${save.best || 0}스테이지 기준)은 그대로 남는다.
        ${can?"":"먼저 스테이지를 하나 이상 클리어해라."}</div>`;
   if (can) $("rbBtn").onclick = () => {
     if (!rbArmed) { rbArmed = true; drawRebirth(); return; }
@@ -577,7 +579,7 @@ function drawStages(){
 }
 
 function drawExped(){
-  const g = maxCleared(), rate = idleRate(), have = pending(), secs = idleSecs();
+  const g = save.best, rate = idleRate(), have = pending(), secs = idleSecs();
   $("expedRate").textContent = g ? n(rate * 3600) + " 혼/시간" : "";
   if (!g) {
     $("exped").innerHTML = '<div class="dim">스테이지를 하나 클리어하면 원정대가 출발한다.</div>';
@@ -587,7 +589,9 @@ function drawExped(){
   const hrs = Math.floor(secs/3600), mins = Math.floor(secs/60) % 60;
   $("exped").innerHTML =
     `<div class="row" style="font-size:13px;margin-bottom:8px">
-       <span>${g}스테이지를 반복 중 <span class="dim">· 토큰 배율 x${tokenMul().toFixed(2)}</span></span>
+       <span>${g}스테이지를 반복 중${g > maxCleared()
+           ? ' <span class="dim">(역대 최고 · 환생 전 기록)</span>' : ""}
+         <span class="dim">· 토큰 배율 x${tokenMul().toFixed(2)}</span></span>
        <span class="soul ${full?"":"pulse"}">${nf(have)} 혼</span></div>
      <div class="bar"><i style="width:${100*secs/CAP_S}%;background:var(--soul)"></i></div>
      <div class="row"><span class="dim">${hrs}시간 ${mins}분 경과</span>
@@ -648,7 +652,8 @@ function end(won, me, foe, g, slot, why){
   clearInterval(timer); paint(me, foe);
   if (won) {
     say(`<span class="win">승리! ${slot.name} 정복. 혼 ${n(soulOf(g))} 예약.</span>`);
-    if (!save.cleared.includes(g)) { save.cleared.push(g); put(); }
+    if (!save.cleared.includes(g)) { save.cleared.push(g); }
+    markBest(g); put();
     if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);
   } else {
@@ -659,6 +664,7 @@ function end(won, me, foe, g, slot, why){
 }
 $("close").onclick = () => $("fight").classList.remove("on");
 
+if (!save.best) { save.best = maxCleared(); put(); }        // 옛 저장본 이관
 if (!save.exped.seenExp) { save.exped.seenExp = H.exp; put(); }
 
 drawAll();
@@ -666,7 +672,7 @@ drawAll();
 // 돌아왔을 때 그동안의 성과를 알려준다
 (() => {
   const secs = idleSecs();
-  if (secs > 300 && maxCleared()) {
+  if (secs > 300 && save.best) {
     const h = Math.floor(secs/3600), m = Math.floor(secs/60) % 60;
     $("expedBanner").innerHTML =
       `<div class="banner">원정대가 ${h}시간 ${m}분 동안 ${n(pending())} 혼을 캐왔다.</div>`;

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "token-rpg"
+dynamic = ["version"]
+description = "Claude Code 토큰 사용량으로 성장하는 턴제 RPG"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+keywords = ["claude", "claude-code", "rpg", "idle-game", "token-usage", "cli"]
+classifiers = [
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Topic :: Games/Entertainment :: Role-Playing",
+]
+dependencies = []          # 표준 라이브러리만 쓴다
+
+[project.scripts]
+token-rpg = "token_rpg:main"
+
+[tool.hatch.version]
+path = "token_rpg.py"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["token_rpg.py"]

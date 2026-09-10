@@ -1,0 +1,23 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # 집계·병합 로직과 난이도/환생 곡선을 검증한다.
+      # CI에는 Claude Code 기록이 없으므로 밸런스 검증은 자동으로 생략된다.
+      - run: python token_rpg.py selftest
+      - run: pip install . && token-rpg --version && token-rpg where

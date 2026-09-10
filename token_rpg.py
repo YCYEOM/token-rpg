@@ -7,7 +7,7 @@
 import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, webbrowser
 from datetime import datetime, timezone
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -145,60 +145,61 @@ def read_claude(path):
     return agg, proj, days, models
 
 
-_CODEX_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens",
-               "reasoning_output_tokens", "total_tokens")
-
-
-def _codex_counts(d):
-    """token_count 이벤트에서 숫자를 꺼낸다. 중첩 위치가 버전마다 달라 둘 다 본다."""
-    p = d.get("payload") or d
-    if p.get("type") != "token_count":
-        return None
-    for cand in (p.get("info"), p.get("usage"), p):
-        if isinstance(cand, dict) and any(k in cand for k in _CODEX_KEYS):
-            return cand
-    return None
-
-
 def read_codex(path):
     """Codex CLI: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 
-    token_count 이벤트가 회차별 증분인지 세션 누적인지 버전마다 다르다.
-    ponytail: 파일 안에서 total_tokens 가 줄지 않으면 누적으로 보고 마지막 값만,
-    아니면 증분으로 보고 전부 더한다. 실제 로그로 확인되면 이 분기는 지워도 된다.
+    실제 로그(cli 0.153.4)로 확인한 구조:
+      {"type":"event_msg","payload":{"type":"token_count","info":{
+         "total_token_usage": {input_tokens, cached_input_tokens,
+                               cache_write_input_tokens, output_tokens,
+                               reasoning_output_tokens, total_tokens},
+         "last_token_usage":  {...같은 모양, 이번 회차 증분...}}}}
+
+    total_token_usage 는 세션 누적이므로 파일의 마지막 값 하나만 쓴다.
+    (last_token_usage 를 전부 더해도 같은 값이 나온다.)
+    프로젝트 이름은 session_meta.payload.cwd 의 마지막 경로 조각.
     """
-    events, days, models, proj = [], set(), collections.Counter(), None
+    last, days, models, cwd, n_events = None, set(), collections.Counter(), None, 0
     for line in _lines(path):
-        if '"token_count"' not in line and '"cwd"' not in line:
+        if '"token_count"' not in line and '"session_meta"' not in line:
             continue
         try:
             d = json.loads(line)
         except ValueError:
             continue
-        proj = proj or d.get("cwd") or (d.get("payload") or {}).get("cwd")
+        p = d.get("payload") or {}
+        if d.get("type") == "session_meta":
+            cwd = cwd or p.get("cwd") or d.get("cwd")
+            m = p.get("model") or p.get("model_provider")
+            if m:
+                models[m] += 1
+            continue
+        if p.get("type") != "token_count":
+            continue
+        n_events += 1
+        info = p.get("info") or {}
+        tot = info.get("total_token_usage")
+        if isinstance(tot, dict):
+            last = tot
         ts = d.get("timestamp") or ""
         if ts:
             days.add(str(ts)[:10])
-        m = (d.get("payload") or {}).get("model") or d.get("model")
-        c = _codex_counts(d)
-        if c:
-            events.append(c)
-            if m:
-                models[m] += 1
+
     agg = collections.Counter()
-    if events:
-        totals = [e.get("total_tokens") or 0 for e in events]
-        cumulative = len(totals) > 1 and all(b >= a for a, b in zip(totals, totals[1:])) \
-            and totals[-1] > 0
-        picked = [events[-1]] if cumulative else events
-        for c in picked:
-            agg["input"] += c.get("input_tokens", 0)
-            agg["output"] += c.get("output_tokens", 0)
-            agg["cache_read"] += c.get("cached_input_tokens", 0)
-            agg["thinking"] += c.get("reasoning_output_tokens", 0)
-        agg["calls"] += len(events)          # 호출 수는 이벤트 수 그대로
-    name = os.path.basename(proj.rstrip("/")) if proj else "codex"
-    return agg, name or "codex", days, models
+    if last:
+        agg["input"] = last.get("input_tokens", 0) + last.get("cache_write_input_tokens", 0)
+        agg["output"] = last.get("output_tokens", 0)
+        agg["cache_read"] = last.get("cached_input_tokens", 0)
+        agg["thinking"] = last.get("reasoning_output_tokens", 0)
+        # 세부 항목이 비고 total 만 채워진 세션이 실제로 있다. total = input + output
+        # 이므로 분해가 없으면 통째로 input 으로 넣는다 (EXP 는 맞고 ATK 는 과장하지 않는다).
+        if not any(agg[k] for k in ("input", "output", "cache_read", "thinking")):
+            agg["input"] = last.get("total_tokens", 0)
+        agg["calls"] = n_events
+    if not agg["input"] and not agg["output"]:
+        return collections.Counter(), "codex", set(), models
+    name = os.path.basename((cwd or "").rstrip("/")) or "codex"
+    return agg, name, days, models
 
 
 PROVIDERS = {
@@ -214,7 +215,7 @@ PROVIDERS = {
         "roots": lambda: [os.path.expanduser("~/.codex/sessions")],
         "glob": os.path.join("**", "rollout-*.jsonl"),
         "read": read_codex,
-        "verified": False,      # 문서 기준 구현. 실제 로그로 아직 검증 안 됨
+        "verified": True,       # 실제 로그(codex cli 0.153.4)로 검증
     },
 }
 
@@ -242,7 +243,7 @@ def collect(root=None, pid="claude-code", roots=None):
                 continue
             files += 1
             agg.update(a); days |= d; models.update(m)
-            projects[proj] += a["input"] + a["output"]
+            projects[pid + "\t" + proj] += a["input"] + a["output"]
     agg["sessions"] = files
     return agg, projects, models, days
 
@@ -266,7 +267,7 @@ def collect_all(cfg=None):
     return agg, projects, models, days, per
 
 
-def save_snapshot(root=TRANSCRIPTS, snaps=None):
+def save_snapshot(root=None, snaps=None):   # root 는 테스트용 단일 경로
     """이 PC의 집계만 작은 JSON으로 남긴다. 190MB 트랜스크립트는 옮기지 않는다."""
     snaps = snaps or snap_dir()
     os.makedirs(snaps, exist_ok=True)      # 명시로 넘긴 경로도 없으면 만든다
@@ -328,11 +329,16 @@ def dungeons(projects):
     """프로젝트 = 한 층의 스테이지 슬롯. 능력치는 boss()가 전역 번호로 정하고,
     프로젝트는 이름/이모지/혼 배수(토큰이 많을수록 혼을 더 준다)만 준다."""
     items = sorted(projects.items(), key=lambda kv: kv[1])
+    home = os.path.basename(os.path.expanduser("~"))
     out = []
-    for i, (name, v) in enumerate(items):
-        short = name.replace("-Users-yeomyooncheol", "").strip("-") or "home"
+    for i, (key, v) in enumerate(items):
+        pid, _, name = key.partition("\t")
+        if not name:                     # 옛 스냅샷: 프로바이더 표기가 없다
+            pid, name = "claude-code", key
+        short = name.replace("-Users-" + home, "").strip("-") or "home"
         share = i / max(1, len(items) - 1)          # 토큰 적은 쪽 0.0 ~ 많은 쪽 1.0
         out.append({"slot": i + 1, "name": short, "tokens": v,
+                    "prov": PROVIDERS.get(pid, {}).get("label", pid),
                     "emoji": BOSS_EMOJI[i % len(BOSS_EMOJI)],
                     "soul": round(0.7 + 0.6 * share, 2)})
     return out
@@ -438,7 +444,7 @@ def balance(h, ds):
         prev = fl
 
 
-def build(root=TRANSCRIPTS, out=None):
+def build(root=None, out=None):    # root 는 테스트용 단일 경로
     save_snapshot(root)
     agg, projects, models, hosts = merge()
     h = hero(agg)
@@ -568,6 +574,7 @@ const D = __DATA__, H = D.hero, G = H.gain, K = D.k, SLOTS = D.dungeons, N = SLO
 const n = x => Math.round(x).toLocaleString();
 // 원정은 초당 소수점 단위로 쌓인다 — 정수로 표시하면 멈춘 것처럼 보인다
 const nf = x => x < 1000 ? x.toFixed(2) : n(x);
+const MULTIPROV = (D.providers || []).length > 1;
 const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력","DEF"],["crit","치명타","CRIT"]];
 const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
                 ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],["crit","예지","CRIT +"+K.tcrit+"%p/lv"],
@@ -722,7 +729,8 @@ function drawStages(){
     const el = document.createElement("div");
     el.className = "st" + (open ? "" : " lock") + (done ? " done" : "");
     el.innerHTML = `<div class="e">${slot.emoji}</div>
-      <div class="n"><b>${done?"✓ ":""}${g}. ${slot.name}의 수호자</b>
+      <div class="n"><b>${done?"✓ ":""}${g}. ${slot.name}의 수호자</b>${
+        MULTIPROV ? ` <span class="badge">${slot.prov}</span>` : ""}
       <small>HP ${n(b.hp)} · ATK ${n(b.atk)} · DEF ${n(b.dfn)} · SPD ${n(b.spd)}
       ${H.spd>=b.spd?"":"<span style='color:var(--hp)'>· 보스 선공</span>"}
       <br>격파 시 혼 ${n(soulOf(g))}</small></div>`;
@@ -1018,6 +1026,35 @@ def cmd_open(args):
     return 0
 
 
+def cmd_status(args):
+    """메뉴 막대 앱처럼 사람이 아닌 클라이언트가 읽을 수 있는 현재 요약.
+
+    build를 부르지 않는다. 팝오버를 여는 것만으로 HTML을 다시 쓰거나 게임
+    진행을 바꾸지 않게 하기 위해서다.
+    """
+    agg, projects, _models, days, per = collect_all()
+    if not agg.get("calls"):
+        print(json.dumps({"ok": False, "error": "no_usage"}, ensure_ascii=False))
+        return 1
+    h = hero(agg)
+    providers = [
+        {"id": pid, "name": PROVIDERS[pid]["label"], "tokens": total}
+        for pid, total in sorted(per.items(), key=lambda kv: -kv[1])
+    ]
+    payload = {
+        "ok": True,
+        "version": __version__,
+        "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "hero": h,
+        "providers": providers,
+        "projects": len(projects),
+        "days": len(days),
+        "gamePath": game_path(),
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="token-rpg",
@@ -1026,6 +1063,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("build", help="사용량을 다시 집계해 game.html 갱신 (기본)")
     sub.add_parser("open", help="갱신한 뒤 브라우저로 연다")
+    sub.add_parser("status", help="현재 스탯을 JSON으로 출력 (메뉴 막대 앱용)")
     sub.add_parser("export", help="이 PC의 스냅샷만 갱신 (다른 기기와 합산용)")
     sub.add_parser("balance", help="난이도·환생 곡선 표 출력")
     sub.add_parser("selftest", help="집계·병합·밸런스 자체 검증")
@@ -1048,6 +1086,8 @@ def main(argv=None):
         return cmd_build(a)
     if cmd == "open":
         return cmd_open(a)
+    if cmd == "status":
+        return cmd_status(a)
     if cmd == "export":
         print(save_snapshot()[0]); return 0
     if cmd == "balance":
@@ -1093,48 +1133,63 @@ def demo():
             f.write(json.dumps(rec) + "\n" + json.dumps(rec) + "\n")  # 중복 id -> 1회만
         agg, projects, _, days = collect(d)
         assert agg["calls"] == 1 and agg["input"] == 15 and agg["output"] == 20
-        assert agg["thinking"] == 7 and len(days) == 1 and projects["proj"] == 35
+        assert agg["thinking"] == 7 and len(days) == 1 and projects["claude-code\tproj"] == 35
         snaps = os.path.join(d, "snaps")
         _, s1 = save_snapshot(d, snaps)
         with open(os.path.join(snaps, "otherpc.json"), "w") as f:
             json.dump({**s1, "host": "otherpc"}, f)
         m, mp, _, hs = merge(snaps)
-        assert m["input"] == 30 and mp["proj"] == 70 and m["days"] == 1 and len(hs) == 2
+        assert m["input"] == 30 and mp["claude-code\tproj"] == 70 and m["days"] == 1 and len(hs) == 2
 
     # 프로바이더 리더: 각자 자기 형식을 제대로 읽는지 픽스처로 확인
     with tempfile.TemporaryDirectory() as d:
-        # Codex: token_count 가 '세션 누적'인 경우 -> 마지막 값만 세야 한다
+        # Codex: total_token_usage 는 세션 누적 -> 마지막 값만 센다
         cx = os.path.join(d, "2026", "09", "10")
         os.makedirs(cx)
+        def _tc(inp, cached, out, reason, tot):
+            return json.dumps({"timestamp": "2026-09-10T00:00:00Z", "type": "event_msg",
+                "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": inp, "cached_input_tokens": cached,
+                                          "cache_write_input_tokens": 0, "output_tokens": out,
+                                          "reasoning_output_tokens": reason, "total_tokens": tot}}}})
         cum = os.path.join(cx, "rollout-cum.jsonl")
         with open(cum, "w") as f:
-            f.write(json.dumps({"timestamp": "2026-09-10T00:00:00Z", "cwd": "/x/myproj"}) + "\n")
-            for tot, inp, out in ((100, 60, 40), (250, 150, 100)):
-                f.write(json.dumps({"type": "event_msg", "payload": {
-                    "type": "token_count", "info": {
-                        "input_tokens": inp, "output_tokens": out, "cached_input_tokens": 10,
-                        "reasoning_output_tokens": 5, "total_tokens": tot}}}) + "\n")
-        a, proj, days, _ = read_codex(cum)
-        assert (a["input"], a["output"]) == (150, 100), f"누적 판정 실패: {dict(a)}"
-        assert a["calls"] == 2 and proj == "myproj" and days == {"2026-09-10"}
+            f.write(json.dumps({"type": "session_meta",
+                                "payload": {"cwd": "/x/myproj"}}) + "\n")
+            f.write(_tc(100, 60, 10, 3, 110) + "\n")
+            f.write(_tc(250, 150, 25, 8, 275) + "\n")     # 누적이므로 이 값만 유효
+        a1, proj, days, _ = read_codex(cum)
+        assert (a1["input"], a1["output"]) == (250, 25), f"누적 처리 실패: {dict(a1)}"
+        assert (a1["cache_read"], a1["thinking"]) == (150, 8), dict(a1)
+        assert a1["calls"] == 2 and proj == "myproj" and days == {"2026-09-10"}
 
-        # Codex: 회차별 '증분'인 경우 -> 전부 더해야 한다
-        inc = os.path.join(cx, "rollout-inc.jsonl")
-        with open(inc, "w") as f:
-            for tot, inp, out in ((100, 60, 40), (50, 30, 20)):   # total 이 줄어든다
-                f.write(json.dumps({"type": "event_msg", "payload": {
-                    "type": "token_count", "info": {
-                        "input_tokens": inp, "output_tokens": out,
-                        "total_tokens": tot}}}) + "\n")
-        a2, _, _, _ = read_codex(inc)
-        assert (a2["input"], a2["output"]) == (90, 60), f"증분 판정 실패: {dict(a2)}"
+        # 세부 항목이 비고 total 만 있는 세션 (실제 로그에 존재)
+        deg = os.path.join(cx, "rollout-deg.jsonl")
+        with open(deg, "w") as f:
+            f.write(_tc(0, 0, 0, 0, 17647) + "\n")
+        a2, _, _, _ = read_codex(deg)
+        assert a2["input"] == 17647 and a2["output"] == 0, dict(a2)
+
+        # 토큰이 전혀 없는 세션은 통계에서 빠진다
+        zero = os.path.join(cx, "rollout-zero.jsonl")
+        with open(zero, "w") as f:
+            f.write(_tc(0, 0, 0, 0, 0) + "\n")
+        a3, _, _, _ = read_codex(zero)
+        assert not a3, dict(a3)
 
         # 추가 스캔 폴더가 실제로 반영되는지 (와일드카드 포함)
         cfg = {"providers": {"codex": {"extra": [os.path.join(d, "20*", "*", "*")]}}}
         roots = provider_roots("codex", cfg)
         assert cx in roots, f"추가 스캔 폴더 미반영: {roots}"
         agg, projects, _, _ = collect(pid="codex", roots=[cx])
-        assert agg["input"] == 240 and projects["myproj"] == 250, (dict(agg), dict(projects))
+        assert agg["input"] == 250 + 17647 and projects["codex\tmyproj"] == 275, (dict(agg), dict(projects))
+        assert agg["sessions"] == 2, agg["sessions"]      # 빈 세션은 세지 않는다
+
+        # build/save_snapshot 이 기본 인자 탓에 한 프로바이더만 읽는 회귀를 막는다
+        import inspect
+        for fn in (save_snapshot, build):
+            assert inspect.signature(fn).parameters["root"].default is None, \
+                f"{fn.__name__}(root=...) 기본값이 None 이 아니면 프로바이더 하나만 읽는다"
 
         # 끈 프로바이더는 합산에서 빠진다
         off = {"providers": {"claude-code": {"enabled": False}, "codex": {"enabled": False}}}
@@ -1168,9 +1223,16 @@ def demo():
     floors = {}
     for r, g, fl, _, _ in rows:
         floors.setdefault(fl, r)
+    # 난이도는 STEP^(전역 스테이지)로 연속이고, '층'은 프로젝트 수만큼 묶은 표시
+    # 단위일 뿐이다. 프로바이더를 추가하면 층 크기가 변하므로 절대 횟수를 못박지
+    # 않고, (a) 다음 층은 환생을 요구한다 (b) 그다음은 눈에 띄게 더 요구한다
+    # 두 가지만 본다.
     nxt = floors.get(base_floor + 1, 99)
-    assert nxt >= 5, \
-        f"{base_floor + 1}층이 환생 {nxt}회로 뚫린다 — 층 벽(STEP)이 너무 낮다"
+    assert nxt >= 1, f"{base_floor + 1}층을 환생 없이 간다 — 층 벽(STEP)이 너무 낮다"
+    deeper = floors.get(base_floor + 2)
+    if deeper is not None:
+        assert deeper >= 2 * nxt, \
+            f"{base_floor+2}층({deeper}회)이 {base_floor+1}층({nxt}회) 대비 가파르지 않다"
     seq = [floors[f] for f in sorted(floors) if f >= base_floor]
     assert seq == sorted(seq), f"깊은 층이 얕은 층보다 먼저 열린다: {floors}"
     assert rows[-1][1] > base, "환생을 거듭해도 도달 스테이지가 늘지 않는다"

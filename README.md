@@ -19,6 +19,27 @@ token-rpg open              # 집계 후 브라우저로 열기
 
 의존성은 없다. 표준 라이브러리만 쓴다.
 
+### macOS 메뉴 막대 앱
+
+`Token RPG.app`은 메뉴 막대에 게임패드 아이콘으로 상주한다. 아이콘을 누르면
+현재 레벨·EXP·스탯·연결된 프로바이더 사용량을 다크 팝오버로 보여주고,
+`게임 열기`로 전체 RPG 화면을 연다.
+
+개발용으로 설치 파일을 만들려면 macOS Command Line Tools에서 다음을 실행한다.
+
+```bash
+zsh scripts/build-macos-app.sh
+open dist-macos/Token-RPG-macOS.dmg
+```
+
+DMG 안의 `Token RPG.app`을 `Applications`로 드래그하면 된다. 앱은 독립적인
+Swift/AppKit UI이지만, 사용량 집계 로직은 번들에 든 `token_rpg.py`로 실행하므로
+`python3`가 PATH에 있어야 한다. 앱이 읽는 것은 로컬 로그뿐이며, 데이터를 외부로
+전송하지 않는다.
+
+현재 생성되는 DMG는 **서명·공증되지 않은 개발 빌드**다. 다른 사람에게 배포하려면
+Apple Developer ID로 서명하고 공증해야 Gatekeeper 경고 없이 열 수 있다.
+
 ## 자동 갱신
 
 ```bash

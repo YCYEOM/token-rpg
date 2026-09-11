@@ -1,11 +1,15 @@
 import Cocoa
 import WebKit
 
+/// token_rpg.SERVE_PORT 와 같아야 한다. 브라우저도 이 주소를 써서 저장 파일 하나를 같이 쓴다.
+private let gameURL = URL(string: "http://127.0.0.1:8765/")!
+
 @main
 final class TokenRPGApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let game = GameViewController()
+    private var server: Process?
 
     // nib 없는 앱은 기본 main(NSApplicationMain)이 delegate 를 만들지 않는다.
     // 직접 붙이지 않으면 프로세스만 뜨고 메뉴 막대 아이콘이 생기지 않는다.
@@ -32,10 +36,22 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 420, height: 640)
         popover.contentViewController = game
 
+        server = startServer()
         refresh()
         // Stop 훅은 Claude Code 응답 때만 돈다. Codex·Gemini 사용분도 반영되도록 주기적으로 build 한다.
         // ponytail: 5분 폴링 (build+status 약 2초). 즉시 반영이 필요하면 로그 폴더 FSEvents 감시로
         Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.refresh() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        server?.terminate()
+    }
+
+    /// 게임 페이지와 저장 파일을 제공하는 로컬 서버(token-rpg serve). 이미 떠 있으면 그쪽을 쓰고 바로 끝난다.
+    private func startServer() -> Process? {
+        let process = tokenRPGProcess(["serve"])
+        process.standardOutput = FileHandle.nullDevice
+        return (try? process.run()) != nil ? process : nil
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -105,8 +121,8 @@ private struct Status: Decodable {
     let gamePath: String?
 }
 
-/// 팝오버 = 게임 화면. build 가 만든 game.html 을 그대로 띄운다.
-private final class GameViewController: NSViewController {
+/// 팝오버 = 게임 화면. 로컬 서버가 주는 game.html 을 그대로 띄운다.
+private final class GameViewController: NSViewController, WKNavigationDelegate {
     var gamePath: String?
     private let web = WKWebView()
     private var loadedAt: Date?
@@ -114,6 +130,7 @@ private final class GameViewController: NSViewController {
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 640))
         web.underPageBackgroundColor = NSColor(red: 13 / 255, green: 17 / 255, blue: 23 / 255, alpha: 1)
+        web.navigationDelegate = self
 
         let bar = NSStackView()
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
@@ -138,15 +155,20 @@ private final class GameViewController: NSViewController {
     }
 
     /// 팝오버를 열 때만 부른다. 보는 도중에 페이지를 바꾸면 전투·스크롤이 날아간다.
+    /// 저장은 페이지가 서버에서 직접 받으므로, 여기서는 game.html 이 새로 만들어졌을 때만 다시 띄운다.
     func loadIfChanged() {
         _ = view
         guard let path = gamePath else { return rebuild(nil) }
         let mtime = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
-        guard let mtime, mtime != loadedAt,
-              let html = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        guard let mtime, mtime != loadedAt else { return }
         loadedAt = mtime
-        // 고정된 https 출처로 띄워야 localStorage(게임 저장)가 앱을 다시 켜도 남는다
-        web.loadHTMLString(html, baseURL: URL(string: "https://token-rpg.local/"))
+        web.load(URLRequest(url: gameURL))
+    }
+
+    // 서버가 아직 안 떴거나 죽었으면 안내하고, 다음에 열 때 다시 시도한다
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        loadedAt = nil
+        showMessage("게임 서버에 연결하지 못했다. 잠시 후 다시 열어라.")
     }
 
     @objc private func rebuild(_ sender: Any?) {
@@ -155,17 +177,19 @@ private final class GameViewController: NSViewController {
             let first = out.split(separator: "\n").first.map(String.init)
             DispatchQueue.main.async {
                 guard let path = first, FileManager.default.fileExists(atPath: path) else {
-                    self.web.loadHTMLString("""
-                        <body style="background:#0d1117;color:#8b949e;font:13px -apple-system;padding:24px">
-                        아직 사용 기록이 없다. Claude Code·Codex CLI·Gemini CLI 로 작업하면 캐릭터가 생긴다.</body>
-                        """, baseURL: nil)
-                    return
+                    return self.showMessage("아직 사용 기록이 없다. Claude Code·Codex CLI·Gemini CLI 로 작업하면 캐릭터가 생긴다.")
                 }
                 self.gamePath = path
                 self.loadedAt = nil
                 self.loadIfChanged()
             }
         }
+    }
+
+    private func showMessage(_ text: String) {
+        web.loadHTMLString("""
+            <body style="background:#0d1117;color:#8b949e;font:13px -apple-system;padding:24px">\(text)</body>
+            """, baseURL: nil)
     }
 
     @objc private func openInBrowser() {
@@ -185,17 +209,22 @@ private final class GameViewController: NSViewController {
 }
 
 /// 앱에 넣어 둔 token_rpg.py 를 우선 쓰고, 없으면 PATH 의 token-rpg 를 쓴다.
-private func runTokenRPG(_ args: [String]) -> Data {
+private func tokenRPGProcess(_ args: [String]) -> Process {
     let process = Process()
-    let output = Pipe()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     if let script = Bundle.main.url(forResource: "token_rpg", withExtension: "py")?.path {
         process.arguments = ["python3", script] + args
     } else {
         process.arguments = ["token-rpg"] + args
     }
-    process.standardOutput = output
     process.standardError = FileHandle.nullDevice
+    return process
+}
+
+private func runTokenRPG(_ args: [String]) -> Data {
+    let process = tokenRPGProcess(args)
+    let output = Pipe()
+    process.standardOutput = output
     guard (try? process.run()) != nil else { return Data() }
     let data = output.fileHandleForReading.readDataToEndOfFile()   // 기다리기 전에 읽어야 파이프가 막히지 않는다
     process.waitUntilExit()

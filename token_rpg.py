@@ -5,6 +5,7 @@
 따라서 막힌 스테이지는 토큰을 더 쓰면 반드시 넘을 수 있다.
 """
 import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, webbrowser
+import http.server, threading, urllib.request
 from datetime import datetime, timezone
 
 __version__ = "0.3.0"
@@ -49,6 +50,45 @@ def snap_dir():
     d = os.environ.get("TOKEN_RPG_SNAPSHOTS") or os.path.join(data_dir(), "snapshots")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def save_path(snaps=None):
+    """게임 진행 저장 파일 하나. 스냅샷 폴더에 두므로 그 폴더를 동기화 폴더로 지정하면
+    기기끼리도 같은 저장을 쓴다. 확장자가 .json 이 아니라 스냅샷 합산에 섞이지 않는다."""
+    return os.path.join(snaps or snap_dir(), "game.save")
+
+
+def read_save(snaps=None):
+    """{"rev": n, "save": {...}}. 파일이 없으면 rev 0.
+    깨진 파일은 ValueError 를 올린다 — 동기화 중인 반쪽 파일을 새 저장으로 덮어 진행을 날리지 않게."""
+    try:
+        with open(save_path(snaps), encoding="utf-8") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return {"rev": 0}
+    if not isinstance(d, dict) or type(d.get("rev")) is not int:
+        raise ValueError("저장 파일 형식이 아니다")
+    return d
+
+
+_save_lock = threading.Lock()
+
+
+def write_save(base, save, snaps=None):
+    """낙관적 잠금: 클라이언트가 읽었던 rev 와 지금 파일의 rev 가 같을 때만 쓴다.
+    다르면 (False, 현재 저장)을 돌려준다 — 오래된 창이 새 진행을 덮어쓰지 못한다.
+    ponytail: 한 프로세스 안의 잠금뿐. 두 기기가 같은 순간에 쓰면 동기화 서비스의 충돌 사본에 맡긴다."""
+    with _save_lock:
+        cur = read_save(snaps)
+        if cur["rev"] != base:
+            return False, cur
+        new = {"rev": base + 1, "save": save}
+        path = save_path(snaps)
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(new, f, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True, new
 
 # --- 밸런스 조절 손잡이 (python3 build.py --balance 로 확인) ---
 # 보스 능력치는 '전역 스테이지 번호'의 지수 곡선이다. 층 경계에서 난이도가
@@ -609,9 +649,9 @@ margin-top:10px;padding-top:8px}
 <div class="card"><h2 id="floorTitle">던전</h2><div id="stages"></div><div id="wall"></div></div>
 <div class="card"><h2>합산된 기기</h2><div id="hosts" style="font-size:12px"></div>
   <div id="provs" style="font-size:12px;margin-top:10px"></div></div>
-<div class="card"><h2>저장 옮기기</h2>
-  <div class="dim" style="font-size:11px;margin-bottom:6px">브라우저와 메뉴 막대 앱은 저장이 따로다.
-    한쪽에서 저장 코드를 복사해 다른 쪽에 붙여넣고 가져오기. 고친 코드는 거부된다.</div>
+<div class="card"><h2>저장 코드 — 백업·옮기기</h2>
+  <div class="dim" style="font-size:11px;margin-bottom:6px">메뉴 막대 앱과 token-rpg open 은 저장 파일 하나를 같이 쓴다.
+    예전처럼 파일로 연 브라우저 저장을 옮기거나 백업할 때 쓴다. 고친 코드는 거부된다.</div>
   <textarea id="saveBox" rows="3" spellcheck="false" style="width:100%;background:#0d1117;
     color:var(--fg);border:1px solid var(--line);border-radius:6px;font:11px ui-monospace,monospace"></textarea>
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
@@ -642,11 +682,35 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
                 ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],["crit","예지","CRIT +"+K.tcrit+"%p/lv"],
                 ["pt","각성","배분 +"+K.tpt+"pt/lv"]];
 
-let save = {alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
+const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}};
-try { Object.assign(save, JSON.parse(localStorage.getItem("trpg") || "{}")); } catch(e) {}
-const put = () => { try { localStorage.setItem("trpg", JSON.stringify(save)); } catch(e) {} };
+            best:0, exped:{since:Date.now(), seenExp:0}});
+let save = fresh();
+// 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
+// file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
+const SERVED = location.protocol.startsWith("http");
+let rev = 0, sync = Promise.resolve();          // 쓰기를 한 줄로 세워 rev 가 꼬이지 않게 한다
+const note = t => { $("expedBanner").innerHTML = `<div class="banner">${t}</div>`; };
+const adopt = d => { rev = d.rev; save = Object.assign(fresh(), d.save || {}); };
+const pull = async () => {
+  const r = await fetch("save", {cache: "no-store"});
+  if (!r.ok) throw new Error("save " + r.status);
+  adopt(await r.json());
+};
+const put = () => {
+  if (!SERVED) { try { localStorage.setItem("trpg", JSON.stringify(save)); } catch(e) {} return; }
+  sync = sync.then(async () => {
+    const r = await fetch("save", {method: "PUT", headers: {"Content-Type": "application/json"},
+                                   body: JSON.stringify({base: rev, save})});
+    if (r.ok) { rev = (await r.json()).rev; return; }
+    if (r.status === 409) {            // 다른 창·기기가 먼저 진행했다 -> 그쪽 저장을 따른다
+      adopt(await r.json()); drawAll();
+      note("다른 창에서 진행된 저장을 불러왔다. 방금 조작은 반영되지 않았다.");
+      return;
+    }
+    throw new Error("save " + r.status);
+  }).catch(() => note("저장하지 못했다 — 게임 서버가 꺼져 있다. 메뉴 막대 앱이나 token-rpg open 으로 다시 열어라."));
+};
 
 // 보스: 전역 스테이지 번호의 지수 곡선. 층이 바뀌어도 난이도가 끊기지 않는다.
 const boss = g => { const p = Math.pow(K.step, g-1); return {
@@ -933,13 +997,18 @@ function end(won, me, foe, g, slot, why){
 }
 $("close").onclick = () => $("fight").classList.remove("on");
 
-if (!save.best) { save.best = maxCleared(); put(); }        // 옛 저장본 이관
-if (!save.exped.seenExp) { save.exped.seenExp = H.exp; put(); }
+(async () => {
+  if (SERVED) {
+    // 실패해도 rev 0 으로 남아, 이후 쓰기는 서버에서 409 로 막히고 서버 저장을 불러온다 — 진행을 덮지 않는다
+    try { await pull(); } catch(e) { note("저장을 불러오지 못했다 — 게임 서버를 확인하고 새로고침해라."); }
+  } else {
+    try { Object.assign(save, JSON.parse(localStorage.getItem("trpg") || "{}")); } catch(e) {}
+  }
+  if (!save.best && maxCleared()) { save.best = maxCleared(); put(); }   // 옛 저장본 이관
+  if (!save.exped.seenExp) { save.exped.seenExp = H.exp; put(); }
+  drawAll();
 
-drawAll();
-
-// 돌아왔을 때 그동안의 성과를 알려준다
-(() => {
+  // 돌아왔을 때 그동안의 성과를 알려준다
   const secs = idleSecs();
   if (secs > 300 && save.best) {
     const h = Math.floor(secs/3600), m = Math.floor(secs/60) % 60;
@@ -950,6 +1019,12 @@ drawAll();
 
 // 보고 있는 동안에도 계속 쌓인다
 setInterval(() => { if (!$("fight").classList.contains("on")) drawExped(); }, 1000);
+
+// 다른 창에서 진행했을 수 있다 -> 이 창으로 돌아올 때 최신 저장을 받는다 (전투 중에는 건드리지 않는다)
+window.addEventListener("focus", () => {
+  if (!SERVED || $("fight").classList.contains("on")) return;
+  sync = sync.then(pull).then(drawAll).catch(() => {});
+});
 </script></body></html>
 """
 TEMPLATE = TEMPLATE.replace("__PT__", str(PT_PER_LEVEL))
@@ -1115,11 +1190,117 @@ def cmd_build(args):
     return 0
 
 
+SERVE_PORT = 8765          # 메뉴 막대 앱(macos/TokenRPGMenuBar.swift)과 같은 값
+
+
+class _GameHandler(http.server.BaseHTTPRequestHandler):
+    """127.0.0.1 전용. 게임 페이지와 저장 파일 하나만 다룬다."""
+    snaps = None                                   # 테스트에서 저장 폴더를 바꿀 때만
+
+    def _host_ok(self):
+        # DNS 리바인딩 방어: 외부 도메인이 127.0.0.1 로 풀려 들어온 요청을 거른다
+        port = self.server.server_address[1]
+        return self.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+        data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if not self._host_ok():
+            return self._send(403, {"error": "host"})
+        if self.path in ("/", "/game.html"):
+            try:
+                with open(game_path(), "rb") as f:
+                    return self._send(200, f.read(), "text/html; charset=utf-8")
+            except OSError:
+                return self._send(404, {"error": "no_game"})
+        if self.path == "/save":
+            try:
+                return self._send(200, read_save(self.snaps))
+            except (OSError, ValueError):
+                return self._send(500, {"error": "save_unreadable"})
+        if self.path == "/health":
+            return self._send(200, {"app": "token-rpg", "version": __version__})
+        self._send(404, {"error": "not_found"})
+
+    def do_PUT(self):
+        # 다른 사이트가 보낸 JSON PUT 은 사전 요청(OPTIONS)에서 막힌다 — OPTIONS 는 받지 않는다
+        if not self._host_ok() or self.path != "/save":
+            return self._send(403, {"error": "forbidden"})
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            return self._send(415, {"error": "json_only"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if not 0 < n <= 65536:
+            return self._send(413, {"error": "size"})
+        try:
+            body = json.loads(self.rfile.read(n))
+            base, save = body["base"], body["save"]
+        except (ValueError, KeyError, TypeError):
+            return self._send(400, {"error": "bad_request"})
+        if type(base) is not int or not isinstance(save, dict):
+            return self._send(400, {"error": "bad_request"})
+        try:
+            ok, cur = write_save(base, save, self.snaps)
+        except (OSError, ValueError):
+            return self._send(500, {"error": "save_unwritable"})
+        if ok:
+            return self._send(200, {"rev": cur["rev"]})
+        self._send(409, cur)
+
+    def log_message(self, *args):
+        pass
+
+
+def make_server(port=SERVE_PORT):
+    return http.server.ThreadingHTTPServer(("127.0.0.1", port), _GameHandler)
+
+
+def server_running(port=SERVE_PORT):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=0.5) as r:
+            return json.load(r).get("app") == "token-rpg"
+    except (OSError, ValueError):
+        return False
+
+
 def cmd_open(args):
     rc = cmd_build(args)
     if rc:
         return rc
-    webbrowser.open("file://" + game_path())
+    url = f"http://127.0.0.1:{SERVE_PORT}/"
+    if server_running():                 # 메뉴 막대 앱이 이미 띄워 둠
+        webbrowser.open(url)
+        return 0
+    try:
+        srv = make_server()
+    except OSError:
+        print(f"포트 {SERVE_PORT} 를 다른 프로그램이 쓰고 있다.")
+        return 1
+    webbrowser.open(url)                 # 포트를 먼저 열어 둬서 브라우저가 연결에 실패하지 않는다
+    print(f"{url}  (저장: {save_path()})\n끝내려면 Ctrl+C")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_serve(args):
+    """메뉴 막대 앱이 띄우는 서버. 앱이 끝날 때 함께 끝난다."""
+    try:
+        srv = make_server()
+    except OSError:
+        return 0 if server_running() else 1     # 이미 떠 있는 우리 서버면 그걸 쓴다
+    srv.serve_forever()
     return 0
 
 
@@ -1159,7 +1340,8 @@ def main(argv=None):
     p.add_argument("--version", action="version", version=f"token-rpg {__version__}")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("build", help="사용량을 다시 집계해 game.html 갱신 (기본)")
-    sub.add_parser("open", help="갱신한 뒤 브라우저로 연다")
+    sub.add_parser("open", help="갱신한 뒤 브라우저로 연다 (저장 서버 포함, Ctrl+C 로 종료)")
+    sub.add_parser("serve", help="게임과 저장을 127.0.0.1 로 제공 (메뉴 막대 앱용)")
     sub.add_parser("status", help="현재 스탯을 JSON으로 출력 (메뉴 막대 앱용)")
     sub.add_parser("export", help="이 PC의 스냅샷만 갱신 (다른 기기와 합산용)")
     sub.add_parser("balance", help="난이도·환생 곡선 표 출력")
@@ -1183,6 +1365,8 @@ def main(argv=None):
         return cmd_build(a)
     if cmd == "open":
         return cmd_open(a)
+    if cmd == "serve":
+        return cmd_serve(a)
     if cmd == "status":
         return cmd_status(a)
     if cmd == "export":
@@ -1237,6 +1421,44 @@ def demo():
             json.dump({**s1, "host": "otherpc"}, f)
         m, mp, _, hs = merge(snaps)
         assert m["input"] == 30 and mp["claude-code\tproj"] == 70 and m["days"] == 1 and len(hs) == 2
+
+    # 저장 서버: 오래된 rev 의 쓰기·깨진 파일 덮어쓰기·다른 Host·JSON 아닌 쓰기는 거부한다
+    with tempfile.TemporaryDirectory() as d:
+        ok, cur = write_save(0, {"souls": 1}, d)
+        assert ok and cur["rev"] == 1
+        ok, cur = write_save(0, {"souls": 999}, d)                 # 오래된 창
+        assert not ok and cur["save"] == {"souls": 1}, cur
+        with open(save_path(d), "w") as f:
+            f.write("{반쪽")
+        try:
+            write_save(1, {}, d)
+            raise AssertionError("깨진 저장 파일을 덮어썼다")
+        except ValueError:
+            pass
+        os.remove(save_path(d))
+
+        import http.client
+        class _H(_GameHandler):
+            snaps = d
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        def req(method, body=None, host=None, ctype="application/json"):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request(method, "/save", body=None if body is None else json.dumps(body),
+                      headers={"Host": host or f"127.0.0.1:{port}", "Content-Type": ctype})
+            r = c.getresponse()
+            return r.status, json.loads(r.read())
+        try:
+            assert req("GET") == (200, {"rev": 0})
+            assert req("PUT", {"base": 0, "save": {"souls": 5}}) == (200, {"rev": 1})
+            assert req("PUT", {"base": 0, "save": {"souls": 9}})[0] == 409
+            assert req("PUT", {"base": 1, "save": {"souls": 7}}, host="evil.example")[0] == 403
+            assert req("PUT", {"base": 1, "save": {"souls": 7}}, ctype="text/plain")[0] == 415
+            assert req("PUT", {"base": 1, "save": [1]})[0] == 400
+            assert req("GET")[1] == {"rev": 1, "save": {"souls": 5}}
+        finally:
+            srv.shutdown(); srv.server_close()
 
     # 프로바이더 리더: 각자 자기 형식을 제대로 읽는지 픽스처로 확인
     with tempfile.TemporaryDirectory() as d:

@@ -81,6 +81,9 @@ token-rpg install-hook      # Claude Code Stop 훅에 등록
 
 각 PC에서 `token-rpg export`를 돌리면 4KB짜리 스냅샷만 남는다.
 스냅샷 폴더를 클라우드 동기화 폴더로 지정하면 모든 기기의 사용량이 합산된다.
+게임 진행 저장(`game.save`)도 이 폴더에 있어서 기기끼리 같은 저장을 쓴다.
+브라우저와 메뉴 막대 앱도 로컬 서버를 거쳐 이 파일 하나를 같이 쓰고, 오래된 창이
+새 진행을 덮어쓰려 하면 거부하고 최신 저장을 불러온다.
 
 ```bash
 export TOKEN_RPG_SNAPSHOTS=~/Dropbox/token-rpg
@@ -91,7 +94,8 @@ export TOKEN_RPG_SNAPSHOTS=~/Dropbox/token-rpg
 | 명령 | 하는 일 |
 |---|---|
 | `token-rpg` / `build` | 사용량 재집계 후 `game.html` 갱신 |
-| `open` | 갱신 후 브라우저로 열기 |
+| `open` | 갱신 후 로컬 서버(`127.0.0.1:8765`)로 브라우저에서 열기. Ctrl+C로 종료 |
+| `serve` | 게임과 저장만 제공 (메뉴 막대 앱이 띄운다) |
 | `export` | 이 PC의 스냅샷만 갱신 |
 | `balance` | 난이도·환생 곡선 표 출력 |
 | `selftest` | 집계·병합·밸런스 자체 검증 |

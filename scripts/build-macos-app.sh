@@ -12,6 +12,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -parse-as-library "$ROOT/macos/TokenRPGMenuBar.swift" -framework Cocoa -o "$APP/Contents/MacOS/TokenRPG"
 cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/token_rpg.py" "$APP/Contents/Resources/token_rpg.py"
+# swiftc 는 실행 파일만 임시 서명한다. 번들 전체를 다시 봉인하지 않으면
+# 서명이 깨진 앱이 되어 다른 Mac(격리 속성)에서는 실행이 막힌다.
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
 
 # Finder에서 드래그 설치할 수 있는 DMG. 서명/공증은 릴리스 CI에서 별도로 한다.
 STAGE="$OUT/stage"

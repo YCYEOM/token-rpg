@@ -5,6 +5,15 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
 
+    // nib 없는 앱은 기본 main(NSApplicationMain)이 delegate 를 만들지 않는다.
+    // 직접 붙이지 않으면 프로세스만 뜨고 메뉴 막대 아이콘이 생기지 않는다.
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = TokenRPGApp()
+        app.delegate = delegate
+        withExtendedLifetime(delegate) { app.run() }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

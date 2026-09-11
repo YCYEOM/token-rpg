@@ -619,6 +619,7 @@ font-size:12px;color:var(--xp)}
 .st{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)}
 .st:first-of-type{border-top:0}.st .e{font-size:26px;width:32px;text-align:center}
 .st .n{flex:1;min-width:0}.st .n b{font-size:13px}.st small{color:var(--dim);font-size:11px}
+.st .n b.nm{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lock{opacity:.4}.done .n b{color:var(--xp)}
 .wall{border:1px dashed var(--soul);border-radius:8px;padding:10px;margin-top:10px;
 font-size:12px;color:var(--soul)}
@@ -970,11 +971,13 @@ function drawStages(){
     const open = i === 0 || save.cleared.includes(g - 1);
     const el = document.createElement("div");
     el.className = "st" + (open ? "" : " lock") + (done ? " done" : "");
+    // 이름은 한 줄 말줄임, 수치는 "HP 115" 단위로 묶어 숫자만 다음 줄로 밀리지 않게
+    const seg = (k, v) => `<span style="white-space:nowrap">${k} ${n(v)}</span>`;
     el.innerHTML = `<div class="e">${slot.emoji}</div>
-      <div class="n"><b>${done?"✓ ":""}${g}. ${slot.name}의 수호자</b>${
-        MULTIPROV ? ` <span class="badge">${slot.prov}</span>` : ""}
-      <small>HP ${n(b.hp)} · ATK ${n(b.atk)} · DEF ${n(b.dfn)} · SPD ${n(b.spd)}
-      ${H.spd>=b.spd?"":"<span style='color:var(--hp)'>· 보스 선공</span>"}
+      <div class="n"><b class="nm" title="${slot.name}">${done?"✓ ":""}${g}. ${slot.name}의 수호자</b>
+      <small>${MULTIPROV ? `<span class="badge">${slot.prov}</span>` : ""}${
+        [seg("HP", b.hp), seg("ATK", b.atk), seg("DEF", b.dfn), seg("SPD", b.spd)].join(" · ")}${
+        H.spd>=b.spd ? "" : " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"}
       <br>격파 시 혼 ${n(soulOf(g))}</small></div>`;
     const btn = document.createElement("button");
     btn.textContent = open ? (done ? "재도전" : "도전") : "잠김";
@@ -999,11 +1002,11 @@ function drawExped(){
   const full = secs >= CAP_S;
   const hrs = Math.floor(secs/3600), mins = Math.floor(secs/60) % 60;
   $("exped").innerHTML =
-    `<div class="row" style="font-size:13px;margin-bottom:8px">
-       <span>${g}스테이지를 반복 중${g > maxCleared()
-           ? ' <span class="dim">(역대 최고 · 환생 전 기록)</span>' : ""}
-         <span class="dim">· 토큰 배율 x${tokenMul().toFixed(2)}</span></span>
-       <span class="soul ${full?"":"pulse"}">${nf(have)} 혼</span></div>
+    `<div class="row" style="font-size:13px">
+       <span>${g}스테이지 반복 중</span>
+       <span class="soul ${full?"":"pulse"}" style="white-space:nowrap">${nf(have)} 혼</span></div>
+     <div class="dim" style="font-size:11px;margin-bottom:8px">${g > maxCleared()
+         ? "역대 최고(환생 전) 기록 기준 · " : ""}토큰 배율 x${tokenMul().toFixed(2)}</div>
      <div class="bar"><i style="width:${100*secs/CAP_S}%;background:var(--soul)"></i></div>
      <div class="row"><span class="dim">${hrs}시간 ${mins}분 경과</span>
        <span class="dim">${full ? "가득 참 — 수령해야 다시 쌓인다" : K.idleCapH + "시간까지 누적"}</span></div>
@@ -1105,9 +1108,11 @@ function drawRelics(){
      (역대 첫 격파 30%, 재격파 10%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}</div>`;
   $("relics").innerHTML = SLOTS.map(s => {
     const r = rs[relicKey(s)];
-    return `<div class="row" style="font-size:12px;padding:2px 0"><span>${s.emoji} ${s.name}${
+    // 긴 프로젝트 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게
+    return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
+        text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${s.name}${
         MULTIPROV ? ` <span class="dim">${s.prov}</span>` : ""}</span>${relicOk(r)
-      ? `<span style="color:${RARITY[r.r][2]}">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
+      ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
       : '<span class="dim">?</span>'}</div>`;
   }).join("");
 }

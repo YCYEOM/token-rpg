@@ -733,7 +733,9 @@ margin-top:10px;padding-top:8px}
 <script>
 const $ = id => document.getElementById(id);   // id 암시적 전역은 window.close 등과 충돌한다
 const D = __DATA__, H = D.hero, G = H.gain, K = D.k, SLOTS = D.dungeons, N = SLOTS.length;
-const n = x => Math.round(x).toLocaleString();
+// 1,000 이상은 1.25K · 12.5M · 3.4B 처럼 줄인다 — 커진 숫자가 좁은 팝오버에서 밀리지 않게
+const compact = new Intl.NumberFormat("en", {notation: "compact", maximumSignificantDigits: 3});
+const n = x => Math.abs(x) < 1000 ? String(Math.round(x)) : compact.format(x);
 // 원정은 초당 소수점 단위로 쌓인다 — 정수로 표시하면 멈춘 것처럼 보인다
 const nf = x => x < 1000 ? x.toFixed(2) : n(x);
 const MULTIPROV = (D.providers || []).length > 1;

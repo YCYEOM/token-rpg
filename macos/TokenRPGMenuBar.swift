@@ -257,6 +257,8 @@ private func runTokenRPG(_ args: [String]) -> Data {
     return data
 }
 
+/// 1,000 이상은 게임 화면과 같이 1.25K · 47.5M 으로 줄인다
 private func format(_ value: Int) -> String {
-    NumberFormatter.localizedString(from: NSNumber(value: value), number: .decimal)
+    value.formatted(.number.notation(.compactName).precision(.significantDigits(1...3))
+                        .locale(Locale(identifier: "en")))
 }

@@ -5,7 +5,7 @@
 따라서 막힌 스테이지는 토큰을 더 쓰면 반드시 넘을 수 있다.
 """
 import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, webbrowser
-import http.server, threading, urllib.request
+import http.server, threading, time, urllib.request
 from datetime import datetime, timezone
 
 __version__ = "0.3.0"
@@ -1296,10 +1296,21 @@ def cmd_open(args):
 
 def cmd_serve(args):
     """메뉴 막대 앱이 띄우는 서버. 앱이 끝날 때 함께 끝난다."""
-    try:
-        srv = make_server()
-    except OSError:
-        return 0 if server_running() else 1     # 이미 떠 있는 우리 서버면 그걸 쓴다
+    srv = None
+    for _ in range(10):                 # 앱을 다시 켜면 이전 서버가 막 내려가는 중일 수 있다
+        try:
+            srv = make_server()
+            break
+        except OSError:
+            time.sleep(0.5)
+    if srv is None:
+        return 0 if server_running() else 1     # token-rpg open 이 띄운 우리 서버면 그걸 쓴다
+    parent = os.getppid()
+    def watch():                        # 앱이 강제 종료돼도(applicationWillTerminate 없음) 고아로 남지 않게
+        while os.getppid() == parent:
+            time.sleep(2)
+        os._exit(0)
+    threading.Thread(target=watch, daemon=True).start()
     srv.serve_forever()
     return 0
 

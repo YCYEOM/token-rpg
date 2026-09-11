@@ -115,6 +115,7 @@ TRAIT_CRIT = 2.0     # '예지' 1레벨당 치명타 %p
 # 게임을 시작하기 전에 쓴 토큰은 세지 않는다 (높은 레벨로 시작해도 몰아서 환생 못 함).
 REBIRTH_EXP = 1_000_000
 REBIRTH_CAP = 3      # 기운은 3회분까지만 쌓인다 — 며칠 쉬고 와도 한 번에 몰아치지 못하게
+REBIRTH_SOUL = 0.02  # 환생 1회마다 얻는 혼 +2% (선형 누적). 옛 축복(판마다 ATK+30%·혼+50% 등)을 대신한다
 
 # 원정(방치 수입): 클리어한 가장 깊은 스테이지를 자동 반복해 혼을 캔다.
 # 초당 수확 = soulOf(최고 클리어) / IDLE_DIV. 8시간이면 환생 1회분 언저리 =
@@ -536,7 +537,7 @@ def simulate(h, n_slots, rebirths=40):
     for r in range(rebirths + 1):
         g = reach(h, tr)
         rows.append((r, g, (g - 1) // n_slots + 1, souls, sum(tr.values())))
-        souls += sum(round(i ** SOUL_EXP) for i in range(1, g + 1))
+        souls += sum(round(i ** SOUL_EXP * (1 + REBIRTH_SOUL * r)) for i in range(1, g + 1))
         for _ in range(5000):
             k = next(cyc)
             c = trait_cost(tr.get(k, 0))
@@ -587,6 +588,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tcrit": TRAIT_CRIT,
                   "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
+                  "rbSoul": REBIRTH_SOUL,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX}}
     out = out or game_path()
@@ -669,7 +671,7 @@ margin-top:10px;padding-top:8px}
     <div class="bar"><i id="xpbar"></i></div>
     <div class="row"><span class="dim" id="exp"></span><span class="dim" id="tonext"></span></div>
     <div class="sheet" id="sheet"></div>
-    <div id="bless" style="margin-top:6px;font-size:12px"></div>
+    <div id="rbBonus" style="margin-top:6px;font-size:12px"></div>
   </div>
 </div>
 
@@ -743,7 +745,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, bless:null, blessOffer:[], rbExp:null, farm:0});
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, rbExp:null, farm:0});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -752,7 +754,8 @@ let rev = 0, sync = Promise.resolve();          // 쓰기를 한 줄로 세워 r
 const note = t => { $("expedBanner").innerHTML = `<div class="banner">${t}</div>`; };
 const adopt = d => { rev = d.rev; save = Object.assign(fresh(), d.save || {}); fill(); };
 // 옛 저장에는 새로 생긴 스탯 칸(cdmg 등)이 없다 — 비어 있으면 계산이 전부 NaN 이 된다
-function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; save.traits = {...f.traits, ...save.traits}; }
+function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; save.traits = {...f.traits, ...save.traits};
+                 delete save.bless; delete save.blessOffer; }   // 없어진 축복 칸은 저장에서 치운다
 const pull = async () => {
   const r = await fetch("save", {cache: "no-store"});
   if (!r.ok) throw new Error("save " + r.status);
@@ -778,7 +781,7 @@ const boss = g => { const p = Math.pow(K.step, g-1); return {
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
   dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9) }; };
 const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul
-                                * (1 + relicSum("soul")/100) * (1 + blessOf("soul")));
+                                * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths));
 const costOf = lv => Math.round(K.ck * Math.pow(K.cmul, lv));
 // 환생 기운 = 마지막 환생 이후 새로 쓴 토큰 / K.rbExp. 상한(K.rbCap회분)을 넘은 몫은 버린다
 const rbBase = () => Math.max(save.rbExp ?? H.exp, H.exp - K.rbCap * K.rbExp);
@@ -810,7 +813,7 @@ const tokenMul = () => 1 + Math.min(K.idleTokenMax,
   Math.max(0, H.exp - save.exped.seenExp) / K.idleTokenDiv);
 const idleRate = () => {                      // 초당 혼
   const g = save.best;          // 역대 최고 — 환생해도 원정은 여기서 계속 캔다
-  return g ? soulOf(g) / K.idleDiv * tokenMul() * (1 + blessOf("exped")) : 0;
+  return g ? soulOf(g) / K.idleDiv * tokenMul() : 0;
 };
 const idleSecs = () => Math.min(CAP_S, Math.max(0, (Date.now() - save.exped.since) / 1000));
 const pending  = () => idleRate() * idleSecs();
@@ -822,13 +825,13 @@ const points     = () => H.level * K.ptPerLevel + save.traits.pt * K.tpt;
 const used       = () => STATS.reduce((s,[k]) => s + save.alloc[k], 0);
 const left       = () => points() - used();
 // 최종 스탯 = (토큰이 준 기본값 + 배분) x 환생 특성 배율
-// 유물(영구)과 축복(이번 판)이 마지막에 곱해진다
+// 유물(영구)이 마지막에 곱해진다
 // 치명타율은 K.critCap 까지, 넘친 %p 는 치명타 피해로 간다
-const critRaw = () => H.crit + save.alloc.crit*G.crit + save.traits.crit*K.tcrit + relicSum("crit") + blessOf("crit");
+const critRaw = () => H.crit + save.alloc.crit*G.crit + save.traits.crit*K.tcrit + relicSum("crit");
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? K.cdmgBase + save.alloc.cdmg*G.cdmg + save.traits.cdmg*K.tcdmg + Math.max(0, critRaw() - K.critCap)
   : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k])
-    * (1 + relicSum(k)/100) * (1 + blessOf(k));
+    * (1 + relicSum(k)/100);
 
 // 카드 접기 — 접어 둔 카드는 이 브라우저(창)에 기억한다. 저장 파일과는 무관
 const FOLD = "trpg.fold";
@@ -915,7 +918,7 @@ function drawRebirth(){
        환생 1회에 기운 하나 — AI 툴로 새로 쓴 토큰 ${n(K.rbExp)}마다 하나씩, ${K.rbCap}개까지 쌓인다.
        클리어 기록${save.auto ? "" : "과 스탯 배분"}을 버리고 1층부터 다시 시작한다.
        영구 특성·혼·유물·원정(역대 최고 ${save.best || 0}스테이지 기준)은 그대로 남는다.
-       환생하면 이번 판 축복을 셋 중 하나 고른다.
+       환생할 때마다 얻는 혼이 영구히 +${K.rbSoul * 100}%씩 는다 (지금 +${Math.round(K.rbSoul * save.rebirths * 100)}%).
        ${!save.cleared.length ? "먼저 스테이지를 하나 이상 클리어해라." : ch ? "" : "기운이 없다 — 토큰을 더 쓰면 찬다."}</div>`;
   if (can) $("rbBtn").onclick = () => {
     if (!rbArmed) { rbArmed = true; drawRebirth(); return; }
@@ -926,7 +929,6 @@ function drawRebirth(){
     save.cleared = []; STATS.forEach(([k]) => save.alloc[k] = 0);
     // 자동 도전 중이면 직전 배분을 다시 건다. 포인트는 레벨·각성에서 오므로 환생해도 줄지 않는다.
     if (save.auto) STATS.forEach(([k]) => save.alloc[k] = prev[k]);
-    save.bless = null; save.blessOffer = pick3();          // 이번 판 축복은 셋 중 하나
     put(); drawAll(); window.scrollTo({top:0, behavior:"smooth"});
   };
 }
@@ -1212,31 +1214,14 @@ const upOdds = r => RARITY.slice(r + 1).reduce((s, x) => s + x[1], 0);
       목록의 ↑ 는 다음 유물이 지금보다 높은 등급일 확률.</div></details>`;
 }
 
-// ── 환생 축복: 환생할 때마다 셋 중 하나를 골라 이번 판에만 건다. 같은 반복에 선택지를 준다.
-const BLESS = {atk: ["전사의 축복", "ATK +30%", 0.3], hp: ["거인의 축복", "HP +40%", 0.4],
-               dfn: ["수호의 축복", "DEF +40%", 0.4], crit: ["예리함", "CRIT +8%p", 8],
-               soul: ["수확", "얻는 혼 +50%", 0.5], exped: ["원정대", "원정 생산 +50%", 0.5]};
-const blessOf = k => save.bless === k && BLESS[k] ? BLESS[k][2] : 0;
-const pick3 = () => {
-  const k = Object.keys(BLESS);
-  for (let i = k.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [k[i], k[j]] = [k[j], k[i]]; }
-  return k.slice(0, 3);
-};
-function drawBless(){
-  const offer = (save.blessOffer || []).filter(k => BLESS[k]);
-  if (offer.length) {
-    $("bless").innerHTML = '<span class="soul">축복을 하나 골라라 — 이번 판 동안 유지</span><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">' +
-      offer.map(k => `<button data-b="${k}" class="rb">${BLESS[k][0]}<br><span style="font-size:11px">${BLESS[k][1]}</span></button>`).join("") + "</div>";
-    $("bless").querySelectorAll("button").forEach(b => b.onclick = () => {
-      save.bless = b.dataset.b; save.blessOffer = []; put(); drawAll();
-    });
-  } else {
-    $("bless").innerHTML = BLESS[save.bless]
-      ? `<span class="dim">이번 판 축복</span> <span class="soul">${BLESS[save.bless][0]} · ${BLESS[save.bless][1]}</span>` : "";
-  }
+// ── 환생 보너스: 환생할 때마다 얻는 혼(환생·원정·미션·유물 중복)이 K.rbSoul 씩 영구히 는다
+function drawRbBonus(){
+  $("rbBonus").innerHTML = save.rebirths
+    ? `<span class="dim">환생 보너스</span> <span class="soul">얻는 혼 +${Math.round(K.rbSoul * save.rebirths * 100)}%</span>
+       <span class="dim">(환생마다 +${K.rbSoul * 100}%)</span>` : "";
 }
 
-const drawAll = () => { drawHero(); drawBless(); drawMissions(); drawExped(); drawStages(); drawRelics(); };
+const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawExped(); drawStages(); drawRelics(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 const dmgOf = (a, d, crit) =>

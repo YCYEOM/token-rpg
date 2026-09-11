@@ -6,7 +6,7 @@
 """
 import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, webbrowser
 import http.server, threading, time, urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 __version__ = "0.3.0"
 
@@ -152,10 +152,18 @@ def _lines(path):
         return
 
 
+def _day(ts):
+    """ISO 타임스탬프 -> 로컬 날짜. '오늘' 미션이 UTC 가 아니라 내 시간 자정에 바뀌도록."""
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone().date().isoformat()
+    except ValueError:
+        return str(ts)[:10]
+
+
 def read_claude(path):
     """Claude Code: ~/.claude/projects/<프로젝트>/<세션>.jsonl
     message.usage 를 읽고 message.id 로 중복(재시도·사이드체인)을 제거한다."""
-    agg, days, models, seen = collections.Counter(), set(), collections.Counter(), set()
+    agg, days, models, seen = collections.Counter(), collections.Counter(), collections.Counter(), set()
     for line in _lines(path):
         if '"usage"' not in line:
             continue
@@ -179,8 +187,9 @@ def read_claude(path):
         agg["calls"] += 1
         models[msg.get("model") or "unknown"] += 1
         ts = d.get("timestamp") or ""
-        if ts:
-            days.add(ts[:10])
+        if ts:                          # 날짜별 사용량 (미션용) — 자정을 넘긴 세션도 날짜대로 나뉜다
+            days[_day(ts)] += (u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+                               + u.get("output_tokens", 0))
     proj = os.path.basename(os.path.dirname(path))
     return agg, proj, days, models
 
@@ -199,7 +208,8 @@ def read_codex(path):
     (last_token_usage 를 전부 더해도 같은 값이 나온다.)
     프로젝트 이름은 session_meta.payload.cwd 의 마지막 경로 조각.
     """
-    last, days, models, cwd, n_events = None, set(), collections.Counter(), None, 0
+    last, days, models, cwd, n_events = None, collections.Counter(), collections.Counter(), None, 0
+    seen_v = 0
     for line in _lines(path):
         if '"token_count"' not in line and '"session_meta"' not in line:
             continue
@@ -221,9 +231,13 @@ def read_codex(path):
         tot = info.get("total_token_usage")
         if isinstance(tot, dict):
             last = tot
-        ts = d.get("timestamp") or ""
-        if ts:
-            days.add(str(ts)[:10])
+            # 누적값이 늘어난 만큼을 그 이벤트의 날짜에 준다 -> 날짜별 사용량 (미션용)
+            v = (tot.get("input_tokens", 0) + tot.get("cache_write_input_tokens", 0)
+                 + tot.get("output_tokens", 0)) or tot.get("total_tokens", 0)
+            ts = d.get("timestamp") or ""
+            if ts and v > seen_v:
+                days[_day(ts)] += v - seen_v
+            seen_v = max(seen_v, v)
 
     agg = collections.Counter()
     if last:
@@ -237,7 +251,7 @@ def read_codex(path):
             agg["input"] = last.get("total_tokens", 0)
         agg["calls"] = n_events
     if not agg["input"] and not agg["output"]:
-        return collections.Counter(), "codex", set(), models
+        return collections.Counter(), "codex", collections.Counter(), models
     name = os.path.basename((cwd or "").rstrip("/")) or "codex"
     return agg, name, days, models
 
@@ -263,7 +277,7 @@ def read_gemini(path):
             continue
         if isinstance(d.get("tokens"), dict):
             msgs[d.get("id") or len(msgs)] = d
-    agg, days, models = collections.Counter(), set(), collections.Counter()
+    agg, days, models = collections.Counter(), collections.Counter(), collections.Counter()
     for d in msgs.values():
         t = d["tokens"]
         cached = t.get("cached", 0)
@@ -274,9 +288,10 @@ def read_gemini(path):
         agg["calls"] += 1
         models[d.get("model") or "unknown"] += 1
         if d.get("timestamp"):
-            days.add(str(d["timestamp"])[:10])
+            days[_day(d["timestamp"])] += (max(0, t.get("input", 0) - cached) + t.get("tool", 0)
+                                           + t.get("output", 0) + t.get("thoughts", 0))
     if not agg["input"] and not agg["output"]:
-        return collections.Counter(), "gemini", set(), models
+        return collections.Counter(), "gemini", collections.Counter(), models
     proj_dir = os.path.dirname(os.path.dirname(path))
     try:
         with open(os.path.join(proj_dir, ".project_root"), encoding="utf-8") as f:
@@ -325,7 +340,7 @@ def collect(root=None, pid="claude-code", roots=None):
     """한 프로바이더의 로그를 훑어 합계를 낸다."""
     spec = PROVIDERS[pid]
     agg = collections.Counter()
-    days, projects, models = set(), collections.Counter(), collections.Counter()
+    days, projects, models = collections.Counter(), collections.Counter(), collections.Counter()  # days: 날짜 -> 토큰
     files = 0
     for r in ([root] if root else (roots if roots is not None else provider_roots(pid))):
         for path in glob.glob(os.path.join(r, spec["glob"]), recursive=True):
@@ -333,17 +348,17 @@ def collect(root=None, pid="claude-code", roots=None):
             if not a:
                 continue
             files += 1
-            agg.update(a); days |= d; models.update(m)
+            agg.update(a); days.update(d); models.update(m)
             projects[pid + "\t" + proj] += a["input"] + a["output"]
     agg["sessions"] = files
     return agg, projects, models, days
 
 
 def collect_all(cfg=None):
-    """켜져 있는 프로바이더 전부를 합산한다."""
+    """켜져 있는 프로바이더 전부를 합산한다. days = {날짜: {프로바이더: 토큰}}"""
     cfg = cfg if cfg is not None else load_config()
     agg = collections.Counter()
-    projects, models, days, per = collections.Counter(), collections.Counter(), set(), {}
+    projects, models, days, per = collections.Counter(), collections.Counter(), {}, {}
     for pid in PROVIDERS:
         if not cfg.get("providers", {}).get(pid, {}).get("enabled", True):
             continue
@@ -353,7 +368,9 @@ def collect_all(cfg=None):
         a, p, m, d = collect(pid=pid, roots=roots)
         if not a.get("calls"):
             continue
-        agg.update(a); projects.update(p); models.update(m); days |= d
+        agg.update(a); projects.update(p); models.update(m)
+        for day, v in d.items():
+            days.setdefault(day, {})[pid] = v
         per[pid] = a["input"] + a["output"]
     return agg, projects, models, days, per
 
@@ -365,12 +382,15 @@ def save_snapshot(root=None, snaps=None):   # root 는 테스트용 단일 경�
     if root:                                # 테스트용 단일 경로
         agg, projects, models, days = collect(root)
         per = {"claude-code": agg["input"] + agg["output"]}
+        days = {k: {"claude-code": v} for k, v in days.items()}
     else:
         agg, projects, models, days, per = collect_all()
+    recent = (datetime.now() - timedelta(days=60)).date().isoformat()   # 스냅샷을 작게 유지
     snap = {"host": socket.gethostname(),
             "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "agg": dict(agg), "projects": dict(projects), "models": dict(models),
-            "days": sorted(days), "providers": per}
+            "days": sorted(days), "providers": per,
+            "daily": {k: v for k, v in days.items() if k >= recent}}
     path = os.path.join(snaps, snap["host"].replace(os.sep, "_") + ".json")
     tmp = path + f".{os.getpid()}.tmp"          # 원자적 교체: 훅이 동시에 돌 수 있다
     with open(tmp, "w", encoding="utf-8") as f:
@@ -384,17 +404,21 @@ def merge(snaps=None):
     snaps = snaps or snap_dir()
     agg, projects, models = collections.Counter(), collections.Counter(), collections.Counter()
     days, hosts, provs = set(), [], {}
+    daily = collections.defaultdict(collections.Counter)      # 날짜 -> 프로바이더 -> 토큰
     for p in sorted(glob.glob(os.path.join(snaps, "*.json"))):
         with open(p, encoding="utf-8") as f:
             snap = json.load(f)
         agg.update(snap["agg"]); projects.update(snap["projects"]); models.update(snap["models"])
         days |= set(snap.get("days", []))
+        for day, per in (snap.get("daily") or {}).items():
+            daily[day].update(per)
         for k, v in (snap.get("providers") or {}).items():
             provs[k] = provs.get(k, 0) + v
         hosts.append((snap["host"], snap["updated"],
                       snap["agg"].get("input", 0) + snap["agg"].get("output", 0)))
     agg["days"] = len(days)
     merge.providers = provs        # 부가 정보 — 호출부가 필요할 때만 본다
+    merge.daily = {d: dict(c) for d, c in sorted(daily.items())}
     return agg, projects, models, hosts
 
 
@@ -543,6 +567,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
             "providers": sorted(getattr(merge, "providers", {}).items(),
                                 key=lambda kv: -kv[1]),
             "models": models.most_common(),
+            "daily": getattr(merge, "daily", {}),
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tcrit": TRAIT_CRIT,
@@ -635,6 +660,11 @@ margin-top:10px;padding-top:8px}
 </div>
 
 <div class="card">
+  <h2>미션 <span class="gold" id="streak"></span></h2>
+  <div id="missions"></div>
+</div>
+
+<div class="card">
   <h2>원정 <span class="soul" id="expedRate"></span></h2>
   <div id="expedBanner"></div>
   <div id="exped"></div>
@@ -686,7 +716,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}, auto:false});
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -981,7 +1011,57 @@ function drawExped(){
   };
 }
 
-const drawAll = () => { drawHero(); drawExped(); drawStages(); };
+// ── 미션: 게임 안 행동이 아니라 실제 사용량(D.daily = 날짜 -> 프로바이더 -> 토큰)으로 채워진다.
+// 저장을 고쳐도 진행도는 못 바꾼다 — 로그에서 build 가 계산한 값이기 때문.
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const daysBack = k => { const d = new Date(); d.setDate(d.getDate() - k); return ymd(d); };
+const dayTok = day => Object.values((D.daily || {})[day] || {}).reduce((a, b) => a + b, 0);
+// 오늘 아직 안 썼으면 어제까지 이어진 연속일을 센다 (오늘 쓰면 이어진다)
+const streak = () => { let s = 0; for (let k = dayTok(daysBack(0)) ? 0 : 1; dayTok(daysBack(k)); k++) s++; return s; };
+const streakMul = () => 1 + Math.min(streak(), 7) * 0.1;
+const nice = x => { const p = Math.pow(10, Math.floor(Math.log10(x)) - 1); return Math.round(x / p) * p; };
+function missions(){
+  // 목표 = 지난 14일 중 쓴 날 평균의 절반 -> 사용량이 적은 사람도 많은 사람도 매일 닿을 수 있다
+  const past = Array.from({length: 14}, (_, i) => dayTok(daysBack(i + 1))).filter(Boolean);
+  const T = nice(Math.max(50000, (past.length ? past.reduce((a, b) => a + b) / past.length : 200000) * 0.5));
+  const today = daysBack(0), dow = (new Date().getDay() + 6) % 7;          // 월요일 = 0
+  const week = Array.from({length: dow + 1}, (_, i) => daysBack(dow - i)), wk = daysBack(dow);
+  const weekTok = week.reduce((s, d) => s + dayTok(d), 0);
+  const reward = m => Math.round(Math.max(50, soulOf(Math.max(1, save.best))) * m * streakMul());
+  const tools = Object.keys((D.daily || {})[today] || {}).length;
+  return [
+    {key: "d1:" + today, name: `오늘 토큰 ${n(T)} 쓰기`, cur: dayTok(today), goal: T, souls: reward(2)},
+    MULTIPROV
+      ? {key: "d2:" + today, name: "오늘 AI 툴 2개 이상 쓰기", cur: tools, goal: 2, souls: reward(3)}
+      : {key: "d2:" + today, name: `오늘 토큰 ${n(T * 2)} 쓰기`, cur: dayTok(today), goal: T * 2, souls: reward(3)},
+    {key: "w1:" + wk, name: "이번 주 5일 사용", cur: week.filter(dayTok).length, goal: 5, souls: reward(10)},
+    {key: "w2:" + wk, name: `이번 주 토큰 ${n(T * 5)} 쓰기`, cur: weekTok, goal: T * 5, souls: reward(10)},
+  ];
+}
+function drawMissions(){
+  const s = streak();
+  $("streak").textContent = s ? `연속 ${s}일 · 보상 x${streakMul().toFixed(1)}` : "";
+  const got = k => !!(save.claimed || {})[k];
+  $("missions").innerHTML = missions().map(m => {
+    const done = m.cur >= m.goal;
+    return `<div class="st"><div class="n"><b>${got(m.key) ? "✓ " : ""}${m.name}</b>
+      <div class="bar"><i style="width:${Math.min(100, 100 * m.cur / m.goal)}%;background:var(--gold)"></i></div>
+      <small>${n(Math.min(m.cur, m.goal))} / ${n(m.goal)} · 보상 혼 ${n(m.souls)}</small></div>
+      <button data-k="${m.key}" ${done && !got(m.key) ? "" : "disabled"}>${
+        got(m.key) ? "받음" : done ? "받기" : "진행 중"}</button></div>`;
+  }).join("") + `<div class="dim" style="font-size:11px;margin-top:6px">실제 사용량으로 채워진다.
+    Claude Code 응답마다, 메뉴 막대 앱은 5분마다 갱신. 연속 사용일마다 보상 +10% (최대 7일).</div>`;
+  $("missions").querySelectorAll("button[data-k]").forEach(b => b.onclick = () => {
+    const m = missions().find(x => x.key === b.dataset.k);
+    if (!m || m.cur < m.goal || got(m.key)) return;
+    // 2주 지난 수령 기록은 버린다 — 저장이 끝없이 커지지 않게
+    save.claimed = Object.fromEntries(Object.entries(save.claimed || {})
+      .filter(([k]) => k.split(":")[1] >= daysBack(14)));
+    save.claimed[m.key] = 1; save.souls += m.souls; put(); drawAll();
+  });
+}
+
+const drawAll = () => { drawHero(); drawMissions(); drawExped(); drawStages(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 const dmgOf = (a, d, crit) =>
@@ -1395,6 +1475,7 @@ def cmd_status(args):
         "providers": providers,
         "projects": len(projects),
         "days": len(days),
+        "today": sum(days.get(datetime.now().date().isoformat(), {}).values()),
         "gamePath": game_path(),
     }
     print(json.dumps(payload, ensure_ascii=False))
@@ -1475,7 +1556,8 @@ def demo():
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "proj"))
-        rec = {"timestamp": "2026-01-01T00:00:00Z", "message": {"id": "a", "model": "claude-opus-5",
+        rec = {"timestamp": datetime.now(timezone.utc).isoformat(),   # 스냅샷은 최근 60일만 남긴다
+               "message": {"id": "a", "model": "claude-opus-5",
                "usage": {"input_tokens": 10, "output_tokens": 20, "cache_creation_input_tokens": 5,
                          "cache_read_input_tokens": 100, "output_tokens_details": {"thinking_tokens": 7}}}}
         with open(os.path.join(d, "proj", "s.jsonl"), "w") as f:
@@ -1483,12 +1565,14 @@ def demo():
         agg, projects, _, days = collect(d)
         assert agg["calls"] == 1 and agg["input"] == 15 and agg["output"] == 20
         assert agg["thinking"] == 7 and len(days) == 1 and projects["claude-code\tproj"] == 35
+        assert sum(days.values()) == 35, dict(days)             # 날짜별 합 = EXP 기여
         snaps = os.path.join(d, "snaps")
         _, s1 = save_snapshot(d, snaps)
         with open(os.path.join(snaps, "otherpc.json"), "w") as f:
             json.dump({**s1, "host": "otherpc"}, f)
         m, mp, _, hs = merge(snaps)
         assert m["input"] == 30 and mp["claude-code\tproj"] == 70 and m["days"] == 1 and len(hs) == 2
+        assert [sum(v.values()) for v in merge.daily.values()] == [70], merge.daily   # 기기 합산
 
     # 저장 서버: 오래된 rev 의 쓰기·깨진 파일 덮어쓰기·다른 Host·JSON 아닌 쓰기는 거부한다
     with tempfile.TemporaryDirectory() as d:
@@ -1534,7 +1618,7 @@ def demo():
         cx = os.path.join(d, "2026", "09", "10")
         os.makedirs(cx)
         def _tc(inp, cached, out, reason, tot):
-            return json.dumps({"timestamp": "2026-09-10T00:00:00Z", "type": "event_msg",
+            return json.dumps({"timestamp": "2026-09-10T12:00:00Z", "type": "event_msg",
                 "payload": {"type": "token_count", "info": {
                     "total_token_usage": {"input_tokens": inp, "cached_input_tokens": cached,
                                           "cache_write_input_tokens": 0, "output_tokens": out,
@@ -1548,7 +1632,7 @@ def demo():
         a1, proj, days, _ = read_codex(cum)
         assert (a1["input"], a1["output"]) == (250, 25), f"누적 처리 실패: {dict(a1)}"
         assert (a1["cache_read"], a1["thinking"]) == (150, 8), dict(a1)
-        assert a1["calls"] == 2 and proj == "myproj" and days == {"2026-09-10"}
+        assert a1["calls"] == 2 and proj == "myproj" and dict(days) == {"2026-09-10": 275}, dict(days)
 
         # 세부 항목이 비고 total 만 있는 세션 (실제 로그에 존재)
         deg = os.path.join(cx, "rollout-deg.jsonl")
@@ -1598,7 +1682,7 @@ def demo():
         ag, gproj, gdays, _ = read_gemini(os.path.join(gs, "session-a.jsonl"))
         assert (ag["input"], ag["output"]) == (62 + 50, 15 + 4), f"Gemini 합산 실패: {dict(ag)}"
         assert (ag["cache_read"], ag["thinking"], ag["calls"]) == (40, 5, 2), dict(ag)
-        assert gproj == "gproj" and gdays == {"2026-09-10"}, (gproj, gdays)
+        assert gproj == "gproj" and dict(gdays) == {"2026-09-10": 131}, (gproj, dict(gdays))
         agg, projects, _, _ = collect(pid="gemini", roots=[gt])
         assert projects["gemini\tgproj"] == 131 and agg["sessions"] == 1, (dict(agg), dict(projects))
 

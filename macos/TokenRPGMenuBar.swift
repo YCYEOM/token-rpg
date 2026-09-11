@@ -84,7 +84,8 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate {
         }
         button.title = " Lv.\(h.level) \(Int(h.pct))%"
         let total = status?.providers?.reduce(0) { $0 + $1.tokens } ?? 0
-        button.toolTip = "\(h.emoji) \(h.title) Lv.\(h.level) (\(String(format: "%.1f", h.pct))%)\n"
+        button.toolTip = "오늘 \(format(status?.today ?? 0)) 토큰\n"
+            + "\(h.emoji) \(h.title) Lv.\(h.level) (\(String(format: "%.1f", h.pct))%)\n"
             + "다음 레벨까지 \(format(h.toNext)) EXP\n누적 \(format(total)) 토큰"
     }
 
@@ -118,6 +119,7 @@ private struct Provider: Decodable {
 private struct Status: Decodable {
     let hero: Hero?
     let providers: [Provider]?
+    let today: Int?
     let gamePath: String?
 }
 

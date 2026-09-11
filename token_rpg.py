@@ -692,7 +692,7 @@ margin-top:10px;padding-top:8px}
 </details>
 
 <details class="card" data-k="relics" open><summary><h2>유물 도감 <span class="gold" id="relicCount"></span></h2></summary>
-  <div id="relicNews"></div><div id="relics"></div></details>
+  <div id="relicNews"></div><div id="relicOdds"></div><div id="relics"></div></details>
 
 <details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
   <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
@@ -1170,9 +1170,30 @@ function drawRelics(){
     return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
         text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${s.name}${
         MULTIPROV ? ` <span class="dim">${s.prov}</span>` : ""}</span>${relicOk(r)
-      ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
+      ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}${
+          r.r < RARITY.length - 1 ? ` <span class="dim">↑${upOdds(r.r)}%</span>` : ""}</span>`
       : '<span class="dim">?</span>'}</div>`;
   }).join("");
+}
+
+// 유물이 나왔을 때 지금 등급보다 높을 확률
+const upOdds = r => RARITY.slice(r + 1).reduce((s, x) => s + x[1], 0);
+// 등급·확률표 — 한 번만 그린다 (drawRelics 가 매 판 다시 그리면 열어 둔 표가 닫힌다)
+{
+  const pct = v => +v.toPrecision(2) + "%";
+  const cell = (s, c) => `<span${c ? ` style="color:${c}"` : ""}>${s}</span>`;
+  $("relicOdds").innerHTML = `<details style="margin-bottom:8px;font-size:11px">
+    <summary class="dim" style="cursor:pointer">등급·확률표</summary>
+    <div style="display:grid;grid-template-columns:repeat(6,auto);gap:2px 12px;justify-content:start;margin-top:6px;white-space:nowrap">
+      ${["등급", "등급 확률", "첫 격파", "재격파", "스탯·혼", "CRIT"].map(h => cell(h, "var(--dim)")).join("")}
+      ${RARITY.map(([nm, p, c], r) => [cell(nm, c), cell(p + "%"), cell(pct(RELIC_FIRST * p)),
+          cell(pct(RELIC_AGAIN * p)), cell("+" + AFFIX.atk[1] * 2 ** r + "%"),
+          cell("+" + AFFIX.crit[1] * 2 ** r + "%p")].join("")).join("")}
+    </div>
+    <div class="dim" style="margin-top:4px">첫 격파·재격파 = 한 판 이겼을 때 그 등급이 나올 확률.
+      효과는 ATK·HP·DEF·혼(%) 또는 CRIT(%p) 중 무작위 하나.
+      던전마다 유물은 하나 — 더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.
+      목록의 ↑ 는 다음 유물이 지금보다 높은 등급일 확률.</div></details>`;
 }
 
 // ── 환생 축복: 환생할 때마다 셋 중 하나를 골라 이번 판에만 건다. 같은 반복에 선택지를 준다.

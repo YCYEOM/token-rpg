@@ -107,6 +107,12 @@ SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP
 TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
 TRAIT_CRIT = 2.0     # '예지' 1레벨당 치명타 %p
 
+# 환생 기운: 환생 1회에 마지막 환생 이후 새로 쓴 토큰(EXP)이 이만큼 필요하다.
+# 진행 속도를 실제 사용량에 묶는다 — 하루 150~250만 쓰면 하루 2회 안팎, 1층(환생 5~6회)에 2~3일.
+# 게임을 시작하기 전에 쓴 토큰은 세지 않는다 (높은 레벨로 시작해도 몰아서 환생 못 함).
+REBIRTH_EXP = 1_000_000
+REBIRTH_CAP = 3      # 기운은 3회분까지만 쌓인다 — 며칠 쉬고 와도 한 번에 몰아치지 못하게
+
 # 원정(방치 수입): 클리어한 가장 깊은 스테이지를 자동 반복해 혼을 캔다.
 # 초당 수확 = soulOf(최고 클리어) / IDLE_DIV. 8시간이면 환생 1회분 언저리 =
 # 자는 동안 벌어두는 보조 수입이지, 환생을 대체하지는 않는다.
@@ -550,12 +556,13 @@ def balance(h, ds):
         if kill >= die and g > n:
             break
     print(f"\n[환생 진행] 특성 비용 {COST_K}x{COST_MUL}^lv, 효과 x{TRAIT_MUL}/lv")
-    print(f"{'환생':>4} {'스테이지':>8} {'층':>3} {'보유혼':>10} {'특성합':>6}")
+    print(f"환생 1회 = 새 토큰 {REBIRTH_EXP:,} (최대 {REBIRTH_CAP}회분 적립)")
+    print(f"{'환생':>4} {'스테이지':>8} {'층':>3} {'보유혼':>10} {'특성합':>6} {'필요토큰':>12}")
     prev = None
     for r, g, fl, souls, tl in simulate(h, n):
         mark = "   <<< 새 층 진입" if prev is not None and fl > prev else ""
         if prev is None or fl != prev or r % 8 == 0:
-            print(f"{r:>4} {g:>8} {fl:>3} {souls:>10} {tl:>6}{mark}")
+            print(f"{r:>4} {g:>8} {fl:>3} {souls:>10} {tl:>6} {r * REBIRTH_EXP:>12,}{mark}")
         prev = fl
 
 
@@ -571,7 +578,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tcrit": TRAIT_CRIT,
-                  "ptPerLevel": PT_PER_LEVEL,
+                  "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX}}
     out = out or game_path()
@@ -727,7 +734,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, bless:null, blessOffer:[]});
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, bless:null, blessOffer:[], rbExp:null});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -762,6 +769,11 @@ const boss = g => { const p = Math.pow(K.step, g-1); return {
 const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul
                                 * (1 + relicSum("soul")/100) * (1 + blessOf("soul")));
 const costOf = lv => Math.round(K.ck * Math.pow(K.cmul, lv));
+// 환생 기운 = 마지막 환생 이후 새로 쓴 토큰 / K.rbExp. 상한(K.rbCap회분)을 넘은 몫은 버린다
+const rbBase = () => Math.max(save.rbExp ?? H.exp, H.exp - K.rbCap * K.rbExp);
+const rbCharges = () => Math.floor((H.exp - rbBase()) / K.rbExp);
+// 옛 저장(기운 없음)이나 지금보다 큰 값(프로바이더를 끈 경우)은 지금부터 센다 — 소급하지 않는다
+const fixRb = () => { if (typeof save.rbExp !== "number" || save.rbExp > H.exp) save.rbExp = H.exp; };
 
 // 특성 lv..lv+cnt-1 을 한 번에 사는 총비용
 const bulkCost = (k, cnt) => {
@@ -874,20 +886,26 @@ function drawHero(){
 let rbArmed = false;   // 환생은 되돌릴 수 없다 -> 두 번 눌러야 실행 (모달 대신)
 function drawRebirth(){
   const gain = save.cleared.reduce((s,g) => s + soulOf(g), 0);
-  const can = save.cleared.length > 0;
+  const ch = rbCharges(), can = save.cleared.length > 0 && ch > 0;
+  const toNext = K.rbExp - (H.exp - rbBase()) % K.rbExp;
   $("rbBox").innerHTML =
     `<button class="big rb" id="rbBtn" ${can?"":"disabled"}>${
        rbArmed ? `정말 환생한다 — ${floorNow()}층까지의 진행을 버린다 (다시 누르면 실행)`
-               : `환생 — 혼 ${n(gain)} 획득`}</button>
+               : `환생 — 혼 ${n(gain)} 획득 · 기운 ${ch}/${K.rbCap}`}</button>
+     <div class="bar" style="margin-top:8px"><i style="width:${ch >= K.rbCap ? 100 : 100 - toNext / K.rbExp * 100}%;background:var(--soul)"></i></div>
+     <div class="row"><span class="soul">환생 기운 ${ch}/${K.rbCap}</span>
+       <span class="dim">${ch >= K.rbCap ? "가득 참" : "다음 기운까지 토큰 " + n(toNext)}</span></div>
      <div class="dim" style="font-size:11px;margin-top:6px">
+       환생 1회에 기운 하나 — AI 툴로 새로 쓴 토큰 ${n(K.rbExp)}마다 하나씩, ${K.rbCap}개까지 쌓인다.
        클리어 기록${save.auto ? "" : "과 스탯 배분"}을 버리고 1층부터 다시 시작한다.
        영구 특성·혼·유물·원정(역대 최고 ${save.best || 0}스테이지 기준)은 그대로 남는다.
        환생하면 이번 판 축복을 셋 중 하나 고른다.
-       ${can?"":"먼저 스테이지를 하나 이상 클리어해라."}</div>`;
+       ${!save.cleared.length ? "먼저 스테이지를 하나 이상 클리어해라." : ch ? "" : "기운이 없다 — 토큰을 더 쓰면 찬다."}</div>`;
   if (can) $("rbBtn").onclick = () => {
     if (!rbArmed) { rbArmed = true; drawRebirth(); return; }
     rbArmed = false;
     const prev = {...save.alloc};
+    save.rbExp = rbBase() + K.rbExp;                        // 기운 하나 소모
     save.souls += gain; save.rebirths++;
     save.cleared = []; STATS.forEach(([k]) => save.alloc[k] = 0);
     // 자동 도전 중이면 직전 배분을 다시 건다. 포인트는 레벨·각성에서 오므로 환생해도 줄지 않는다.
@@ -930,7 +948,7 @@ $("saveLoad").onclick = () => {
   }
   if (!loadArmed) { loadArmed = true; $("saveMsg").textContent = "지금 저장을 덮어쓴다 — 다시 누르면 실행"; return; }
   loadArmed = false;
-  Object.assign(save, s); put(); drawAll();
+  Object.assign(save, s); fixRb(); put(); drawAll();
   $("saveMsg").textContent = `가져왔다 — 환생 ${save.rebirths}회, 혼 ${n(save.souls)}`;
 };
 
@@ -1244,6 +1262,7 @@ $("close").onclick = () => $("fight").classList.remove("on");
   }
   if (!save.best && maxCleared()) { save.best = maxCleared(); put(); }   // 옛 저장본 이관
   if (!save.exped.seenExp) { save.exped.seenExp = H.exp; put(); }
+  if (typeof save.rbExp !== "number" || save.rbExp > H.exp) { fixRb(); put(); }
   drawAll();
 
   // 돌아왔을 때 그동안의 성과를 알려준다

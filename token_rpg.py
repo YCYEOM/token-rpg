@@ -739,7 +739,7 @@ const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력
                 ["cdmg","치명타 피해","CDMG"]];
 const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
                 ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],["crit","예지","CRIT +"+K.tcrit+"%p/lv"],
-                ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],["pt","각성","배분 +"+K.tpt+"pt/lv"]];
+                ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,pt:0},

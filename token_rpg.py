@@ -1537,6 +1537,18 @@ def cmd_serve(args):
     return 0
 
 
+def _exped_full(snaps=None):
+    """메뉴 막대 배지용: 원정이 가득 찼는가. JS 와 같은 규칙 — 깬 스테이지가 있어야 돌고,
+    마지막 수령 뒤 IDLE_CAP_H 시간이 지나면 가득."""
+    try:
+        sv = read_save(snaps).get("save") or {}
+    except (OSError, ValueError):
+        return False
+    since = (sv.get("exped") or {}).get("since")
+    return (bool(sv.get("best")) and isinstance(since, (int, float))
+            and time.time() * 1000 - since >= IDLE_CAP_H * 3600 * 1000)
+
+
 def cmd_status(args):
     """메뉴 막대 앱처럼 사람이 아닌 클라이언트가 읽을 수 있는 현재 요약.
 
@@ -1561,6 +1573,7 @@ def cmd_status(args):
         "projects": len(projects),
         "days": len(days),
         "today": sum(days.get(datetime.now().date().isoformat(), {}).values()),
+        "expedFull": _exped_full(),
         "gamePath": game_path(),
     }
     print(json.dumps(payload, ensure_ascii=False))
@@ -1672,6 +1685,14 @@ def demo():
             raise AssertionError("깨진 저장 파일을 덮어썼다")
         except ValueError:
             pass
+        os.remove(save_path(d))
+
+        # 메뉴 막대 ⛏ 배지: 깬 스테이지가 있고 마지막 수령 뒤 IDLE_CAP_H 가 지났을 때만
+        assert not _exped_full(d)
+        write_save(0, {"best": 5, "exped": {"since": time.time() * 1000}}, d)
+        assert not _exped_full(d)
+        write_save(1, {"best": 5, "exped": {"since": (time.time() - IDLE_CAP_H * 3600 - 60) * 1000}}, d)
+        assert _exped_full(d)
         os.remove(save_path(d))
 
         import http.client

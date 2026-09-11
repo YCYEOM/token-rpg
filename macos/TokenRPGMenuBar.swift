@@ -5,8 +5,9 @@ import WebKit
 private let gameURL = URL(string: "http://127.0.0.1:8765/")!
 
 @main
-final class TokenRPGApp: NSObject, NSApplicationDelegate {
+final class TokenRPGApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
+    private var lastStatus: Status?
     private let popover = NSPopover()
     private let game = GameViewController()
     private var server: Process?
@@ -33,6 +34,7 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate {
         button.action = #selector(togglePopover(_:))
 
         popover.behavior = .transient
+        popover.delegate = self
         popover.contentSize = NSSize(width: 420, height: 640)
         popover.contentViewController = game
 
@@ -59,6 +61,7 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            markSeen()
             game.loadIfChanged()
             NSApp.activate(ignoringOtherApps: true)     // 키 입력(⌘C·⌘V)이 팝오버로 가게
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -76,17 +79,37 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate {
 
     private func show(_ status: Status?) {
         guard let button = statusItem.button else { return }
+        lastStatus = status ?? lastStatus
         game.gamePath = status?.gamePath ?? game.gamePath
         guard let h = status?.hero else {
             button.title = ""
             button.toolTip = "Token RPG — 아직 사용 기록이 없다"
             return
         }
-        button.title = " Lv.\(h.level) \(Int(h.pct))%"
+        let defaults = UserDefaults.standard
+        if defaults.integer(forKey: "seenLevel") == 0 { defaults.set(h.level, forKey: "seenLevel") }
+        // 배지: ⬆ 레벨 업(팝오버를 열어 보기 전까지) · ⛏ 원정 가득
+        let leveledUp = h.level > defaults.integer(forKey: "seenLevel")
+        let expedFull = status?.expedFull == true
+        button.title = " Lv.\(h.level) \(Int(h.pct))%" + (leveledUp ? " ⬆" : "") + (expedFull ? " ⛏" : "")
         let total = status?.providers?.reduce(0) { $0 + $1.tokens } ?? 0
-        button.toolTip = "오늘 \(format(status?.today ?? 0)) 토큰\n"
+        var tip = "오늘 \(format(status?.today ?? 0)) 토큰\n"
             + "\(h.emoji) \(h.title) Lv.\(h.level) (\(String(format: "%.1f", h.pct))%)\n"
             + "다음 레벨까지 \(format(h.toNext)) EXP\n누적 \(format(total)) 토큰"
+        if leveledUp { tip += "\n⬆ 레벨 업 — 열어서 새 포인트를 배분해라" }
+        if expedFull { tip += "\n⛏ 원정이 가득 찼다 — 수령해야 다시 쌓인다" }
+        button.toolTip = tip
+    }
+
+    /// 팝오버를 열었으면 레벨 업은 확인한 것으로 본다
+    private func markSeen() {
+        if let level = lastStatus?.hero?.level { UserDefaults.standard.set(level, forKey: "seenLevel") }
+        if lastStatus != nil { show(lastStatus) }
+    }
+
+    // 닫자마자 갱신 — 원정을 수령했으면 ⛏ 가 5분을 기다리지 않고 사라진다
+    func popoverDidClose(_ notification: Notification) {
+        refresh()
     }
 
     // 메뉴 막대 앱은 메인 메뉴가 없어서 팝오버 입력칸에서 ⌘C·⌘V·⌘A 가 동작하지 않는다
@@ -120,6 +143,7 @@ private struct Status: Decodable {
     let hero: Hero?
     let providers: [Provider]?
     let today: Int?
+    let expedFull: Bool?
     let gamePath: String?
 }
 

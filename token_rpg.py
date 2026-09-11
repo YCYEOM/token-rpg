@@ -646,7 +646,9 @@ margin-top:10px;padding-top:8px}
   <div id="rbBox" style="margin-top:14px"></div>
 </div>
 
-<div class="card"><h2 id="floorTitle">던전</h2><div id="stages"></div><div id="wall"></div></div>
+<div class="card"><h2 id="floorTitle">던전</h2>
+  <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
+  <div id="stages"></div><div id="wall"></div></div>
 <div class="card"><h2>합산된 기기</h2><div id="hosts" style="font-size:12px"></div>
   <div id="provs" style="font-size:12px;margin-top:10px"></div></div>
 <div class="card"><h2>저장 코드 — 백업·옮기기</h2>
@@ -684,7 +686,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}});
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:false});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -829,14 +831,17 @@ function drawRebirth(){
        rbArmed ? `정말 환생한다 — ${floorNow()}층까지의 진행을 버린다 (다시 누르면 실행)`
                : `환생 — 혼 ${n(gain)} 획득`}</button>
      <div class="dim" style="font-size:11px;margin-top:6px">
-       클리어 기록과 스탯 배분을 버리고 1층부터 다시 시작한다.
+       클리어 기록${save.auto ? "" : "과 스탯 배분"}을 버리고 1층부터 다시 시작한다.
        영구 특성·혼·원정(역대 최고 ${save.best || 0}스테이지 기준)은 그대로 남는다.
        ${can?"":"먼저 스테이지를 하나 이상 클리어해라."}</div>`;
   if (can) $("rbBtn").onclick = () => {
     if (!rbArmed) { rbArmed = true; drawRebirth(); return; }
     rbArmed = false;
+    const prev = {...save.alloc};
     save.souls += gain; save.rebirths++;
     save.cleared = []; STATS.forEach(([k]) => save.alloc[k] = 0);
+    // 자동 도전 중이면 직전 배분을 다시 건다. 포인트는 레벨·각성에서 오므로 환생해도 줄지 않는다.
+    if (save.auto) STATS.forEach(([k]) => save.alloc[k] = prev[k]);
     put(); drawAll(); window.scrollTo({top:0, behavior:"smooth"});
   };
 }
@@ -878,9 +883,46 @@ $("saveLoad").onclick = () => {
   $("saveMsg").textContent = `가져왔다 — 환생 ${save.rebirths}회, 혼 ${n(save.souls)}`;
 };
 
+// 평균 피해로 따져 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다
+const beatable = b => {
+  const eff = F("atk") * (1 + F("crit")/100);
+  return b.hp / Math.max(1, eff - b.dfn) < F("hp") / Math.max(1, b.atk - F("dfn"));
+};
+
+// ── 자동 도전: 첫 환생 후 해금. 1초에 한 스테이지씩 연출 없이 같은 규칙으로 싸운다.
+let autoMsg = "", autoFailSig = "";
+// 능력치가 그대로면 진 스테이지를 다시 시도하지 않는다 (치명타 운으로 벽을 넘는 반복 방지)
+const statSig = () => STATS.map(([k]) => F(k)).join();
+const autoSay = m => { if (m !== autoMsg) { autoMsg = m; drawAuto(); } };   // 버튼을 매초 갈아엎지 않게
+function drawAuto(){
+  if (!save.rebirths) {
+    $("auto").innerHTML = '<span class="dim" style="font-size:11px">자동 도전 — 첫 환생 후 해금</span>';
+    return;
+  }
+  $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 도전 ${save.auto?"켜짐":"꺼짐"}</button>
+    <span class="dim" style="font-size:11px">${save.auto ? autoMsg : ""}</span>`;
+  $("autoBtn").onclick = () => { save.auto = !save.auto; autoFailSig = ""; autoMsg = ""; put(); drawAuto(); };
+}
+function autoStep(){
+  if (!save.auto || !save.rebirths) return;
+  const base = (floorNow() - 1) * N;
+  const i = SLOTS.findIndex((_, i) => !save.cleared.includes(base + i + 1));
+  if (i < 0) return;
+  const g = base + i + 1, slot = SLOTS[i], b = boss(g);
+  if (!beatable(b)) return autoSay(`${g}스테이지 앞에서 대기 — 능력치를 올려라`);
+  if (autoFailSig === statSig() + "@" + g) return;
+  if (quickFight(b)) {
+    winStage(g); autoMsg = `${g}. ${slot.name} 격파`; drawAll();
+  } else {
+    autoFailSig = statSig() + "@" + g;
+    autoSay(`${g}스테이지 패배 — 능력치가 바뀌면 다시 시도`);
+  }
+}
+
 function drawStages(){
   const fl = floorNow(), base = (fl - 1) * N;
   $("floorTitle").textContent = `던전 — ${fl}층 (전역 ${base+1}~${base+N} 스테이지)`;
+  drawAuto();
   $("stages").innerHTML = "";
   let blocked = null;
   SLOTS.forEach((slot, i) => {
@@ -901,10 +943,7 @@ function drawStages(){
     btn.onclick = () => fightStart(g, slot, b);
     el.appendChild(btn); $("stages").appendChild(el);
     // 평균 피해 기준으로 이길 수 없는 첫 스테이지 = 환생이 필요한 벽
-    if (open && !done && blocked === null) {
-      const eff = F("atk") * (1 + F("crit")/100);
-      if (b.hp / Math.max(1, eff - b.dfn) >= F("hp") / Math.max(1, b.atk - F("dfn"))) blocked = g;
-    }
+    if (open && !done && blocked === null && !beatable(b)) blocked = g;
   });
   $("wall").innerHTML = blocked === null ? "" :
     `<div class="wall">벽: ${blocked}스테이지는 지금 능력치로 넘을 수 없다.
@@ -945,11 +984,30 @@ function drawExped(){
 const drawAll = () => { drawHero(); drawExped(); drawStages(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
+const dmgOf = (a, d, crit) =>
+  Math.max(1, Math.round((a.atk - d.dfn) * (0.85 + Math.random()*0.3) * (crit ? 2 : 1)));
+const newFighters = b => [{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit")},
+                          {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}];
+const winStage = g => { if (!save.cleared.includes(g)) save.cleared.push(g); markBest(g); put(); };
+
+// 연출 없는 즉시 전투 (자동 도전용). 규칙은 fightStart 와 같다.
+function quickFight(b){
+  const [me, foe] = newFighters(b);
+  let myTurn = H.spd >= b.spd;
+  for (let turn = 1; turn <= 200; turn++) {
+    const [a, d] = myTurn ? [me, foe] : [foe, me];
+    d.hp -= dmgOf(a, d, myTurn && Math.random()*100 < me.crit);
+    if (foe.hp <= 0) return true;
+    if (me.hp <= 0) return false;
+    myTurn = !myTurn;
+  }
+  return false;
+}
+
 let timer = null;
 function fightStart(g, slot, b){
   clearInterval(timer);
-  const me  = {hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit")};
-  const foe = {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn};
+  const [me, foe] = newFighters(b);
   $("fh").textContent = H.emoji; $("fb").textContent = slot.emoji; $("fbn").textContent = slot.name;
   $("log").innerHTML = ""; $("close").disabled = true; $("close").textContent = "전투 중…";
   $("fight").classList.add("on");
@@ -960,14 +1018,14 @@ function fightStart(g, slot, b){
     if (++turn > 200) return end(false, me, foe, g, slot, "소모전 — 화력이 부족하다");
     const [a, d, an, tag] = myTurn ? [me, foe, "나", "fb"] : [foe, me, slot.name, "fh"];
     const crit = myTurn && Math.random()*100 < me.crit;
-    const dmg = Math.max(1, Math.round((a.atk - d.dfn) * (0.85 + Math.random()*0.3) * (crit ? 2 : 1)));
+    const dmg = dmgOf(a, d, crit);
     d.hp -= dmg;
     say(`T${turn} ${an} → ${n(dmg)} 피해` + (crit ? " <span class='crit'>치명타!</span>" : ""), crit);
     const el = $(tag); el.classList.remove("hit"); void el.offsetWidth; el.classList.add("hit");
     paint(me, foe);
     if (foe.hp <= 0) return end(true, me, foe, g, slot);
     if (me.hp <= 0) return end(false, me, foe, g, slot,
-      "토큰을 더 벌거나(build.py 재실행) 환생해서 영구 특성을 올려라");
+      "토큰을 더 쓰거나 환생해서 영구 특성을 올려라");
     myTurn = !myTurn;
   }, 380);
 }
@@ -985,8 +1043,7 @@ function end(won, me, foe, g, slot, why){
   clearInterval(timer); paint(me, foe);
   if (won) {
     say(`<span class="win">승리! ${slot.name} 정복. 혼 ${n(soulOf(g))} 예약.</span>`);
-    if (!save.cleared.includes(g)) { save.cleared.push(g); }
-    markBest(g); put();
+    winStage(g);
     if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);
   } else {
@@ -1018,7 +1075,7 @@ $("close").onclick = () => $("fight").classList.remove("on");
 })();
 
 // 보고 있는 동안에도 계속 쌓인다
-setInterval(() => { if (!$("fight").classList.contains("on")) drawExped(); }, 1000);
+setInterval(() => { if (!$("fight").classList.contains("on")) { drawExped(); autoStep(); } }, 1000);
 
 // 다른 창에서 진행했을 수 있다 -> 이 창으로 돌아올 때 최신 저장을 받는다 (전투 중에는 건드리지 않는다)
 window.addEventListener("focus", () => {

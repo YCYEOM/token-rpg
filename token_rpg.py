@@ -523,10 +523,11 @@ TEMPLATE = r"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 :root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--line:#30363d;--gold:#ffd166;
 --hp:#f2545b;--xp:#7ee787;--on:#58a6ff;--soul:#c792ea}
 *{box-sizing:border-box}body{margin:0;padding:20px 14px;background:var(--bg);color:var(--fg);
-font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+font:14px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+font-variant-numeric:tabular-nums}
 .wrap{max-width:680px;margin:0 auto}
 .card{border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px;background:#161b22}
-h2{font-size:12px;color:var(--dim);margin:0 0 12px;text-transform:uppercase;letter-spacing:.08em}
+h2{font-size:12px;color:var(--dim);margin:0 0 12px;letter-spacing:.02em}
 .dim{color:var(--dim)}.gold{color:var(--gold)}.soul{color:var(--soul)}
 .hero{display:flex;gap:14px;align-items:center}
 .face{font-size:56px;line-height:1}
@@ -535,6 +536,8 @@ h2{font-size:12px;color:var(--dim);margin:0 0 12px;text-transform:uppercase;lett
 .bar>i{display:block;height:100%;background:var(--xp);transition:width .35s}
 .bar.hpb>i{background:var(--hp)}
 .row{display:flex;justify-content:space-between;font-size:11px;gap:8px}
+.sheet{display:grid;grid-template-columns:repeat(3,auto);justify-content:start;gap:2px 14px;
+font-size:12px;margin-top:6px}.sheet>span{white-space:nowrap}
 .badge{display:inline-block;border:1px solid var(--line);border-radius:20px;
 padding:0 9px;font-size:11px;margin-right:5px}
 .alloc{display:grid;grid-template-columns:1fr auto auto auto;gap:6px 10px;align-items:center;font-size:13px}
@@ -576,13 +579,13 @@ margin-top:10px;padding-top:8px}
       <span class="badge" id="bFloor"></span><span class="badge soul" id="bSouls"></span></div>
     <div class="bar"><i id="xpbar"></i></div>
     <div class="row"><span class="dim" id="exp"></span><span class="dim" id="tonext"></span></div>
-    <div class="row" style="margin-top:4px"><span id="sheet"></span></div>
+    <div class="sheet" id="sheet"></div>
   </div>
 </div>
 
 <div class="card">
   <h2>스탯 배분 <span class="gold" id="left"></span></h2>
-  <div id="mult" style="margin-bottom:10px;display:flex;gap:6px;align-items:center">
+  <div id="mult" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
     <span class="dim" style="font-size:11px">한 번에</span></div>
   <div class="alloc" id="alloc"></div>
   <div style="margin-top:12px;display:flex;gap:8px">
@@ -606,6 +609,14 @@ margin-top:10px;padding-top:8px}
 <div class="card"><h2 id="floorTitle">던전</h2><div id="stages"></div><div id="wall"></div></div>
 <div class="card"><h2>합산된 기기</h2><div id="hosts" style="font-size:12px"></div>
   <div id="provs" style="font-size:12px;margin-top:10px"></div></div>
+<div class="card"><h2>저장 옮기기</h2>
+  <div class="dim" style="font-size:11px;margin-bottom:6px">브라우저와 메뉴 막대 앱은 저장이 따로다.
+    한쪽에서 저장 코드를 복사해 다른 쪽에 붙여넣고 가져오기. 고친 코드는 거부된다.</div>
+  <textarea id="saveBox" rows="3" spellcheck="false" style="width:100%;background:#0d1117;
+    color:var(--fg);border:1px solid var(--line);border-radius:6px;font:11px ui-monospace,monospace"></textarea>
+  <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+    <button id="saveShow">현재 저장 표시</button><button id="saveLoad">가져오기</button>
+    <span class="dim" id="saveMsg" style="font-size:11px"></span></div></div>
 </div>
 
 <div id="fight"><div class="arena">
@@ -705,12 +716,12 @@ function drawHero(){
   $("bSouls").textContent   = "혼 " + n(save.souls);
   $("soulsHave").textContent = "보유 " + n(save.souls);
   $("sheet").innerHTML = STATS.map(([k,,s]) =>
-    `<span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}</b>${k==="crit"?"%":""}`
-  ).join(" &nbsp; ") + ` &nbsp;<span class="dim">SPD</span> <b>${H.spd}</b>`;
+    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"?"%":""}</b></span>`
+  ).join("") + `<span><span class="dim">SPD</span> <b>${H.spd}</b></span>`;
   $("left").textContent = "남은 " + left() + "pt";
-  $("mult").innerHTML = '<span class="dim" style="font-size:11px">한 번에</span>' +
+  $("mult").innerHTML = '<span class="dim" style="font-size:11px;white-space:nowrap">한 번에</span>' +
     MULTS.map(m => `<button data-mul="${m}" class="${m===mult?"on":""}">${m==="max"?"MAX":"x"+m}</button>`).join("") +
-    '<span class="dim" style="font-size:11px">배분·특성 구입에 함께 적용</span>';
+    '<span class="dim" style="font-size:11px;flex-basis:100%">배분·특성 구입에 함께 적용</span>';
   $("mult").querySelectorAll("button").forEach(b => b.onclick = () => {
     mult = b.dataset.mul === "max" ? "max" : +b.dataset.mul; drawAll();
   });
@@ -767,6 +778,41 @@ function drawRebirth(){
 }
 
 $("reset").onclick = () => { STATS.forEach(([k]) => save.alloc[k]=0); put(); drawAll(); };
+
+// 저장 옮기기: 브라우저 <-> 메뉴 막대 앱. 덮어쓰기는 되돌릴 수 없어 두 번 눌러야 실행
+// 코드 = base64(JSON).체크섬 — 숫자를 손으로 고친 코드를 거른다.
+// ponytail: 솔트가 페이지 안에 있어 작정하면 위조할 수 있고, 로컬 게임이라 개발자도구로도 고칠 수 있다.
+// 막는 대상은 '붙여넣기 전에 숫자 살짝 고치기'. 진짜 막으려면 저장을 서버가 들고 있어야 한다.
+const SALT = "token-rpg/save/v1";
+const sum = s => { let h = 0x811c9dc5;
+  for (const c of SALT + s) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(36); };
+const encodeSave = s => { const j = JSON.stringify(s); return btoa(j) + "." + sum(j); };
+const decodeSave = code => {
+  try { const [b, h] = code.trim().split("."), j = atob(b);
+        return sum(j) === h ? JSON.parse(j) : null; } catch(e) { return null; }
+};
+// 체크섬이 맞아도 규칙상 불가능한 값은 거른다: 음수·소수, 레벨이 준 것보다 많은 배분
+const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.alloc && !!s.exped
+  && [s.souls, s.rebirths, s.best, ...s.cleared, ...Object.values(s.traits), ...Object.values(s.alloc)]
+       .every(v => Number.isInteger(v) && v >= 0)
+  && STATS.reduce((t, [k]) => t + s.alloc[k], 0) <= H.level * K.ptPerLevel + s.traits.pt * K.tpt;
+
+let loadArmed = false;
+$("saveShow").onclick = () => {
+  $("saveBox").value = encodeSave(save); $("saveBox").select();
+  $("saveMsg").textContent = "⌘C 로 복사";
+};
+$("saveLoad").onclick = () => {
+  const s = decodeSave($("saveBox").value);
+  if (!validSave(s)) {
+    loadArmed = false; $("saveMsg").textContent = "저장 코드가 아니거나 수정됐다"; return;
+  }
+  if (!loadArmed) { loadArmed = true; $("saveMsg").textContent = "지금 저장을 덮어쓴다 — 다시 누르면 실행"; return; }
+  loadArmed = false;
+  Object.assign(save, s); put(); drawAll();
+  $("saveMsg").textContent = `가져왔다 — 환생 ${save.rebirths}회, 혼 ${n(save.souls)}`;
+};
 
 function drawStages(){
   const fl = floorNow(), base = (fl - 1) * N;

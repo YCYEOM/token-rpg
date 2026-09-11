@@ -9,7 +9,7 @@ APP="$OUT/Token RPG.app"
 rm -rf "$OUT"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -parse-as-library "$ROOT/macos/TokenRPGMenuBar.swift" -framework Cocoa -o "$APP/Contents/MacOS/TokenRPG"
+swiftc -parse-as-library "$ROOT/macos/TokenRPGMenuBar.swift" -framework Cocoa -framework WebKit -o "$APP/Contents/MacOS/TokenRPG"
 cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/token_rpg.py" "$APP/Contents/Resources/token_rpg.py"
 # swiftc 는 실행 파일만 임시 서명한다. 번들 전체를 다시 봉인하지 않으면

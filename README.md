@@ -116,16 +116,20 @@ token-rpg disable codex                      # 특정 프로바이더 끄기
 | 프로바이더 | 기본 위치 | 상태 |
 |---|---|---|
 | `claude-code` | `~/.claude/projects` | 검증됨 |
-| `codex` | `~/.codex/sessions` | 문서 기준 구현, 실제 로그 미검증 |
+| `codex` | `~/.codex/sessions` | 검증됨 (codex cli 0.153.4) |
+| `gemini` | `~/.gemini/tmp` | 검증됨 (gemini cli 0.59.0) |
 
 Codex CLI는 `cached_input_tokens`·`reasoning_output_tokens`를 남겨 DEF·CRIT까지
-그대로 대응된다. `token_count` 이벤트가 세션 누적인지 회차 증분인지 버전마다
-달라, 파일 안에서 `total_tokens`가 줄지 않으면 누적으로 보고 마지막 값만 센다.
+그대로 대응된다. `token_count` 이벤트의 `total_token_usage`는 세션 누적이라
+파일마다 마지막 값만 센다.
+
+Gemini CLI는 텔레메트리 없이도 세션 로그(`chats/session-*.jsonl`)의 답변마다
+`tokens`(input·output·cached·thoughts)를 남긴다. 답변 단위라 전부 더하고,
+`cached`는 DEF, `thoughts`는 CRIT로 대응된다.
 
 **웹에서 쓴 것은 잡히지 않는다.** ChatGPT·Gemini 웹, Cursor, GitHub Copilot은
 토큰 집계를 서버에서만 하고 로컬에 숫자를 남기지 않는다. CLI 툴을 설치해서
-써야 기록이 생긴다. Gemini CLI는 텔레메트리를 켜야 하고(기본 꺼짐),
-OTel 형식이라 아직 지원하지 않는다.
+써야 기록이 생긴다.
 
 새 툴을 붙이려면 `PROVIDERS`에 "파일 하나를 읽어 토큰 합계를 돌려주는 함수"
 하나만 추가하면 된다. 또는 스냅샷 JSON을 직접 뱉어도 된다:

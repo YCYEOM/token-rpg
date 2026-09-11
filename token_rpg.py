@@ -202,6 +202,50 @@ def read_codex(path):
     return agg, name, days, models
 
 
+def read_gemini(path):
+    """Gemini CLI: ~/.gemini/tmp/<프로젝트>/chats/session-*.jsonl
+
+    실제 로그(cli 0.59.0)로 확인한 구조: 메시지 한 줄마다
+      {"id", "timestamp", "type": "gemini", "model",
+       "tokens": {input, output, cached, thoughts, tool, total}}
+    tokens 는 답변 한 번의 사용량(누적 아님)이라 전부 더한다. 같은 id 가
+    다시 기록되면 마지막 값만 쓴다. total = input + output + thoughts 이고
+    input 은 cached 를 포함한다 -> Claude 기준(입력=캐시 제외, 출력=생각 포함)에 맞춘다.
+    프로젝트 이름은 <프로젝트>/.project_root 에 적힌 경로의 마지막 조각.
+    """
+    msgs = {}
+    for line in _lines(path):
+        if '"tokens"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d.get("tokens"), dict):
+            msgs[d.get("id") or len(msgs)] = d
+    agg, days, models = collections.Counter(), set(), collections.Counter()
+    for d in msgs.values():
+        t = d["tokens"]
+        cached = t.get("cached", 0)
+        agg["input"] += max(0, t.get("input", 0) - cached) + t.get("tool", 0)
+        agg["output"] += t.get("output", 0) + t.get("thoughts", 0)
+        agg["cache_read"] += cached
+        agg["thinking"] += t.get("thoughts", 0)
+        agg["calls"] += 1
+        models[d.get("model") or "unknown"] += 1
+        if d.get("timestamp"):
+            days.add(str(d["timestamp"])[:10])
+    if not agg["input"] and not agg["output"]:
+        return collections.Counter(), "gemini", set(), models
+    proj_dir = os.path.dirname(os.path.dirname(path))
+    try:
+        with open(os.path.join(proj_dir, ".project_root"), encoding="utf-8") as f:
+            name = os.path.basename(f.read().strip().rstrip("/"))
+    except OSError:
+        name = os.path.basename(proj_dir)
+    return agg, name or "gemini", days, models
+
+
 PROVIDERS = {
     "claude-code": {
         "label": "Claude Code",
@@ -216,6 +260,13 @@ PROVIDERS = {
         "glob": os.path.join("**", "rollout-*.jsonl"),
         "read": read_codex,
         "verified": True,       # 실제 로그(codex cli 0.153.4)로 검증
+    },
+    "gemini": {
+        "label": "Gemini CLI",
+        "roots": lambda: [os.path.expanduser("~/.gemini/tmp")],
+        "glob": os.path.join("*", "chats", "session-*.jsonl"),
+        "read": read_gemini,
+        "verified": True,       # 실제 로그(gemini cli 0.59.0)로 검증
     },
 }
 
@@ -1191,8 +1242,32 @@ def demo():
             assert inspect.signature(fn).parameters["root"].default is None, \
                 f"{fn.__name__}(root=...) 기본값이 None 이 아니면 프로바이더 하나만 읽는다"
 
+        # Gemini: 답변마다 따로 기록 -> 전부 더하되 같은 id 는 한 번만
+        gt = os.path.join(d, "gtmp")
+        gs = os.path.join(gt, "someproj", "chats")
+        os.makedirs(gs)
+        with open(os.path.join(gt, "someproj", ".project_root"), "w") as f:
+            f.write("/x/gproj\n")
+        def _gm(mid, inp, out, cached, thoughts, tool):
+            return json.dumps({"id": mid, "timestamp": "2026-09-10T08:44:00Z", "type": "gemini",
+                "model": "gemini-3.5-flash", "tokens": {"input": inp, "output": out,
+                "cached": cached, "thoughts": thoughts, "tool": tool,
+                "total": inp + out + thoughts}})
+        with open(os.path.join(gs, "session-a.jsonl"), "w") as f:
+            f.write(json.dumps({"sessionId": "s", "kind": "main"}) + "\n")
+            f.write(json.dumps({"id": "u1", "type": "user", "content": "hi"}) + "\n")
+            f.write(_gm("g1", 100, 10, 40, 5, 2) + "\n")
+            f.write(_gm("g1", 100, 10, 40, 5, 2) + "\n")   # 같은 id 재기록 -> 한 번만
+            f.write(_gm("g2", 50, 4, 0, 0, 0) + "\n")
+        ag, gproj, gdays, _ = read_gemini(os.path.join(gs, "session-a.jsonl"))
+        assert (ag["input"], ag["output"]) == (62 + 50, 15 + 4), f"Gemini 합산 실패: {dict(ag)}"
+        assert (ag["cache_read"], ag["thinking"], ag["calls"]) == (40, 5, 2), dict(ag)
+        assert gproj == "gproj" and gdays == {"2026-09-10"}, (gproj, gdays)
+        agg, projects, _, _ = collect(pid="gemini", roots=[gt])
+        assert projects["gemini\tgproj"] == 131 and agg["sessions"] == 1, (dict(agg), dict(projects))
+
         # 끈 프로바이더는 합산에서 빠진다
-        off = {"providers": {"claude-code": {"enabled": False}, "codex": {"enabled": False}}}
+        off = {"providers": {p: {"enabled": False} for p in PROVIDERS}}
         a3, _, _, _, per = collect_all(off)
         assert not a3.get("calls") and per == {}, (dict(a3), per)
 

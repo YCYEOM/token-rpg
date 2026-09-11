@@ -676,6 +676,9 @@ margin-top:10px;padding-top:8px}
   <div id="rbBox" style="margin-top:14px"></div>
 </div>
 
+<div class="card"><h2>유물 도감 <span class="gold" id="relicCount"></span></h2>
+  <div id="relicNews"></div><div id="relics"></div></div>
+
 <div class="card"><h2 id="floorTitle">던전</h2>
   <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
   <div id="stages"></div><div id="wall"></div></div>
@@ -716,7 +719,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}});
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -748,7 +751,8 @@ const put = () => {
 const boss = g => { const p = Math.pow(K.step, g-1); return {
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
   dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9) }; };
-const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul);
+const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul
+                                * (1 + relicSum("soul")/100));
 const costOf = lv => Math.round(K.ck * Math.pow(K.cmul, lv));
 
 let mult = 1;                      // 1 | 10 | 100 | "max" — 배분과 특성 구입에 함께 적용
@@ -790,9 +794,11 @@ const points     = () => H.level * K.ptPerLevel + save.traits.pt * K.tpt;
 const used       = () => STATS.reduce((s,[k]) => s + save.alloc[k], 0);
 const left       = () => points() - used();
 // 최종 스탯 = (토큰이 준 기본값 + 배분) x 환생 특성 배율
+// 유물(영구)이 마지막에 곱해진다
 const F = k => k === "crit"
-  ? Math.min(75, H.crit + save.alloc.crit*G.crit + save.traits.crit*K.tcrit)
-  : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k]);
+  ? Math.min(75, H.crit + save.alloc.crit*G.crit + save.traits.crit*K.tcrit + relicSum("crit"))
+  : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k])
+    * (1 + relicSum(k)/100);
 
 $("face").textContent = H.emoji; $("title").textContent = H.title;
 $("lv").textContent = "Lv." + H.level;
@@ -862,7 +868,7 @@ function drawRebirth(){
                : `환생 — 혼 ${n(gain)} 획득`}</button>
      <div class="dim" style="font-size:11px;margin-top:6px">
        클리어 기록${save.auto ? "" : "과 스탯 배분"}을 버리고 1층부터 다시 시작한다.
-       영구 특성·혼·원정(역대 최고 ${save.best || 0}스테이지 기준)은 그대로 남는다.
+       영구 특성·혼·유물·원정(역대 최고 ${save.best || 0}스테이지 기준)은 그대로 남는다.
        ${can?"":"먼저 스테이지를 하나 이상 클리어해라."}</div>`;
   if (can) $("rbBtn").onclick = () => {
     if (!rbArmed) { rbArmed = true; drawRebirth(); return; }
@@ -1061,14 +1067,65 @@ function drawMissions(){
   });
 }
 
-const drawAll = () => { drawHero(); drawMissions(); drawExped(); drawStages(); };
+// ── 유물: 보스(= 내 프로젝트)가 가끔 떨어뜨린다. 프로젝트마다 하나, 더 높은 등급이 나오면 교체.
+// 환생해도 남는 두 번째 영구 성장 축. 등급이 오를 때마다 효과가 두 배.
+const RARITY = [["일반", 60, "var(--dim)"], ["희귀", 28, "var(--on)"], ["영웅", 10, "var(--soul)"], ["전설", 2, "var(--gold)"]];
+const AFFIX = {atk: ["ATK", 3, "%"], hp: ["HP", 3, "%"], dfn: ["DEF", 3, "%"], crit: ["CRIT", 0.5, "%p"], soul: ["혼", 3, "%"]};
+const relicKey = slot => slot.prov + "|" + slot.name;          // 슬롯 순서는 토큰량 따라 바뀌므로 이름으로
+const relicOk = r => !!r && !!RARITY[r.r] && !!AFFIX[r.a];      // 고친 저장의 이상한 값은 무시
+const relicVal = r => AFFIX[r.a][1] * Math.pow(2, r.r);
+const relicSum = a => Object.values(save.relics || {}).filter(relicOk)
+  .reduce((s, r) => s + (r.a === a ? relicVal(r) : 0), 0);
+let relicNews = "";
+function rollRelic(g, slot, first){
+  if (Math.random() >= (first ? 0.3 : 0.1)) return "";
+  let x = Math.random() * 100, r = 0;
+  while (r < RARITY.length - 1 && x >= RARITY[r][1]) { x -= RARITY[r][1]; r++; }
+  const keys = Object.keys(AFFIX), a = keys[Math.floor(Math.random() * keys.length)];
+  save.relics = save.relics || {};
+  const k = relicKey(slot), old = save.relics[k];
+  if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
+    const s = soulOf(g); save.souls += s;
+    return `${RARITY[r][0]} 유물 중복 — 혼 ${n(s)}로 바꿨다`;
+  }
+  save.relics[k] = {r, a};
+  return `${RARITY[r][0]} 유물 획득! ${slot.name} — ${AFFIX[a][0]} +${relicVal({r, a})}${AFFIX[a][2]}`;
+}
+function drawRelics(){
+  const rs = save.relics || {};
+  $("relicCount").textContent = `${SLOTS.filter(s => relicOk(rs[relicKey(s)])).length}/${N}`;
+  const sum = Object.keys(AFFIX).map(a => [a, relicSum(a)]).filter(([, v]) => v)
+    .map(([a, v]) => `${AFFIX[a][0]} +${+v.toFixed(1)}${AFFIX[a][2]}`).join(" · ");
+  $("relicNews").innerHTML =
+    (relicNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${relicNews}</div>` : "") +
+    `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 그 프로젝트의 유물이 나온다
+     (역대 첫 격파 30%, 재격파 10%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}</div>`;
+  $("relics").innerHTML = SLOTS.map(s => {
+    const r = rs[relicKey(s)];
+    return `<div class="row" style="font-size:12px;padding:2px 0"><span>${s.emoji} ${s.name}${
+        MULTIPROV ? ` <span class="dim">${s.prov}</span>` : ""}</span>${relicOk(r)
+      ? `<span style="color:${RARITY[r.r][2]}">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
+      : '<span class="dim">?</span>'}</div>`;
+  }).join("");
+}
+
+const drawAll = () => { drawHero(); drawMissions(); drawExped(); drawStages(); drawRelics(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 const dmgOf = (a, d, crit) =>
   Math.max(1, Math.round((a.atk - d.dfn) * (0.85 + Math.random()*0.3) * (crit ? 2 : 1)));
 const newFighters = b => [{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit")},
                           {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}];
-const winStage = g => { if (!save.cleared.includes(g)) save.cleared.push(g); markBest(g); put(); };
+// 승리 처리 (수동·자동 공통). 유물이 나오면 그 안내 문구를 돌려준다.
+const winStage = g => {
+  const first = g > (save.best || 0);             // 역대 처음 깬 스테이지
+  if (!save.cleared.includes(g)) save.cleared.push(g);
+  markBest(g);
+  const drop = rollRelic(g, SLOTS[(g-1)%N], first);
+  if (drop) relicNews = drop;
+  put();
+  return drop;
+};
 
 // 연출 없는 즉시 전투 (자동 도전용). 규칙은 fightStart 와 같다.
 function quickFight(b){
@@ -1123,7 +1180,8 @@ function end(won, me, foe, g, slot, why){
   clearInterval(timer); paint(me, foe);
   if (won) {
     say(`<span class="win">승리! ${slot.name} 정복. 혼 ${n(soulOf(g))} 예약.</span>`);
-    winStage(g);
+    const drop = winStage(g);
+    if (drop) say(`<span class="gold">${drop}</span>`);
     if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);
   } else {

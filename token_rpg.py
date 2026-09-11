@@ -621,7 +621,7 @@ details.card>summary::-webkit-details-marker{display:none}
 details.card>summary::before{content:"▸";display:inline-block;color:var(--dim);font-size:10px;transition:transform .15s}
 details.card[open]>summary::before{transform:rotate(90deg)}
 details.card>summary h2{margin:0;flex:1}details.card[open]>summary{margin-bottom:12px}
-button{font:inherit;background:#21262d;color:var(--fg);border:1px solid var(--line);
+button,select{font:inherit;background:#21262d;color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:2px 9px;cursor:pointer}
 button:hover:not(:disabled){border-color:var(--on)}button:disabled{opacity:.35;cursor:default}
 button.big{padding:7px 14px;width:100%}
@@ -734,7 +734,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, bless:null, blessOffer:[], rbExp:null});
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, bless:null, blessOffer:[], rbExp:null, farm:0});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -958,34 +958,60 @@ const beatable = b => {
   return b.hp / Math.max(1, eff - b.dfn) < F("hp") / Math.max(1, b.atk - F("dfn"));
 };
 
-// ── 자동 도전: 첫 환생 후 해금. 1초에 한 스테이지씩 연출 없이 같은 규칙으로 싸운다.
-let autoMsg = "", autoFailSig = "";
-// 능력치가 그대로면 진 스테이지를 다시 시도하지 않는다 (치명타 운으로 벽을 넘는 반복 방지)
+// ── 자동 도전: 첫 환생 후 해금. 1초에 한 판씩 연출 없이 같은 규칙으로 싸운다.
+// 목표(save.farm: 0 = 끝까지, g = g스테이지)까지 한 칸씩 오르고, 더 못 오르면 멈추지 않고
+// 목표(또는 이번 판 가장 깊은 곳)를 반복한다 — 유물 파밍. 환생해도 켜 둔 채면 다시 오른다.
+let autoMsg = "", autoFailSig = "", autoKey = "", farmW = 0, farmL = 0;
+// 능력치가 그대로면 진 스테이지로 다시 오르지 않는다 (치명타 운으로 벽을 넘는 반복 방지)
 const statSig = () => STATS.map(([k]) => F(k)).join();
-const autoSay = m => { if (m !== autoMsg) { autoMsg = m; drawAuto(); } };   // 버튼을 매초 갈아엎지 않게
+const autoReset = () => { autoFailSig = ""; autoMsg = ""; farmW = farmL = 0; };
+const autoSay = m => { if (m !== autoMsg) { autoMsg = m; drawAuto(); } };
 function drawAuto(){
   if (!save.rebirths) {
+    autoKey = "";
     $("auto").innerHTML = '<span class="dim" style="font-size:11px">자동 도전 — 첫 환생 후 해금</span>';
     return;
   }
-  $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 도전 ${save.auto?"켜짐":"꺼짐"}</button>
-    <span class="dim" style="font-size:11px">${save.auto ? autoMsg : ""}</span>`;
-  $("autoBtn").onclick = () => { save.auto = !save.auto; autoFailSig = ""; autoMsg = ""; put(); drawAuto(); };
+  // 버튼·목록은 바뀔 때만 다시 그린다 — 매초 갈아엎으면 열어 둔 목록이 닫힌다
+  const key = `${save.auto}|${save.farm}|${save.best}`;
+  if (key !== autoKey || !$("autoMsg")) {
+    autoKey = key;
+    const opts = ['<option value="0">최고 기록까지 오르고 가장 깊은 곳 반복</option>'];
+    for (let g = save.best || 0; g >= 1; g--)
+      opts.push(`<option value="${g}" ${save.farm === g ? "selected" : ""}>${g}. ${SLOTS[(g-1)%N].name} 반복</option>`);
+    $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
+      <select id="farmSel" style="flex:1;min-width:0">${opts.join("")}</select>
+      <span class="dim" id="autoMsg" style="font-size:11px;flex-basis:100%"></span>`;
+    $("autoBtn").onclick = () => { save.auto = !save.auto; autoReset(); put(); drawAuto(); };
+    $("farmSel").onchange = e => { save.farm = +e.target.value; autoReset(); put(); drawAuto(); };
+  }
+  $("autoMsg").textContent = save.auto ? autoMsg : "";
 }
 function autoStep(){
   if (!save.auto || !save.rebirths) return;
-  const base = (floorNow() - 1) * N;
-  const i = SLOTS.findIndex((_, i) => !save.cleared.includes(base + i + 1));
-  if (i < 0) return;
-  const g = base + i + 1, slot = SLOTS[i], b = boss(g);
-  if (!beatable(b)) return autoSay(`${g}스테이지 앞에서 대기 — 능력치를 올려라`);
-  if (autoFailSig === statSig() + "@" + g) return;
-  if (quickFight(b)) {
-    winStage(g); autoMsg = `${g}. ${slot.name} 격파`; drawAll();
-  } else {
-    autoFailSig = statSig() + "@" + g;
-    autoSay(`${g}스테이지 패배 — 능력치가 바뀌면 다시 시도`);
+  const tgt = Number.isInteger(save.farm) && save.farm > 0 ? save.farm : Infinity;
+  const top = maxCleared(), next = top + 1;
+  // 1) 목표까지 한 칸씩 오른다
+  if (next <= tgt && beatable(boss(next)) && autoFailSig !== statSig() + "@" + next) {
+    if (quickFight(boss(next))) {
+      winStage(next); autoMsg = `${next}. ${SLOTS[(next-1)%N].name} 격파`; drawAll();
+    } else {
+      autoFailSig = statSig() + "@" + next;
+      autoSay(`${next}스테이지 패배 — 능력치가 바뀌면 다시 오른다`);
+    }
+    return;
   }
+  // 2) 더 못 오르면 반복. 이긴 판은 저장할 게 없으니 유물이 나왔을 때만 쓴다
+  let g = Math.min(tgt, top);
+  // 끝까지 모드: 이길 수 있는 가장 깊은 곳을 반복. 직접 고른 스테이지는 그대로 둔다
+  if (tgt === Infinity) while (g > 1 && !beatable(boss(g))) g--;
+  if (g < 1) return autoSay(`${next}스테이지 앞에서 대기 — 능력치를 올려라`);
+  if (quickFight(boss(g))) {
+    farmW++;
+    const drop = rollRelic(g, SLOTS[(g-1)%N], false);
+    if (drop) { relicNews = drop; put(); drawAll(); }
+  } else farmL++;
+  autoSay(`${g}스테이지 반복 중 · 승 ${farmW} 패 ${farmL}${next <= tgt ? ` · ${next}스테이지는 아직 무리` : ""}`);
 }
 
 function drawStages(){
@@ -1112,15 +1138,18 @@ const relicVal = r => AFFIX[r.a][1] * Math.pow(2, r.r);
 const relicSum = a => Object.values(save.relics || {}).filter(relicOk)
   .reduce((s, r) => s + (r.a === a ? relicVal(r) : 0), 0);
 let relicNews = "";
+// 역대 첫 격파 30%, 재격파 0.5% — 자동 반복이 1초에 한 판이라 재격파 확률이 높으면 금방 다 모인다
+const RELIC_FIRST = 0.3, RELIC_AGAIN = 0.005;
 function rollRelic(g, slot, first){
-  if (Math.random() >= (first ? 0.3 : 0.1)) return "";
+  if (Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN)) return "";
   let x = Math.random() * 100, r = 0;
   while (r < RARITY.length - 1 && x >= RARITY[r][1]) { x -= RARITY[r][1]; r++; }
   const keys = Object.keys(AFFIX), a = keys[Math.floor(Math.random() * keys.length)];
   save.relics = save.relics || {};
   const k = relicKey(slot), old = save.relics[k];
   if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
-    const s = soulOf(g); save.souls += s;
+    // 반복 파밍 중복은 1/10 — 켜 두기만 해도 혼이 쏟아져 환생 기운(토큰) 제한을 우회하지 않게
+    const s = first ? soulOf(g) : Math.round(soulOf(g) / 10); save.souls += s;
     return `${RARITY[r][0]} 유물 중복 — 혼 ${n(s)}로 바꿨다`;
   }
   save.relics[k] = {r, a};
@@ -1134,7 +1163,7 @@ function drawRelics(){
   $("relicNews").innerHTML =
     (relicNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${relicNews}</div>` : "") +
     `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 그 프로젝트의 유물이 나온다
-     (역대 첫 격파 30%, 재격파 10%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}</div>`;
+     (역대 첫 격파 ${RELIC_FIRST*100}%, 재격파 ${RELIC_AGAIN*100}%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}</div>`;
   $("relics").innerHTML = SLOTS.map(s => {
     const r = rs[relicKey(s)];
     // 긴 프로젝트 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게

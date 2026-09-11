@@ -96,7 +96,10 @@ def write_save(base, save, snaps=None):
 STEP = 1.28                              # 스테이지 1칸당 보스 배율
 B_HP, B_ATK, B_DEF = 115, 24, 8          # 1스테이지 보스 기준치
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
-GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4}   # 포인트 1점당 상승치
+GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4, "cdmg": 1}   # 포인트 1점당 상승치 (cdmg 는 %p)
+CRIT_CAP  = 100      # 치명타율 상한(%). 넘친 %p 는 치명타 피해 %p 로 옮겨 간다 — 올려도 헛되지 않게
+CDMG_BASE = 200      # 치명타 피해 기본값(%) = 예전 고정 2배
+TRAIT_CDMG = 5       # '파괴의 유산' 1레벨당 치명타 피해 %p (1pt·5%p 에서 층 진입 회차가 도입 전과 비슷)
 
 # 환생: 클리어 기록과 배분을 버리고 '혼'을 얻어 영구 특성을 산다.
 # 특성 효과는 배율(지수), 비용도 지수 -> 층 벽을 넘으려면 환생을 거듭해야 한다.
@@ -480,12 +483,14 @@ def final_stats(h, alloc=None, tr=None):
     """최종 스탯 = (기본 + 배분) x 환생 특성 배율. JS의 F()와 같은 식."""
     a, t = alloc or {}, tr or {}
     m = lambda k: TRAIT_MUL ** t.get(k, 0)
+    crit = h["crit"] + a.get("crit", 0) * GAIN["crit"] + t.get("crit", 0) * TRAIT_CRIT
     return {
         "atk":  (h["atk"] + a.get("atk", 0) * GAIN["atk"]) * m("atk"),
         "hp":   (h["hp"] + a.get("hp", 0) * GAIN["hp"]) * m("hp"),
         "dfn":  (h["dfn"] + a.get("dfn", 0) * GAIN["dfn"]) * m("dfn"),
-        "crit": min(75, h["crit"] + a.get("crit", 0) * GAIN["crit"]
-                    + t.get("crit", 0) * TRAIT_CRIT),
+        "crit": min(CRIT_CAP, crit),
+        "cdmg": CDMG_BASE + a.get("cdmg", 0) * GAIN["cdmg"] + t.get("cdmg", 0) * TRAIT_CDMG
+                + max(0, crit - CRIT_CAP),
     }
 
 
@@ -493,7 +498,7 @@ def turns_to_win(h, b, alloc=None, tr=None):
     """평균 피해 기준 결판 턴수 -> (보스를 잡는 턴, 내가 죽는 턴).
     치명타는 기대값으로 반영. JS 전투와 같은 공식, 난수만 뺐다 = 밸런스 검증용."""
     s = final_stats(h, alloc, tr)
-    eff = s["atk"] * (1 + s["crit"] / 100)
+    eff = s["atk"] * (1 + s["crit"] / 100 * (s["cdmg"] / 100 - 1))
     return b["hp"] / max(1, eff - b["dfn"]), s["hp"] / max(1, b["atk"] - s["dfn"])
 
 
@@ -501,8 +506,10 @@ def _splits(pts):
     for a in range(11):
         for hp in range(11 - a):
             for d in range(11 - a - hp):
-                c = 10 - a - hp - d
-                yield {"atk": pts*a/10, "hp": pts*hp/10, "dfn": pts*d/10, "crit": pts*c/10}
+                for c in range(11 - a - hp - d):
+                    x = 10 - a - hp - d - c
+                    yield {"atk": pts*a/10, "hp": pts*hp/10, "dfn": pts*d/10,
+                           "crit": pts*c/10, "cdmg": pts*x/10}
 
 
 def reach(h, tr=None, cap=400):
@@ -525,7 +532,7 @@ def simulate(h, n_slots, rebirths=40):
     """환생을 거듭했을 때 몇 회차에 몇 층에 닿는지. 상수 튜닝의 근거."""
     import itertools
     souls, tr, rows = 0, {}, []
-    cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "crit", "pt"])
+    cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "crit", "cdmg", "pt"])
     for r in range(rebirths + 1):
         g = reach(h, tr)
         rows.append((r, g, (g - 1) // n_slots + 1, souls, sum(tr.values())))
@@ -578,6 +585,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tcrit": TRAIT_CRIT,
+                  "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX}}
@@ -615,7 +623,7 @@ padding:0 9px;font-size:11px;margin-right:5px}
 .alloc{display:grid;gap:6px;align-items:center;font-size:13px}
 #alloc{grid-template-columns:1fr auto auto auto auto auto}#traits{grid-template-columns:1fr auto auto auto auto}
 .alloc small{display:block;color:var(--dim);font-size:11px;white-space:nowrap}
-.alloc>b{min-width:34px;text-align:right}
+.alloc>b{min-width:34px;text-align:right}.alloc button{white-space:nowrap}
 details.card>summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:6px;user-select:none}
 details.card>summary::-webkit-details-marker{display:none}
 details.card>summary::before{content:"▸";display:inline-block;color:var(--dim);font-size:10px;transition:transform .15s}
@@ -727,13 +735,14 @@ const n = x => Math.round(x).toLocaleString();
 // 원정은 초당 소수점 단위로 쌓인다 — 정수로 표시하면 멈춘 것처럼 보인다
 const nf = x => x < 1000 ? x.toFixed(2) : n(x);
 const MULTIPROV = (D.providers || []).length > 1;
-const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력","DEF"],["crit","치명타","CRIT"]];
+const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력","DEF"],["crit","치명타","CRIT"],
+                ["cdmg","치명타 피해","CDMG"]];
 const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
                 ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],["crit","예지","CRIT +"+K.tcrit+"%p/lv"],
-                ["pt","각성","배분 +"+K.tpt+"pt/lv"]];
+                ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],["pt","각성","배분 +"+K.tpt+"pt/lv"]];
 
-const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0}, cleared:[], souls:0, rebirths:0,
-            traits:{atk:0,hp:0,dfn:0,crit:0,pt:0},
+const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0}, cleared:[], souls:0, rebirths:0,
+            traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, bless:null, blessOffer:[], rbExp:null, farm:0});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
@@ -741,7 +750,9 @@ let save = fresh();
 const SERVED = location.protocol.startsWith("http");
 let rev = 0, sync = Promise.resolve();          // 쓰기를 한 줄로 세워 rev 가 꼬이지 않게 한다
 const note = t => { $("expedBanner").innerHTML = `<div class="banner">${t}</div>`; };
-const adopt = d => { rev = d.rev; save = Object.assign(fresh(), d.save || {}); };
+const adopt = d => { rev = d.rev; save = Object.assign(fresh(), d.save || {}); fill(); };
+// 옛 저장에는 새로 생긴 스탯 칸(cdmg 등)이 없다 — 비어 있으면 계산이 전부 NaN 이 된다
+function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; save.traits = {...f.traits, ...save.traits}; }
 const pull = async () => {
   const r = await fetch("save", {cache: "no-store"});
   if (!r.ok) throw new Error("save " + r.status);
@@ -812,8 +823,10 @@ const used       = () => STATS.reduce((s,[k]) => s + save.alloc[k], 0);
 const left       = () => points() - used();
 // 최종 스탯 = (토큰이 준 기본값 + 배분) x 환생 특성 배율
 // 유물(영구)과 축복(이번 판)이 마지막에 곱해진다
-const F = k => k === "crit"
-  ? Math.min(75, H.crit + save.alloc.crit*G.crit + save.traits.crit*K.tcrit + relicSum("crit") + blessOf("crit"))
+// 치명타율은 K.critCap 까지, 넘친 %p 는 치명타 피해로 간다
+const critRaw = () => H.crit + save.alloc.crit*G.crit + save.traits.crit*K.tcrit + relicSum("crit") + blessOf("crit");
+const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
+  : k === "cdmg" ? K.cdmgBase + save.alloc.cdmg*G.cdmg + save.traits.cdmg*K.tcdmg + Math.max(0, critRaw() - K.critCap)
   : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k])
     * (1 + relicSum(k)/100) * (1 + blessOf(k));
 
@@ -841,19 +854,22 @@ $("provs").innerHTML = (D.providers || []).length < 2 ? "" :
 $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
   `<div class="row"><span>${h} <span class="dim">${u.slice(0,10)}</span></span><span class="gold">${n(v)}</span></div>`).join("");
 
+// 치명타율이 상한이면 배분·특성 줄에 알린다 — 더 올려도 치명타 피해로 간다
+const capNote = k => k === "crit" && critRaw() >= K.critCap
+  ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — 넘친 %p는 치명타 피해로</small>` : "";
 function drawHero(){
   $("bRebirth").textContent = "환생 " + save.rebirths + "회";
   $("bFloor").textContent   = floorNow() + "층";
   $("bSouls").textContent   = "혼 " + n(save.souls);
   $("soulsHave").textContent = "보유 " + n(save.souls);
   $("sheet").innerHTML = STATS.map(([k,,s]) =>
-    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"?"%":""}</b></span>`
+    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b></span>`
   ).join("") + `<span><span class="dim">SPD</span> <b>${H.spd}</b></span>`;
   $("left").textContent = "남은 " + left() + "pt";
   // 줄마다 −1 · +1 · +10 · 최대(남은 전부) — 남은 포인트보다 많이는 안 움직인다
   const lf = left();
   $("alloc").innerHTML = STATS.map(([k,ko,s]) =>
-    `<span>${ko}<small>${s} +${G[k]}/pt</small></span>
+    `<span>${ko}<small>${s} +${G[k]}${k==="cdmg"?"%p":""}/pt</small>${capNote(k)}</span>
      <b class="gold">${save.alloc[k]}</b>
      <button data-k="${k}" data-d="-1" ${save.alloc[k]<=0?"disabled":""}>−</button>
      <button data-k="${k}" data-d="1" ${lf<=0?"disabled":""}>+1</button>
@@ -868,9 +884,9 @@ function drawHero(){
   // 줄마다 구입(1레벨) · 최대(혼이 되는 만큼)
   $("traits").innerHTML = TRAITS.map(([k,ko,eff]) => {
     const all = buyable(k, 1e9);
-    return `<span>${ko}<small>${eff}</small></span>
+    return `<span>${ko}<small>${eff}</small>${capNote(k)}</span>
       <b class="soul">Lv.${save.traits[k]}</b>
-      <span class="dim" style="font-size:11px;text-align:right">${n(costOf(save.traits[k]))}혼</span>
+      <span class="dim" style="font-size:11px;text-align:right;white-space:nowrap">${n(costOf(save.traits[k]))}혼</span>
       <button data-t="${k}" data-c="1" ${all<=0?"disabled":""}>구입</button>
       <button data-t="${k}" data-c="max" ${all<=0?"disabled":""}
         title="${all?n(bulkCost(k, all))+"혼":""}">최대${all>1?" x"+all:""}</button>`;
@@ -934,7 +950,7 @@ const decodeSave = code => {
 const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.alloc && !!s.exped
   && [s.souls, s.rebirths, s.best, ...s.cleared, ...Object.values(s.traits), ...Object.values(s.alloc)]
        .every(v => Number.isInteger(v) && v >= 0)
-  && STATS.reduce((t, [k]) => t + s.alloc[k], 0) <= H.level * K.ptPerLevel + s.traits.pt * K.tpt;
+  && STATS.reduce((t, [k]) => t + (s.alloc[k] || 0), 0) <= H.level * K.ptPerLevel + s.traits.pt * K.tpt;
 
 let loadArmed = false;
 $("saveShow").onclick = () => {
@@ -948,13 +964,13 @@ $("saveLoad").onclick = () => {
   }
   if (!loadArmed) { loadArmed = true; $("saveMsg").textContent = "지금 저장을 덮어쓴다 — 다시 누르면 실행"; return; }
   loadArmed = false;
-  Object.assign(save, s); fixRb(); put(); drawAll();
+  Object.assign(save, s); fill(); fixRb(); put(); drawAll();
   $("saveMsg").textContent = `가져왔다 — 환생 ${save.rebirths}회, 혼 ${n(save.souls)}`;
 };
 
 // 평균 피해로 따져 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다
 const beatable = b => {
-  const eff = F("atk") * (1 + F("crit")/100);
+  const eff = F("atk") * (1 + F("crit")/100 * (F("cdmg")/100 - 1));
   return b.hp / Math.max(1, eff - b.dfn) < F("hp") / Math.max(1, b.atk - F("dfn"));
 };
 
@@ -1224,8 +1240,8 @@ const drawAll = () => { drawHero(); drawBless(); drawMissions(); drawExped(); dr
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 const dmgOf = (a, d, crit) =>
-  Math.max(1, Math.round((a.atk - d.dfn) * (0.85 + Math.random()*0.3) * (crit ? 2 : 1)));
-const newFighters = b => [{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit")},
+  Math.max(1, Math.round((a.atk - d.dfn) * (0.85 + Math.random()*0.3) * (crit ? a.cdmg / 100 : 1)));
+const newFighters = b => [{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit"), cdmg:F("cdmg")},
                           {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}];
 // 승리 처리 (수동·자동 공통). 유물이 나오면 그 안내 문구를 돌려준다.
 const winStage = g => {
@@ -1309,6 +1325,7 @@ $("close").onclick = () => $("fight").classList.remove("on");
     try { await pull(); } catch(e) { note("저장을 불러오지 못했다 — 게임 서버를 확인하고 새로고침해라."); }
   } else {
     try { Object.assign(save, JSON.parse(localStorage.getItem("trpg") || "{}")); } catch(e) {}
+    fill();
   }
   if (!save.best && maxCleared()) { save.best = maxCleared(); put(); }   // 옛 저장본 이관
   if (!save.exped.seenExp) { save.exped.seenExp = H.exp; put(); }

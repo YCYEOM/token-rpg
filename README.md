@@ -61,7 +61,8 @@ token-rpg install-hook      # Claude Code Stop 훅에 등록
 |---|---|
 | ATK | 출력 토큰 |
 | DEF | 캐시 읽기 (재사용 효율이 곧 방어력) |
-| CRIT | thinking 토큰 |
+| CRIT | thinking 토큰 (토큰만으로 최대 50%, 전체 상한 100% — 넘친 만큼 CDMG로) |
+| CDMG | 치명타 피해. 기본 200%, 배분 +1%p/pt, 특성 '파괴의 유산' +5%p/lv |
 | SPD | API 호출 수 |
 | EXP | 입력 + 캐시 생성 + 출력 |
 

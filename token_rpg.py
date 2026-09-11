@@ -605,7 +605,15 @@ h2{font-size:12px;color:var(--dim);margin:0 0 12px;letter-spacing:.02em}
 font-size:12px;margin-top:6px}.sheet>span{white-space:nowrap}
 .badge{display:inline-block;border:1px solid var(--line);border-radius:20px;
 padding:0 9px;font-size:11px;margin-right:5px}
-.alloc{display:grid;grid-template-columns:1fr auto auto auto;gap:6px 10px;align-items:center;font-size:13px}
+.alloc{display:grid;gap:6px;align-items:center;font-size:13px}
+#alloc{grid-template-columns:1fr auto auto auto auto auto}#traits{grid-template-columns:1fr auto auto auto auto}
+.alloc small{display:block;color:var(--dim);font-size:11px;white-space:nowrap}
+.alloc>b{min-width:34px;text-align:right}
+details.card>summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:6px;user-select:none}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"▸";display:inline-block;color:var(--dim);font-size:10px;transition:transform .15s}
+details.card[open]>summary::before{transform:rotate(90deg)}
+details.card>summary h2{margin:0;flex:1}details.card[open]>summary{margin-bottom:12px}
 button{font:inherit;background:#21262d;color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:2px 9px;cursor:pointer}
 button:hover:not(:disabled){border-color:var(--on)}button:disabled{opacity:.35;cursor:default}
@@ -650,50 +658,48 @@ margin-top:10px;padding-top:8px}
   </div>
 </div>
 
-<div class="card">
-  <h2>스탯 배분 <span class="gold" id="left"></span></h2>
-  <div id="mult" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-    <span class="dim" style="font-size:11px">한 번에</span></div>
+<details class="card" data-k="alloc" open>
+  <summary><h2>스탯 배분 <span class="gold" id="left"></span></h2></summary>
   <div class="alloc" id="alloc"></div>
   <div style="margin-top:12px;display:flex;gap:8px">
     <button id="reset">전부 되돌리기</button>
     <span class="dim" style="font-size:11px;align-self:center">환생하면 초기화된다</span>
   </div>
-</div>
+</details>
 
-<div class="card">
-  <h2>미션 <span class="gold" id="streak"></span></h2>
+<details class="card" data-k="missions" open>
+  <summary><h2>미션 <span class="gold" id="streak"></span></h2></summary>
   <div id="missions"></div>
-</div>
+</details>
 
-<div class="card">
-  <h2>원정 <span class="soul" id="expedRate"></span></h2>
+<details class="card" data-k="exped" open>
+  <summary><h2>원정 <span class="soul" id="expedRate"></span></h2></summary>
   <div id="expedBanner"></div>
   <div id="exped"></div>
-</div>
+</details>
 
-<div class="card">
-  <h2>영구 특성 <span class="soul" id="soulsHave"></span></h2>
+<details class="card" data-k="traits" open>
+  <summary><h2>영구 특성 <span class="soul" id="soulsHave"></span></h2></summary>
   <div class="alloc" id="traits"></div>
   <div id="rbBox" style="margin-top:14px"></div>
-</div>
+</details>
 
-<div class="card"><h2>유물 도감 <span class="gold" id="relicCount"></span></h2>
-  <div id="relicNews"></div><div id="relics"></div></div>
+<details class="card" data-k="relics" open><summary><h2>유물 도감 <span class="gold" id="relicCount"></span></h2></summary>
+  <div id="relicNews"></div><div id="relics"></div></details>
 
-<div class="card"><h2 id="floorTitle">던전</h2>
+<details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
   <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
-  <div id="stages"></div><div id="wall"></div></div>
-<div class="card"><h2>합산된 기기</h2><div id="hosts" style="font-size:12px"></div>
-  <div id="provs" style="font-size:12px;margin-top:10px"></div></div>
-<div class="card"><h2>저장 코드 — 백업·옮기기</h2>
+  <div id="stages"></div><div id="wall"></div></details>
+<details class="card" data-k="hosts" open><summary><h2>합산된 기기</h2></summary><div id="hosts" style="font-size:12px"></div>
+  <div id="provs" style="font-size:12px;margin-top:10px"></div></details>
+<details class="card" data-k="code" open><summary><h2>저장 코드 — 백업·옮기기</h2></summary>
   <div class="dim" style="font-size:11px;margin-bottom:6px">메뉴 막대 앱과 token-rpg open 은 저장 파일 하나를 같이 쓴다.
     예전처럼 파일로 연 브라우저 저장을 옮기거나 백업할 때 쓴다. 고친 코드는 거부된다.</div>
   <textarea id="saveBox" rows="3" spellcheck="false" style="width:100%;background:#0d1117;
     color:var(--fg);border:1px solid var(--line);border-radius:6px;font:11px ui-monospace,monospace"></textarea>
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
     <button id="saveShow">현재 저장 표시</button><button id="saveLoad">가져오기</button>
-    <span class="dim" id="saveMsg" style="font-size:11px"></span></div></div>
+    <span class="dim" id="saveMsg" style="font-size:11px"></span></div></details>
 </div>
 
 <div id="fight"><div class="arena">
@@ -757,17 +763,14 @@ const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul
                                 * (1 + relicSum("soul")/100) * (1 + blessOf("soul")));
 const costOf = lv => Math.round(K.ck * Math.pow(K.cmul, lv));
 
-let mult = 1;                      // 1 | 10 | 100 | "max" — 배분과 특성 구입에 함께 적용
-const MULTS = [1, 10, 100, "max"];
 // 특성 lv..lv+cnt-1 을 한 번에 사는 총비용
 const bulkCost = (k, cnt) => {
   let c = 0;
   for (let i = 0; i < cnt; i++) c += costOf(save.traits[k] + i);
   return c;
 };
-// 지금 혼으로 살 수 있는 특성 레벨 수 (배수 상한 안에서)
-const buyable = k => {
-  const cap = mult === "max" ? 1e9 : mult;
+// 지금 혼으로 살 수 있는 특성 레벨 수 (cap 까지)
+const buyable = (k, cap) => {
   let cnt = 0, c = 0;
   while (cnt < cap) {
     const next = c + costOf(save.traits[k] + cnt);
@@ -802,6 +805,18 @@ const F = k => k === "crit"
   : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k])
     * (1 + relicSum(k)/100) * (1 + blessOf(k));
 
+// 카드 접기 — 접어 둔 카드는 이 브라우저(창)에 기억한다. 저장 파일과는 무관
+const FOLD = "trpg.fold";
+let folded = [];
+try { folded = JSON.parse(localStorage.getItem(FOLD)) || []; } catch(e) {}
+document.querySelectorAll("details[data-k]").forEach(d => {
+  d.open = !folded.includes(d.dataset.k);
+  d.ontoggle = () => {
+    folded = [...document.querySelectorAll("details[data-k]:not([open])")].map(x => x.dataset.k);
+    try { localStorage.setItem(FOLD, JSON.stringify(folded)); } catch(e) {}
+  };
+});
+
 $("face").textContent = H.emoji; $("title").textContent = H.title;
 $("lv").textContent = "Lv." + H.level;
 $("xpbar").style.width = H.pct + "%";
@@ -823,37 +838,33 @@ function drawHero(){
     `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"?"%":""}</b></span>`
   ).join("") + `<span><span class="dim">SPD</span> <b>${H.spd}</b></span>`;
   $("left").textContent = "남은 " + left() + "pt";
-  $("mult").innerHTML = '<span class="dim" style="font-size:11px;white-space:nowrap">한 번에</span>' +
-    MULTS.map(m => `<button data-mul="${m}" class="${m===mult?"on":""}">${m==="max"?"MAX":"x"+m}</button>`).join("") +
-    '<span class="dim" style="font-size:11px;flex-basis:100%">배분·특성 구입에 함께 적용</span>';
-  $("mult").querySelectorAll("button").forEach(b => b.onclick = () => {
-    mult = b.dataset.mul === "max" ? "max" : +b.dataset.mul; drawAll();
-  });
-  const step = (k, up) => {                 // 이번 클릭으로 실제 움직일 양
-    const room = up ? left() : save.alloc[k];
-    return mult === "max" ? room : Math.min(mult, room);
-  };
-  $("alloc").innerHTML = STATS.map(([k,ko,s]) => {
-    const dn = step(k, false), up = step(k, true);
-    return `<span>${ko} <span class="dim">${s} +${G[k]}/pt</span></span>
+  // 줄마다 −1 · +1 · +10 · 최대(남은 전부) — 남은 포인트보다 많이는 안 움직인다
+  const lf = left();
+  $("alloc").innerHTML = STATS.map(([k,ko,s]) =>
+    `<span>${ko}<small>${s} +${G[k]}/pt</small></span>
      <b class="gold">${save.alloc[k]}</b>
-     <button data-m="${k}" ${dn<=0?"disabled":""}>−${dn>1?dn:""}</button>
-     <button data-p="${k}" ${up<=0?"disabled":""}>+${up>1?up:""}</button>`;
-  }).join("");
+     <button data-k="${k}" data-d="-1" ${save.alloc[k]<=0?"disabled":""}>−</button>
+     <button data-k="${k}" data-d="1" ${lf<=0?"disabled":""}>+1</button>
+     <button data-k="${k}" data-d="10" ${lf<=0?"disabled":""}>+10</button>
+     <button data-k="${k}" data-d="max" ${lf<=0?"disabled":""}>최대</button>`
+  ).join("");
   $("alloc").querySelectorAll("button").forEach(b => b.onclick = () => {
-    const k = b.dataset.p || b.dataset.m, up = !!b.dataset.p;
-    save.alloc[k] += (up ? 1 : -1) * step(k, up); put(); drawAll();
+    const k = b.dataset.k, d = b.dataset.d, room = left();
+    save.alloc[k] += d === "-1" ? -Math.min(1, save.alloc[k]) : d === "max" ? room : Math.min(+d, room);
+    put(); drawAll();
   });
+  // 줄마다 구입(1레벨) · 최대(혼이 되는 만큼)
   $("traits").innerHTML = TRAITS.map(([k,ko,eff]) => {
-    const cnt = buyable(k);
-    const c = cnt ? bulkCost(k, cnt) : costOf(save.traits[k]);
-    return `<span>${ko} <span class="dim">${eff}</span></span>
+    const all = buyable(k, 1e9);
+    return `<span>${ko}<small>${eff}</small></span>
       <b class="soul">Lv.${save.traits[k]}</b>
-      <span class="dim" style="font-size:11px">${n(c)}혼</span>
-      <button data-t="${k}" ${cnt <= 0 ? "disabled" : ""}>구입${cnt>1?" x"+cnt:""}</button>`;
+      <span class="dim" style="font-size:11px;text-align:right">${n(costOf(save.traits[k]))}혼</span>
+      <button data-t="${k}" data-c="1" ${all<=0?"disabled":""}>구입</button>
+      <button data-t="${k}" data-c="max" ${all<=0?"disabled":""}
+        title="${all?n(bulkCost(k, all))+"혼":""}">최대${all>1?" x"+all:""}</button>`;
   }).join("");
   $("traits").querySelectorAll("button").forEach(b => b.onclick = () => {
-    const k = b.dataset.t, cnt = buyable(k);
+    const k = b.dataset.t, cnt = buyable(k, b.dataset.c === "max" ? 1e9 : 1);
     if (cnt <= 0) return;
     save.souls -= bulkCost(k, cnt); save.traits[k] += cnt; put(); drawAll();
   });

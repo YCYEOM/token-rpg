@@ -89,6 +89,8 @@ token-rpg install-hook      # Claude Code Stop 훅에 등록
 재격파 10%). 등급은 일반·희귀·영웅·전설이고 오를 때마다 효과가 두 배다.
 효과는 ATK·HP·DEF·혼 %나 CRIT %p 중 하나. 환생해도 남는다.
 
+**축복** — 환생할 때마다 여섯 가지 중 무작위 셋을 제시하고, 하나를 골라 그 판 동안 건다.
+
 ## 여러 PC 합산
 
 각 PC에서 `token-rpg export`를 돌리면 4KB짜리 스냅샷만 남는다.

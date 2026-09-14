@@ -921,8 +921,11 @@ function drawHero(){
   $("bFloor").textContent   = floorNow() + "층";
   $("bSouls").textContent   = "혼 " + n(save.souls);
   $("soulsHave").textContent = "보유 " + n(save.souls);
+  // 최종값 옆에 그중 유물 몫을 밝힌다 — 숫자가 이미 반영된 값인지 헷갈리지 않게
+  const relicTag = k => { const v = relicSum(k); return v
+    ? ` <small class="gold" title="유물 보너스 (이미 포함된 값)">+${+v.toFixed(1)}${k==="crit"?"%p":"%"}</small>` : ""; };
   $("sheet").innerHTML = STATS.map(([k,,s]) =>
-    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b></span>`
+    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b>${relicTag(k)}</span>`
   ).join("") + `<span><span class="dim">SPD</span> <b>${H.spd}</b></span>`;
   $("left").textContent = "남은 " + left() + "pt";
   // 줄마다 −1 · +1 · +10 · 최대(남은 전부) — 남은 포인트보다 많이는 안 움직인다

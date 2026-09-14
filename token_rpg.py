@@ -701,6 +701,7 @@ margin-top:10px;padding-top:8px}
 #log div{margin:1px 0}.crit{color:var(--gold);font-weight:700}.win{color:var(--xp);font-weight:700}
 .lose{color:var(--hp);font-weight:700}
 </style></head><body><div class="wrap">
+<div id="updBanner"></div>
 
 <div class="card hero">
   <div class="face" id="face"></div>
@@ -1396,6 +1397,29 @@ $("close").onclick = () => $("fight").classList.remove("on");
   }
 })();
 
+// 새 버전 알림. 확인은 서버(파이썬)가 하고 결과를 6시간 재사용한다 — 페이지가 직접 바깥으로 나가지 않는다.
+if (SERVED) fetch("update", {cache: "no-store"}).then(r => r.json()).then(u => {
+  if (!u || !u.newer) return;
+  // 앱 번들 안의 사본은 갈아치울 수 없다 — 그때는 DMG 로 보낸다
+  const act = u.kind === "app"
+    ? `<a href="${u.url}" target="_blank" rel="noopener"><button>DMG 받기</button></a>`
+    : `<button id="updBtn">업데이트</button>`;
+  $("updBanner").innerHTML = `<div class="banner" style="color:var(--gold);border-color:var(--gold);
+    display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
+    <span id="updMsg">새 버전 ${u.latest} — 지금은 ${u.current}</span>${act}</div>`;
+  const b = $("updBtn");
+  if (b) b.onclick = async () => {
+    b.disabled = true; b.textContent = "업데이트 중…";
+    try {
+      const r = await fetch("update", {method: "POST", cache: "no-store",
+        headers: {"Content-Type": "application/json"}, body: "{}"});
+      const d = await r.json();
+      $("updMsg").textContent = d.msg;
+      b.textContent = d.ok ? "완료" : "실패";
+    } catch (e) { $("updMsg").textContent = "업데이트하지 못했다 — " + u.cmd; b.textContent = "실패"; }
+  };
+}).catch(() => {});
+
 // 보고 있는 동안에도 계속 쌓인다
 setInterval(() => { if (!$("fight").classList.contains("on")) { drawExped(); autoStep(); } }, 1000);
 
@@ -1486,6 +1510,95 @@ def uninstall_hook():
     _backup(); _save_settings(cfg)
     print(f"훅 제거 완료 (백업: {SETTINGS}.bak)")
     return 0
+
+
+REPO = "YCYEOM/token-rpg"
+UPDATE_TTL = 6 * 3600        # 확인 결과를 이만큼 재사용한다 — 열 때마다 GitHub 을 두드리지 않게
+
+
+def _ver(v):
+    """'v0.4.0' -> (0, 4, 0). 비교용이라 숫자가 아닌 꼬리는 버린다."""
+    out = []
+    for part in str(v).lstrip("vV").split(".")[:3]:
+        digits = "".join(c for c in part if c.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out + [0] * (3 - len(out)))
+
+
+def install_kind():
+    """어떻게 깔린 건지. 업그레이드 방법이 저마다 다르고, 앱 번들은 아예 못 고친다."""
+    here = os.path.abspath(__file__)
+    if ".app/Contents/" in here:
+        return "app"                      # 메뉴 막대 앱 안의 사본 — DMG 를 다시 받아야 한다
+    for mark, kind in (("/uv/tools/", "uv"), ("/pipx/venvs/", "pipx")):
+        if mark in here.replace(os.sep, "/"):
+            return kind
+    return "pip"
+
+
+UPDATE_CMD = {
+    "uv":   [["uv", "tool", "install", "--force", "--no-cache",
+              f"git+https://github.com/{REPO}"]],
+    "pipx": [["pipx", "install", "--force",
+              f"https://github.com/{REPO}/archive/refs/heads/main.zip"]],
+}
+
+
+def update_check(cfg=None, force=False):
+    """{current, latest, url, kind, cmd, newer}. 네트워크가 막히면 latest 가 없다."""
+    cfg = cfg if cfg is not None else load_config()
+    seen = cfg.get("update") or {}
+    fresh = not force and time.time() - (seen.get("at") or 0) < UPDATE_TTL
+    if not fresh and cfg.get("updateCheck", True):
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{REPO}/releases/latest",
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": f"token-rpg/{__version__}"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                seen = {"at": time.time(), "tag": json.load(r).get("tag_name") or ""}
+            cfg["update"] = seen
+            save_config(cfg)
+        except Exception:                 # 오프라인·차단·API 제한 — 조용히 넘어간다
+            pass
+    kind = install_kind()
+    tag = seen.get("tag") or ""
+    cmd = UPDATE_CMD.get(kind, [])
+    return {"current": __version__, "latest": tag.lstrip("vV"), "kind": kind,
+            "url": f"https://github.com/{REPO}/releases/latest",
+            "cmd": " ".join(cmd[0]) if cmd else "",
+            "newer": bool(tag) and _ver(tag) > _ver(__version__)}
+
+
+def update_run():
+    """감지한 방식으로 업그레이드한다. 지금 도는 프로세스를 갈아치우므로 따로 띄우고 기다린다."""
+    cmd = UPDATE_CMD.get(install_kind())
+    if not cmd:
+        return False, "이 설치 방식은 자동 업그레이드를 지원하지 않는다"
+    try:
+        r = subprocess.run(cmd[0], capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+    if r.returncode:
+        return False, (r.stderr or r.stdout or "").strip()[-300:]
+    return True, "업데이트 완료 — 앱이나 창을 다시 열면 새 버전이다"
+
+
+def cmd_update(args):
+    info = update_check(force=True)
+    if not info["latest"]:
+        print(f"현재 {info['current']} — 최신 버전을 확인하지 못했다 (네트워크·릴리스 없음)")
+        return 1
+    if not info["newer"]:
+        print(f"최신이다 ({info['current']})")
+        return 0
+    print(f"새 버전 {info['latest']} (지금 {info['current']})")
+    if info["kind"] == "app":
+        print(f"메뉴 막대 앱은 DMG 를 다시 받아야 한다: {info['url']}")
+        return 0
+    ok, msg = update_run()
+    print(msg)
+    return 0 if ok else 1
 
 
 def _no_data_hint():
@@ -1637,7 +1750,19 @@ class _GameHandler(http.server.BaseHTTPRequestHandler):
                 return self._send(500, {"error": "save_unreadable"})
         if self.path == "/health":
             return self._send(200, {"app": "token-rpg", "version": __version__})
+        if self.path == "/update":
+            return self._send(200, update_check())
         self._send(404, {"error": "not_found"})
+
+    def do_POST(self):
+        # 업그레이드 실행. PUT 과 같은 방어 — 127.0.0.1 호스트 검사 + JSON 강제로
+        # 다른 사이트가 보내는 요청은 사전 요청(OPTIONS)에서 막힌다.
+        if not self._host_ok() or self.path != "/update":
+            return self._send(403, {"error": "forbidden"})
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            return self._send(415, {"error": "json_only"})
+        ok, msg = update_run()
+        self._send(200 if ok else 500, {"ok": ok, "msg": msg})
 
     def do_PUT(self):
         # 다른 사이트가 보낸 JSON PUT 은 사전 요청(OPTIONS)에서 막힌다 — OPTIONS 는 받지 않는다
@@ -1788,6 +1913,7 @@ def main(argv=None):
     sub.add_parser("balance", help="난이도·환생 곡선 표 출력")
     sub.add_parser("selftest", help="집계·병합·밸런스 자체 검증")
     sub.add_parser("where", help="데이터 위치 출력")
+    sub.add_parser("update", help="새 버전 확인 후 업그레이드")
     sn = sub.add_parser("since", help="언제부터의 토큰을 셀지 (기본: 설치 시점)")
     sn.add_argument("when", nargs="?", help="all · now · YYYY-MM-DD")
     sub.add_parser("install-hook", help="Claude Code Stop 훅에 자동 갱신 등록")
@@ -1821,6 +1947,8 @@ def main(argv=None):
         balance(hero(agg), dungeons()); return 0
     if cmd == "since":
         return cmd_since(a)
+    if cmd == "update":
+        return cmd_update(a)
     if cmd == "selftest":
         demo(); return 0
     if cmd == "where":

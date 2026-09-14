@@ -162,6 +162,22 @@ token-rpg since 2026-01-01   # 특정 날짜부터
 
 세션 파일 단위로 거르므로 기준일을 걸친 세션 하나는 통째로 센다.
 
+## 업데이트
+
+새 버전이 있으면 게임 화면 맨 위에 알림이 뜬다. **업데이트** 버튼을 누르면 깔린 방식
+(`uv tool`·`pipx`)을 알아서 찾아 올린다. 끝나면 창을 다시 열면 된다.
+
+```bash
+token-rpg update        # 터미널에서도 같은 일을 한다
+```
+
+메뉴 막대 앱 안의 사본은 갈아치울 수 없어서, 그때는 버튼이 **DMG 받기**로 바뀐다.
+받아서 `Applications` 에 덮어쓰면 된다.
+
+버전 확인은 GitHub 릴리스 API 한 번이고, **파이썬 쪽에서 하고 결과를 6시간 재사용한다**
+(게임 페이지가 직접 바깥으로 나가지 않는다). 보내는 것은 버전 문자열뿐이고 사용량·로그는
+어디로도 나가지 않는다. 끄려면 `config.json` 에 `"updateCheck": false` 를 넣는다.
+
 ## 여러 PC 합산
 
 각 PC에서 `token-rpg export`를 돌리면 4KB짜리 스냅샷만 남는다. 스냅샷 폴더를 클라우드
@@ -199,6 +215,7 @@ setx TOKEN_RPG_SNAPSHOTS "$env:USERPROFILE\Dropbox\token-rpg"
 | `balance` | 난이도·환생 곡선 표 출력 |
 | `selftest` | 집계·병합·밸런스 자체 검증 |
 | `where` | 데이터 위치 출력 |
+| `update` | 새 버전 확인 후 업그레이드 |
 | `since [all\|now\|YYYY-MM-DD]` | 언제부터의 토큰을 셀지 보기/바꾸기 |
 | `install-hook` / `uninstall-hook` | 자동 갱신 등록/해제 |
 

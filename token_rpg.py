@@ -1243,7 +1243,8 @@ function rollRelic(g, slot, first){
   if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
     // 반복 파밍 중복은 1/10 — 켜 두기만 해도 혼이 쏟아져 환생 기운(토큰) 제한을 우회하지 않게
     const s = first ? soulOf(g) : Math.round(soulOf(g) / 10); save.souls += s;
-    return `${RARITY[r][0]} 유물 중복 — 혼 ${n(s)}로 바꿨다`;
+    // 획득 메시지처럼 보스 이름을 밝힌다 — 능력치가 보스마다 고정이라 어디서 나왔는지가 정보다
+    return `${slot.name} — ${RARITY[r][0]} 유물 중복, 혼 ${n(s)}로 바꿨다`;
   }
   save.relics[k] = {r, a};
   return `${RARITY[r][0]} 유물 획득! ${slot.name} — ${AFFIX[a][0]} +${relicVal({r, a})}${AFFIX[a][2]}`;

@@ -69,9 +69,11 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    private func refresh() {
+    /// build 는 game.html 을 다시 쓴다 -> mtime 이 바뀌어 다음에 열 때 페이지가 리로드된다.
+    /// 리로드는 페이지 안의 상태(자동 도전 승/패 카운터)를 날리므로, 꼭 필요할 때만 돌린다.
+    private func refresh(build: Bool = true) {
         DispatchQueue.global(qos: .utility).async {
-            _ = runTokenRPG(["-q", "build"])
+            if build { _ = runTokenRPG(["-q", "build"]) }
             let status = try? JSONDecoder().decode(Status.self, from: runTokenRPG(["status"]))
             DispatchQueue.main.async { self.show(status) }
         }
@@ -107,9 +109,10 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if lastStatus != nil { show(lastStatus) }
     }
 
-    // 닫자마자 갱신 — 원정을 수령했으면 ⛏ 가 5분을 기다리지 않고 사라진다
+    // 닫자마자 배지만 갱신 — 원정을 수령했으면 ⛏ 가 5분을 기다리지 않고 사라진다.
+    // build 는 돌리지 않는다. 돌리면 열 때마다 페이지가 리로드돼 자동 도전이 0회로 돌아간다.
     func popoverDidClose(_ notification: Notification) {
-        refresh()
+        refresh(build: false)
     }
 
     // 메뉴 막대 앱은 메인 메뉴가 없어서 팝오버 입력칸에서 ⌘C·⌘V·⌘A 가 동작하지 않는다

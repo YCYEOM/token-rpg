@@ -428,6 +428,14 @@ def save_snapshot(root=None, snaps=None):   # root 는 테스트용 단일 경�
             "days": sorted(days), "providers": per,
             "daily": {k: v for k, v in days.items() if k >= recent}}
     path = os.path.join(snaps, snap["host"].replace(os.sep, "_") + ".json")
+    try:                                    # 값이 그대로면 updated 도 그대로 둔다
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+        if {k: v for k, v in old.items() if k != "updated"} == \
+           {k: v for k, v in snap.items() if k != "updated"}:
+            return path, old
+    except (OSError, ValueError):
+        pass
     tmp = path + f".{os.getpid()}.tmp"          # 원자적 교체: 훅이 동시에 돌 수 있다
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(snap, f, ensure_ascii=False)
@@ -607,9 +615,16 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX}}
     out = out or game_path()
+    html = TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False))
+    try:                                        # 내용이 같으면 건드리지 않는다 — mtime 이 바뀌면
+        with open(out, encoding="utf-8") as f:  # 메뉴 막대 앱이 페이지를 다시 읽어 화면 상태가 날아간다
+            if f.read() == html:
+                return out, data
+    except OSError:
+        pass
     tmp = out + f".{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write(TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False)))
+        f.write(html)
     os.replace(tmp, out)                        # 브라우저가 반쯤 쓰인 HTML을 읽지 않게
     return out, data
 
@@ -2025,7 +2040,28 @@ def demo():
         finally:
             os.environ.clear(); os.environ.update(keep_env)
 
-    # 6) 윈도우 분기 — 맥·리눅스에서도 os.name 만 바꿔 끼워 검증한다
+    # 6) 값이 그대로면 game.html 을 다시 쓰지 않는다. mtime 이 바뀌면 메뉴 막대 앱이
+    #    페이지를 리로드하고, 그러면 화면 상태(자동 도전 승/패)가 0 으로 돌아간다.
+    keep_env = dict(os.environ)
+    with tempfile.TemporaryDirectory() as t:
+        try:
+            os.environ["TOKEN_RPG_HOME"] = t
+            os.environ.pop("TOKEN_RPG_SNAPSHOTS", None)
+            os.makedirs(os.path.join(t, "proj"))
+            with open(os.path.join(t, "proj", "s.jsonl"), "w", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+            out, _ = build(root=t)
+            m1 = os.path.getmtime(out)
+            build(root=t)
+            assert os.path.getmtime(out) == m1, "사용량이 그대로인데 game.html 을 다시 썼다"
+            with open(os.path.join(t, "proj", "s2.jsonl"), "w", encoding="utf-8") as f:
+                f.write(json.dumps({**rec, "message": {**rec["message"], "id": "b"}}) + "\n")
+            build(root=t)
+            assert os.path.getmtime(out) != m1, "사용량이 늘었는데 game.html 이 그대로다"
+        finally:
+            os.environ.clear(); os.environ.update(keep_env)
+
+    # 7) 윈도우 분기 — 맥·리눅스에서도 os.name 만 바꿔 끼워 검증한다
     import tempfile
     real_name, env = os.name, dict(os.environ)
     try:

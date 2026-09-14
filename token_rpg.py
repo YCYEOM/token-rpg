@@ -1318,9 +1318,16 @@ function drawRelics(){
 
 // ── 환생 보너스: 환생할 때마다 얻는 혼(환생·원정·미션·유물 중복)이 K.rbSoul 씩 영구히 는다
 function drawRbBonus(){
-  $("rbBonus").innerHTML = save.rebirths
-    ? `<span class="dim">환생 보너스</span> <span class="soul">얻는 혼 +${Math.round(K.rbSoul * save.rebirths * 100)}%</span>
-       <span class="dim">(환생마다 +${K.rbSoul * 100}%)</span>` : "";
+  // 혼 배수는 셋(환생·유물·수확)이 곱해진다. 따로 두면 산 특성이 얼마나 일하는지 볼 데가 없다.
+  const parts = [];
+  let mul = 1;
+  const add = (label, pct) => { if (pct > 0) { parts.push(`${label} +${+pct.toFixed(1)}%`); mul *= 1 + pct/100; } };
+  add("환생", K.rbSoul * save.rebirths * 100);
+  add("유물", relicSum("soul"));
+  add("수확", K.tsoul * save.traits.soul);
+  $("rbBonus").innerHTML = parts.length
+    ? `<span class="dim">얻는 혼</span> <span class="soul">x${mul.toFixed(2)}</span>
+       <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
 const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawExped(); drawStages(); drawRelics(); };

@@ -47,6 +47,19 @@ def save_config(cfg):
     os.replace(tmp, config_path())
 
 
+def since_ts(cfg=None):
+    """이 설치가 언제부터 센 것인지. 처음 돌 때 정한다 — 쌓여 있던 로그로 레벨이
+    순간에 치솟으면 성장이 통째로 사라지기 때문이다. 0 이면 전체 기록을 센다."""
+    cfg = cfg if cfg is not None else load_config()
+    if isinstance(cfg.get("since"), (int, float)):
+        return cfg["since"]
+    # 이미 쓰던 설치(스냅샷이나 저장이 있다)는 과거를 지킨다. 새 설치만 지금부터.
+    used = glob.glob(os.path.join(snap_dir(), "*.json")) or os.path.exists(save_path())
+    cfg["since"] = 0 if used else time.time()
+    save_config(cfg)
+    return cfg["since"]
+
+
 def snap_dir():
     """PC별 스냅샷 폴더. 클라우드 동기화 폴더로 지정하면 여러 기기가 합산된다."""
     d = os.environ.get("TOKEN_RPG_SNAPSHOTS") or os.path.join(data_dir(), "snapshots")
@@ -353,14 +366,20 @@ def provider_roots(pid, cfg=None):
     return [p for p in out if os.path.isdir(p)]
 
 
-def collect(root=None, pid="claude-code", roots=None):
-    """한 프로바이더의 로그를 훑어 합계를 낸다."""
+def collect(root=None, pid="claude-code", roots=None, since=0):
+    """한 프로바이더의 로그를 훑어 합계를 낸다.
+    since 이전에 끝난 세션 파일은 건너뛴다 — 세션 단위라 기준을 걸친 파일 하나는 통째로 센다."""
     spec = PROVIDERS[pid]
     agg = collections.Counter()
     days, projects, models = collections.Counter(), collections.Counter(), collections.Counter()  # days: 날짜 -> 토큰
     files = 0
     for r in ([root] if root else (roots if roots is not None else provider_roots(pid))):
         for path in glob.glob(os.path.join(r, spec["glob"]), recursive=True):
+            try:
+                if since and os.path.getmtime(path) < since:
+                    continue
+            except OSError:
+                continue
             a, proj, d, m = spec["read"](path)
             if not a:
                 continue
@@ -382,7 +401,7 @@ def collect_all(cfg=None):
         roots = provider_roots(pid, cfg)
         if not roots:
             continue
-        a, p, m, d = collect(pid=pid, roots=roots)
+        a, p, m, d = collect(pid=pid, roots=roots, since=since_ts(cfg))
         if not a.get("calls"):
             continue
         agg.update(a); projects.update(p); models.update(m)
@@ -1424,12 +1443,41 @@ def uninstall_hook():
 
 
 def _no_data_hint():
+    # 기준이 걸려 있으면 그게 진짜 이유다 — 경로부터 늘어놓으면 엉뚱한 데를 뒤지게 된다
+    ts = since_ts()
+    if ts:
+        print(f"{datetime.fromtimestamp(ts).date()} 이후로는 사용 기록이 없다 (설치 시점부터 센다).")
+        print("AI 코딩을 한 번 하면 캐릭터가 생긴다.")
+        print("예전 기록까지 세려면:     token-rpg since all\n")
     print("어떤 프로바이더에서도 사용 기록을 찾지 못했다. 찾아본 곳:")
     for pid, spec in PROVIDERS.items():
         for r in PROVIDERS[pid]["roots"]():
             print(f"  {spec['label']:14} {r}")
     print("\n로그가 다른 곳에 있으면:  token-rpg scan add <프로바이더> <경로>")
     print("목록 보기:                token-rpg providers")
+
+
+def cmd_since(args):
+    """언제부터 센 토큰을 캐릭터로 칠지. 인자가 없으면 지금 기준만 보여준다."""
+    cfg = load_config()
+    if args.when:
+        if args.when == "all":
+            cfg["since"] = 0
+        elif args.when == "now":
+            cfg["since"] = time.time()
+        else:
+            try:
+                cfg["since"] = datetime.strptime(args.when, "%Y-%m-%d").timestamp()
+            except ValueError:
+                print("YYYY-MM-DD 또는 all(전체) · now(지금부터)")
+                return 1
+        save_config(cfg)
+    ts = since_ts(cfg)
+    print("전체 기록을 센다" if not ts
+          else f"{datetime.fromtimestamp(ts).date()} 이후 기록만 센다")
+    if ts:
+        print("바꾸려면: token-rpg since all | now | YYYY-MM-DD")
+    return 0
 
 
 def cmd_providers(args):
@@ -1694,6 +1742,8 @@ def main(argv=None):
     sub.add_parser("balance", help="난이도·환생 곡선 표 출력")
     sub.add_parser("selftest", help="집계·병합·밸런스 자체 검증")
     sub.add_parser("where", help="데이터 위치 출력")
+    sn = sub.add_parser("since", help="언제부터의 토큰을 셀지 (기본: 설치 시점)")
+    sn.add_argument("when", nargs="?", help="all · now · YYYY-MM-DD")
     sub.add_parser("install-hook", help="Claude Code Stop 훅에 자동 갱신 등록")
     sub.add_parser("uninstall-hook", help="등록한 훅 제거")
     sub.add_parser("providers", help="프로바이더 목록과 스캔 위치")
@@ -1723,6 +1773,8 @@ def main(argv=None):
         if not projects:
             _no_data_hint(); return 1
         balance(hero(agg), dungeons()); return 0
+    if cmd == "since":
+        return cmd_since(a)
     if cmd == "selftest":
         demo(); return 0
     if cmd == "where":
@@ -1948,7 +2000,32 @@ def demo():
     # 4) 특성 비용은 반드시 증가한다 (무한 구매 방지)
     assert trait_cost(0) < trait_cost(5) < trait_cost(20), "특성 비용이 증가하지 않는다"
 
-    # 5) 윈도우 분기 — 맥·리눅스에서도 os.name 만 바꿔 끼워 검증한다
+    # 5) 설치 시점 기준 — 쌓여 있던 로그로 레벨이 치솟지 않아야 하고,
+    #    쓰던 설치는 과거를 잃지 않아야 한다 (둘 다 틀리면 캐릭터가 통째로 바뀐다)
+    keep_env = dict(os.environ)
+    with tempfile.TemporaryDirectory() as t:
+        try:
+            os.environ["TOKEN_RPG_HOME"] = t
+            os.environ.pop("TOKEN_RPG_SNAPSHOTS", None)
+            assert since_ts({}) > 0, "새 설치인데 전체 기록을 센다"
+            os.remove(config_path())
+            with open(os.path.join(snap_dir(), "pc.json"), "w", encoding="utf-8") as f:
+                f.write("{}")
+            assert since_ts({}) == 0, "쓰던 설치인데 과거를 잘라낸다"
+
+            logs = os.path.join(t, "logs")
+            os.makedirs(os.path.join(logs, "proj"))
+            for name in ("old.jsonl", "new.jsonl"):
+                with open(os.path.join(logs, "proj", name), "w", encoding="utf-8") as f:
+                    f.write(json.dumps(rec) + "\n")
+            os.utime(os.path.join(logs, "proj", "old.jsonl"), (time.time() - 86400 * 30,) * 2)
+            a_all, _, _, _ = collect(roots=[logs])
+            a_cut, _, _, _ = collect(roots=[logs], since=time.time() - 86400)
+            assert a_all["calls"] == 2 and a_cut["calls"] == 1, (dict(a_all), dict(a_cut))
+        finally:
+            os.environ.clear(); os.environ.update(keep_env)
+
+    # 6) 윈도우 분기 — 맥·리눅스에서도 os.name 만 바꿔 끼워 검증한다
     import tempfile
     real_name, env = os.name, dict(os.environ)
     try:

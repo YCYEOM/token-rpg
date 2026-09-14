@@ -131,6 +131,18 @@ token-rpg install-hook      # Claude Code Stop 훅에 등록
 **환생 보너스** — 환생할 때마다 얻는 혼(환생·원정·미션·유물 중복)이 영구히 +2%씩 는다.
 10회면 +20%, 25회면 +50%.
 
+**시작점** — 설치한 날부터 센다. 이미 몇 달 치 로그가 쌓여 있으면 깔자마자 고레벨로
+시작해 성장이 통째로 사라지기 때문이다. 처음 실행할 때 기준을 정하고 `config.json` 에
+남긴다. 이미 쓰던 설치(스냅샷이나 저장이 있다)는 과거를 그대로 지킨다.
+
+```bash
+token-rpg since              # 지금 기준 보기
+token-rpg since all          # 예전 기록까지 전부 세기
+token-rpg since 2026-01-01   # 특정 날짜부터
+```
+
+세션 파일 단위로 거르므로 기준일을 걸친 세션 하나는 통째로 센다.
+
 ## 여러 PC 합산
 
 각 PC에서 `token-rpg export`를 돌리면 4KB짜리 스냅샷만 남는다. 스냅샷 폴더를 클라우드
@@ -168,6 +180,7 @@ setx TOKEN_RPG_SNAPSHOTS "$env:USERPROFILE\Dropbox\token-rpg"
 | `balance` | 난이도·환생 곡선 표 출력 |
 | `selftest` | 집계·병합·밸런스 자체 검증 |
 | `where` | 데이터 위치 출력 |
+| `since [all\|now\|YYYY-MM-DD]` | 언제부터의 토큰을 셀지 보기/바꾸기 |
 | `install-hook` / `uninstall-hook` | 자동 갱신 등록/해제 |
 
 ## 데이터

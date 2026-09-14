@@ -123,6 +123,11 @@ COST_MUL   = 1.13    # 특성 1레벨당 비용 증가율
 COST_K     = 80      # 특성 1레벨 기본 비용
 SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP
 TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
+# '수확' 1레벨당 혼 획득 +%p. 3 이면 예지를 뺀 만큼(3층 27회)이 원래 속도(23회)로 돌아온다.
+# 더 올리면 층 벽이 무너진다 — 6 에서 19회, 10 에서 17회. simulate() 로 잰 값이다.
+TRAIT_SOUL = 3
+# '신속' 은 다른 유산과 같은 배율(TRAIT_MUL). SPD 는 선공만 정하고 평균 피해 모델에는
+# 안 들어가서 reach()·simulate() 이 값을 못 재는데, 효과가 '한 대 먼저'로 묶여 있어 괜찮다.
 # TRAIT_CRIT 은 없앴다 — CRIT 은 상한 100%가 있어 영구 특성으로 두면 되팔 수 없는 함정이 된다.
 # 치명타는 토큰(thinking)·배분 포인트·유물로만 오른다.
 
@@ -566,11 +571,13 @@ def simulate(h, n_slots, rebirths=40):
     """환생을 거듭했을 때 몇 회차에 몇 층에 닿는지. 상수 튜닝의 근거."""
     import itertools
     souls, tr, rows = 0, {}, []
-    cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt"])
+    # 신속은 빠졌다 — 평균 피해 모델이 SPD 를 안 보므로 넣어도 0 으로 값이 매겨진다
+    cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt", "soul"])
     for r in range(rebirths + 1):
         g = reach(h, tr)
         rows.append((r, g, (g - 1) // n_slots + 1, souls, sum(tr.values())))
-        souls += sum(round(i ** SOUL_EXP * (1 + REBIRTH_SOUL * r)) for i in range(1, g + 1))
+        souls += round(sum(round(i ** SOUL_EXP * (1 + REBIRTH_SOUL * r)) for i in range(1, g + 1))
+                       * (1 + TRAIT_SOUL / 100 * tr.get("soul", 0)))
         for _ in range(5000):
             k = next(cyc)
             c = trait_cost(tr.get(k, 0))
@@ -618,7 +625,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
             "daily": getattr(merge, "daily", {}),
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
-                  "soulExp": SOUL_EXP, "tpt": TRAIT_PT,
+                  "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
                   "rbSoul": REBIRTH_SOUL,
@@ -786,10 +793,12 @@ const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력
                 ["cdmg","치명타 피해","CDMG"]];
 const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
                 ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],
-                ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
+                ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],
+                ["spd","신속의 유산","SPD x"+K.tmul+"/lv"],["soul","수확","얻는 혼 +"+K.tsoul+"%/lv"],
+                ["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0}, cleared:[], souls:0, rebirths:0,
-            traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,pt:0},
+            traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, rbExp:null, farm:0});
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
@@ -849,7 +858,8 @@ const boss = g => { const p = Math.pow(K.step, g-1); return {
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
   dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9) }; };
 const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul
-                                * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths));
+                                * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths)
+                                * (1 + K.tsoul/100 * save.traits.soul));
 const costOf = lv => Math.round(K.ck * Math.pow(K.cmul, lv));
 // 환생 기운 = 마지막 환생 이후 새로 쓴 토큰 / K.rbExp. 상한(K.rbCap회분)을 넘은 몫은 버린다
 const rbBase = () => Math.max(save.rbExp ?? H.exp, H.exp - K.rbCap * K.rbExp);
@@ -897,6 +907,7 @@ const left       = () => points() - used();
 // 치명타율은 K.critCap 까지, 넘친 %p 는 치명타 피해로 간다
 // 영구 특성에서는 CRIT 을 뺐다 — 상한 100%가 있어 되팔 수 없는 함정이었다.
 // CRIT 은 토큰(thinking)·배분 포인트·유물로만 오른다. 넘친 %p 가 CDMG 로 가는 건 그대로다.
+const spdNow = () => Math.round(Math.max(1, H.spd) * Math.pow(K.tmul, save.traits.spd));
 const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? K.cdmgBase + save.alloc.cdmg*G.cdmg + save.traits.cdmg*K.tcdmg + Math.max(0, critRaw() - K.critCap)
@@ -937,7 +948,7 @@ function drawHero(){
   $("soulsHave").textContent = "보유 " + n(save.souls);
   $("sheet").innerHTML = STATS.map(([k,,s]) =>
     `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b></span>`
-  ).join("") + `<span><span class="dim">SPD</span> <b>${H.spd}</b></span>`;
+  ).join("") + `<span><span class="dim">SPD</span> <b>${spdNow()}</b></span>`;
   // 유물 몫은 한 줄을 따로 쓴다 — 수치 옆에 붙이면 칸이 넘치고 '더 더해진다'로 읽힌다
   const rin = STATS.map(([k,,s]) => [s, relicSum(k), k === "crit" ? "%p" : "%"])
     .filter(([, v]) => v).map(([s, v, u]) => `${s} +${+v.toFixed(1)}${u}`).join(" · ");
@@ -1125,7 +1136,7 @@ function drawStages(){
       <div class="n"><b class="nm" title="${slot.name}">${done?"✓ ":""}${g}. ${slot.name}</b>
       <small>${
         [seg("HP", b.hp), seg("ATK", b.atk), seg("DEF", b.dfn), seg("SPD", b.spd)].join(" · ")}${
-        H.spd>=b.spd ? "" : " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"}
+        spdNow()>=b.spd ? "" : " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"}
       <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}</small></div>`;
     const btn = document.createElement("button");
     btn.textContent = open ? (done ? "재도전" : "도전") : "잠김";
@@ -1333,7 +1344,7 @@ const winStage = g => {
 // 연출 없는 즉시 전투 (자동 도전용). 규칙은 fightStart 와 같다.
 function quickFight(b){
   const [me, foe] = newFighters(b);
-  let myTurn = H.spd >= b.spd;
+  let myTurn = spdNow() >= b.spd;
   for (let turn = 1; turn <= 200; turn++) {
     const [a, d] = myTurn ? [me, foe] : [foe, me];
     d.hp -= dmgOf(a, d, myTurn && Math.random()*100 < me.crit);
@@ -1351,7 +1362,7 @@ function fightStart(g, slot, b){
   $("fh").textContent = H.emoji; $("fb").textContent = slot.emoji; $("fbn").textContent = slot.name;
   $("log").innerHTML = ""; $("close").disabled = true; $("close").textContent = "전투 중…";
   $("fight").classList.add("on");
-  let turn = 0, myTurn = H.spd >= b.spd;
+  let turn = 0, myTurn = spdNow() >= b.spd;
   say(`${slot.emoji} ${g}스테이지 — ${slot.name} 등장!`);
   paint(me, foe);
   timer = setInterval(() => {

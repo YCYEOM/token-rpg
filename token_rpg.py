@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1176,14 +1176,23 @@ function drawMissions(){
   const s = streak();
   $("streak").textContent = s ? `연속 ${s}일 · 보상 x${streakMul().toFixed(1)}` : "";
   const got = k => !!(save.claimed || {})[k];
-  $("missions").innerHTML = missions().map(m => {
+  const row = m => {
     const done = m.cur >= m.goal;
     return `<div class="st"><div class="n"><b>${got(m.key) ? "✓ " : ""}${m.name}</b>
       <div class="bar"><i style="width:${Math.min(100, 100 * m.cur / m.goal)}%;background:var(--gold)"></i></div>
       <small>${n(Math.min(m.cur, m.goal))} / ${n(m.goal)} · 보상 혼 ${n(m.souls)}</small></div>
       <button data-k="${m.key}" ${done && !got(m.key) ? "" : "disabled"}>${
         got(m.key) ? "받음" : done ? "받기" : "진행 중"}</button></div>`;
-  }).join("") + `<div class="dim" style="font-size:11px;margin-top:6px">실제 사용량으로 채워진다.
+  };
+  // 주기가 다르면 따로 묶어 둬야 뭐가 언제 초기화되는지 보인다 (키 앞글자가 d=일일·w=주간)
+  const ms = missions();
+  const group = (title, when, list) => !list.length ? "" :
+    `<div class="dim" style="font-size:11px;margin:10px 0 2px">${title}
+       <span style="opacity:.7">· ${when} 새로 바뀐다</span></div>` + list.map(row).join("");
+  $("missions").innerHTML =
+    group("일일 미션", "매일 자정에", ms.filter(m => m.key[0] === "d")) +
+    group("주간 미션", "월요일에", ms.filter(m => m.key[0] === "w")) +
+    `<div class="dim" style="font-size:11px;margin-top:6px">실제 사용량으로 채워진다.
     Claude Code 응답마다, 메뉴 막대 앱은 5분마다 갱신. 연속 사용일마다 보상 +10% (최대 7일).</div>`;
   $("missions").querySelectorAll("button[data-k]").forEach(b => b.onclick = () => {
     const m = missions().find(x => x.key === b.dataset.k);
@@ -1256,8 +1265,7 @@ function drawRelics(){
     </div>
     <div class="dim" style="margin-top:4px">첫 격파·재격파 = 한 판 이겼을 때 그 등급이 나올 확률.
       어떤 능력치가 붙을지는 보스마다 고정이다 — 무작위인 것은 등급뿐이다.
-      보스마다 유물은 하나 — 더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.
-      그래서 아직 못 깬 보스를 새로 잡는 쪽이 이미 깬 보스를 반복하는 것보다 60배 낫다.</div></details>`;
+      보스마다 유물은 하나 — 더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.</div></details>`;
 }
 
 // ── 환생 보너스: 환생할 때마다 얻는 혼(환생·원정·미션·유물 중복)이 K.rbSoul 씩 영구히 는다

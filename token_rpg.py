@@ -151,11 +151,14 @@ TIERS = [
 ]
 # 고정 보스 15종 = 한 층 15스테이지 (1층을 다 깨는 데 환생 5~6회 ≈ 2~3일).
 # 층마다 같은 순서로 다시 나오고, 능력치는 boss()가 전역 스테이지 번호로 정한다.
-BOSSES = [("버그 벌레", "🐛"), ("무한 루프 뱀", "🐍"), ("널 포인터 박쥐", "🦇"),
-          ("레거시 전갈", "🦂"), ("좀비 프로세스", "🧟"), ("메모리 누수 슬라임", "🦠"),
-          ("머지 충돌 도깨비", "👹"), ("스파게티 크라켄", "🐙"), ("데드락 골렘", "🗿"),
-          ("레이스 컨디션 유령", "👻"), ("의존성 지옥 악마", "😈"), ("스택 오버플로 히드라", "🐉"),
-          ("기술 부채 리치", "💀"), ("프로덕션 장애 드래곤", "🐲"), ("토큰 한도의 군주", "👑")]
+# 세 번째 칸은 그 보스가 떨어뜨리는 유물의 능력치다. 고정이라 "어디를 먼저 깰까"가 선택이 된다.
+# 5종을 3개씩 나누고 층 앞뒤로 흩어 놔, 어떤 빌드를 노리든 초반에 목표가 하나는 있게 한다.
+BOSSES = [("버그 벌레", "🐛", "atk"), ("무한 루프 뱀", "🐍", "crit"), ("널 포인터 박쥐", "🦇", "dfn"),
+          ("레거시 전갈", "🦂", "hp"), ("좀비 프로세스", "🧟", "soul"), ("메모리 누수 슬라임", "🦠", "hp"),
+          ("머지 충돌 도깨비", "👹", "crit"), ("스파게티 크라켄", "🐙", "atk"), ("데드락 골렘", "🗿", "dfn"),
+          ("레이스 컨디션 유령", "👻", "crit"), ("의존성 지옥 악마", "😈", "soul"),
+          ("스택 오버플로 히드라", "🐉", "atk"), ("기술 부채 리치", "💀", "dfn"),
+          ("프로덕션 장애 드래곤", "🐲", "hp"), ("토큰 한도의 군주", "👑", "soul")]
 
 
 def level_of(exp):
@@ -488,8 +491,9 @@ def dungeons():
     """한 층의 스테이지 슬롯 = 고정 보스. 누구 PC 에서든 같은 던전이다 (프로젝트 이름을 드러내지 않는다).
     능력치는 boss()가 정하고, 여기선 이름·이모지·혼 배수(층 뒤쪽 보스일수록 0.7 -> 1.3)만 준다."""
     n = len(BOSSES)
-    return [{"slot": i + 1, "name": name, "emoji": emoji, "soul": round(0.7 + 0.6 * i / (n - 1), 2)}
-            for i, (name, emoji) in enumerate(BOSSES)]
+    return [{"slot": i + 1, "name": name, "emoji": emoji, "affix": affix,
+             "soul": round(0.7 + 0.6 * i / (n - 1), 2)}
+            for i, (name, emoji, affix) in enumerate(BOSSES)]
 
 
 def boss(g):
@@ -795,6 +799,11 @@ function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; sa
     if (free) rs[relicKey(free)] = rs[k];
     delete rs[k];
   }
+  // 유물 능력치가 보스 고정으로 바뀌었다 — 모은 등급은 그대로 두고 능력치만 맞춰 준다
+  for (const s of SLOTS) {
+    const r = rs[relicKey(s)];
+    if (r && r.a !== s.affix) r.a = s.affix;
+  }
 }
 const pull = async () => {
   const r = await fetch("save", {cache: "no-store"});
@@ -1091,7 +1100,7 @@ function drawStages(){
       <small>${
         [seg("HP", b.hp), seg("ATK", b.atk), seg("DEF", b.dfn), seg("SPD", b.spd)].join(" · ")}${
         H.spd>=b.spd ? "" : " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"}
-      <br>격파 시 혼 ${n(soulOf(g))}</small></div>`;
+      <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}</small></div>`;
     const btn = document.createElement("button");
     btn.textContent = open ? (done ? "재도전" : "도전") : "잠김";
     btn.disabled = !open;
@@ -1202,7 +1211,7 @@ function rollRelic(g, slot, first){
   if (Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN)) return "";
   let x = Math.random() * 100, r = 0;
   while (r < RARITY.length - 1 && x >= RARITY[r][1]) { x -= RARITY[r][1]; r++; }
-  const keys = Object.keys(AFFIX), a = keys[Math.floor(Math.random() * keys.length)];
+  const a = slot.affix;                           // 능력치는 보스가 정한다 — 무작위는 등급뿐
   save.relics = save.relics || {};
   const k = relicKey(slot), old = save.relics[k];
   if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
@@ -1228,7 +1237,7 @@ function drawRelics(){
     return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
         text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${s.name}</span>${relicOk(r)
       ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
-      : '<span class="dim">?</span>'}</div>`;
+      : `<span class="dim" style="white-space:nowrap">? · ${AFFIX[s.affix][0]}</span>`}</div>`;
   }).join("");
 }
 
@@ -1246,7 +1255,7 @@ function drawRelics(){
           cell("+" + AFFIX.crit[1] * 2 ** r + "%p")].join("")).join("")}
     </div>
     <div class="dim" style="margin-top:4px">첫 격파·재격파 = 한 판 이겼을 때 그 등급이 나올 확률.
-      효과는 ATK·HP·DEF·혼(%) 또는 CRIT(%p) 중 무작위 하나.
+      어떤 능력치가 붙을지는 보스마다 고정이다 — 무작위인 것은 등급뿐이다.
       보스마다 유물은 하나 — 더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.
       그래서 아직 못 깬 보스를 새로 잡는 쪽이 이미 깬 보스를 반복하는 것보다 60배 낫다.</div></details>`;
 }

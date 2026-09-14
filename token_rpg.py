@@ -132,6 +132,11 @@ REBIRTH_EXP = 1_000_000
 REBIRTH_CAP = 3      # 기운은 3회분까지만 쌓인다 — 며칠 쉬고 와도 한 번에 몰아치지 못하게
 REBIRTH_SOUL = 0.02  # 환생 1회마다 얻는 혼 +2% (선형 누적). 옛 축복(판마다 ATK+30%·혼+50% 등)을 대신한다
 
+# 미션 보상 예산. 단위는 '최고 스테이지 보스 격파 몇 번분'이고, 그날의 미션들이 가중치로
+# 나눠 갖는다. 미션을 쪼개도 총합이 그대로라 진행 속도가 빨라지지 않는다.
+# 환생이 주 수입원이어야 하므로 demo() 에서 환생 수입과 비교해 상한을 지킨다.
+DAY_BUDGET, WEEK_BUDGET = 5, 20
+
 # 원정(방치 수입): 클리어한 가장 깊은 스테이지를 자동 반복해 혼을 캔다.
 # 초당 수확 = soulOf(최고 클리어) / IDLE_DIV. 8시간이면 환생 1회분 언저리 =
 # 자는 동안 벌어두는 보조 수입이지, 환생을 대체하지는 않는다.
@@ -616,6 +621,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
                   "rbSoul": REBIRTH_SOUL,
+                  "dayBudget": DAY_BUDGET, "weekBudget": WEEK_BUDGET,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX}}
     out = out or game_path()
@@ -1163,14 +1169,24 @@ function missions(){
   const weekTok = week.reduce((s, d) => s + dayTok(d), 0);
   const reward = m => Math.round(Math.max(50, soulOf(Math.max(1, save.best))) * m * streakMul());
   const tools = Object.keys((D.daily || {})[today] || {}).length;
-  return [
-    {key: "d1:" + today, name: `오늘 토큰 ${n(T)} 쓰기`, cur: dayTok(today), goal: T, souls: reward(2)},
-    MULTIPROV
-      ? {key: "d2:" + today, name: "오늘 AI 툴 2개 이상 쓰기", cur: tools, goal: 2, souls: reward(3)}
-      : {key: "d2:" + today, name: `오늘 토큰 ${n(T * 2)} 쓰기`, cur: dayTok(today), goal: T * 2, souls: reward(3)},
-    {key: "w1:" + wk, name: "이번 주 5일 사용", cur: week.filter(dayTok).length, goal: 5, souls: reward(10)},
-    {key: "w2:" + wk, name: `이번 주 토큰 ${n(T * 5)} 쓰기`, cur: weekTok, goal: T * 5, souls: reward(10)},
+  // 예산을 가중치로 나눠 갖는다 — 미션을 늘려도 하루 수입 총합은 K.dayBudget 그대로다
+  const share = (budget, list) => {
+    const sum = list.reduce((s, m) => s + m.w, 0);
+    return list.map(m => ({key: m.key, name: m.name, cur: m.cur, goal: m.goal,
+                           souls: reward(budget * m.w / sum)}));
+  };
+  // 쉬운 단은 적게, 먼 단은 많이 — 예전엔 2단만 깨면 하루치를 다 받았다
+  const day = [
+    {key: "d1:" + today, w: 1,   name: `오늘 토큰 ${n(T)} 쓰기`,     cur: dayTok(today), goal: T},
+    {key: "d2:" + today, w: 1.5, name: `오늘 토큰 ${n(T * 2)} 쓰기`, cur: dayTok(today), goal: T * 2},
+    {key: "d3:" + today, w: 2.5, name: `오늘 토큰 ${n(T * 3)} 쓰기`, cur: dayTok(today), goal: T * 3},
   ];
+  if (MULTIPROV)      // 툴을 여러 개 쓰는 사람만 — 예산은 위 세 단과 나눠 쓴다
+    day.push({key: "d4:" + today, w: 1, name: "오늘 AI 툴 2개 이상 쓰기", cur: tools, goal: 2});
+  return share(K.dayBudget, day).concat(share(K.weekBudget, [
+    {key: "w1:" + wk, w: 1, name: "이번 주 5일 사용", cur: week.filter(dayTok).length, goal: 5},
+    {key: "w2:" + wk, w: 1, name: `이번 주 토큰 ${n(T * 5)} 쓰기`, cur: weekTok, goal: T * 5},
+  ]));
 }
 function drawMissions(){
   const s = streak();
@@ -2026,6 +2042,13 @@ def demo():
         rebirth = sum(soul_of(g) for g in range(1, last + 1))
         assert idle8 < rebirth * 4, \
             f"{last//n}층 방치 수입 {idle8:.0f}이 환생 {rebirth}의 4배 이상 — IDLE_DIV 상향 필요"
+        # 미션도 보조 수입이어야 한다. 한 주치 미션 vs 한 주치 환생(하루 2회 = 토큰 200만/일).
+        # 1.7 = 연속 7일 최대 배율(streakMul). 미션을 쪼개도 예산이 고정이라 여기가 안 움직인다.
+        wk_mission = (DAY_BUDGET * 7 + WEEK_BUDGET) * soul_of(last) * 1.7
+        wk_rebirth = 14 * rebirth
+        assert wk_mission < wk_rebirth * 2, (
+            f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
+            f"— DAY_BUDGET·WEEK_BUDGET 하향 필요")
 
     # 4) 특성 비용은 반드시 증가한다 (무한 구매 방지)
     assert trait_cost(0) < trait_cost(5) < trait_cost(20), "특성 비용이 증가하지 않는다"

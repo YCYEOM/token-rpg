@@ -92,7 +92,7 @@ def write_save(base, save, snaps=None):
 
 # --- 밸런스 조절 손잡이 (python3 build.py --balance 로 확인) ---
 # 보스 능력치는 '전역 스테이지 번호'의 지수 곡선이다. 층 경계에서 난이도가
-# 끊기지 않고, 한 층(=프로젝트 수)을 돌 때마다 STEP^N 배씩 벽이 높아진다.
+# 끊기지 않고, 한 층(=고정 보스 15종)을 돌 때마다 STEP^N 배씩 벽이 높아진다.
 STEP = 1.28                              # 스테이지 1칸당 보스 배율
 B_HP, B_ATK, B_DEF = 115, 24, 8          # 1스테이지 보스 기준치
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
@@ -134,8 +134,13 @@ TIERS = [
     (46, "\U0001f9d9‍♂️", "대현자"),
     (60, "\U0001f409", "토큰 드래곤"),
 ]
-BOSS_EMOJI = ["\U0001fab2", "\U0001f577️", "\U0001f40d", "\U0001f982",
-              "\U0001f9df", "\U0001f479", "\U0001f47e", "\U0001f432"]
+# 고정 보스 15종 = 한 층 15스테이지 (1층을 다 깨는 데 환생 5~6회 ≈ 2~3일).
+# 층마다 같은 순서로 다시 나오고, 능력치는 boss()가 전역 스테이지 번호로 정한다.
+BOSSES = [("버그 벌레", "🐛"), ("무한 루프 뱀", "🐍"), ("널 포인터 박쥐", "🦇"),
+          ("레거시 전갈", "🦂"), ("좀비 프로세스", "🧟"), ("메모리 누수 슬라임", "🦠"),
+          ("머지 충돌 도깨비", "👹"), ("스파게티 크라켄", "🐙"), ("데드락 골렘", "🗿"),
+          ("레이스 컨디션 유령", "👻"), ("의존성 지옥 악마", "😈"), ("스택 오버플로 히드라", "🐉"),
+          ("기술 부채 리치", "💀"), ("프로덕션 장애 드래곤", "🐲"), ("토큰 한도의 군주", "👑")]
 
 
 def level_of(exp):
@@ -450,23 +455,12 @@ def hero(agg):
     }
 
 
-def dungeons(projects):
-    """프로젝트 = 한 층의 스테이지 슬롯. 능력치는 boss()가 전역 번호로 정하고,
-    프로젝트는 이름/이모지/혼 배수(토큰이 많을수록 혼을 더 준다)만 준다."""
-    items = sorted(projects.items(), key=lambda kv: kv[1])
-    home = os.path.basename(os.path.expanduser("~"))
-    out = []
-    for i, (key, v) in enumerate(items):
-        pid, _, name = key.partition("\t")
-        if not name:                     # 옛 스냅샷: 프로바이더 표기가 없다
-            pid, name = "claude-code", key
-        short = name.replace("-Users-" + home, "").strip("-") or "home"
-        share = i / max(1, len(items) - 1)          # 토큰 적은 쪽 0.0 ~ 많은 쪽 1.0
-        out.append({"slot": i + 1, "name": short, "tokens": v,
-                    "prov": PROVIDERS.get(pid, {}).get("label", pid),
-                    "emoji": BOSS_EMOJI[i % len(BOSS_EMOJI)],
-                    "soul": round(0.7 + 0.6 * share, 2)})
-    return out
+def dungeons():
+    """한 층의 스테이지 슬롯 = 고정 보스. 누구 PC 에서든 같은 던전이다 (프로젝트 이름을 드러내지 않는다).
+    능력치는 boss()가 정하고, 여기선 이름·이모지·혼 배수(층 뒤쪽 보스일수록 0.7 -> 1.3)만 준다."""
+    n = len(BOSSES)
+    return [{"slot": i + 1, "name": name, "emoji": emoji, "soul": round(0.7 + 0.6 * i / (n - 1), 2)}
+            for i, (name, emoji) in enumerate(BOSSES)]
 
 
 def boss(g):
@@ -578,7 +572,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
     save_snapshot(root)
     agg, projects, models, hosts = merge()
     h = hero(agg)
-    data = {"hero": h, "dungeons": dungeons(projects), "hosts": hosts,
+    data = {"hero": h, "dungeons": dungeons(), "hosts": hosts,
             "providers": sorted(getattr(merge, "providers", {}).items(),
                                 key=lambda kv: -kv[1]),
             "models": models.most_common(),
@@ -757,7 +751,15 @@ const note = t => { $("expedBanner").innerHTML = `<div class="banner">${t}</div>
 const adopt = d => { rev = d.rev; save = Object.assign(fresh(), d.save || {}); fill(); };
 // 옛 저장에는 새로 생긴 스탯 칸(cdmg 등)이 없다 — 비어 있으면 계산이 전부 NaN 이 된다
 function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; save.traits = {...f.traits, ...save.traits};
-                 delete save.bless; delete save.blessOffer; }   // 없어진 축복 칸은 저장에서 치운다
+                 delete save.bless; delete save.blessOffer;     // 없어진 축복 칸은 저장에서 치운다
+  // 예전 유물(프로바이더|프로젝트 키)은 빈 고정 보스 칸에 차례로 옮긴다 — 모은 유물을 잃지 않게
+  const rs = save.relics || {};
+  for (const k of Object.keys(rs).filter(k => k.includes("|"))) {
+    const free = SLOTS.find(s => !rs[relicKey(s)]);
+    if (free) rs[relicKey(free)] = rs[k];
+    delete rs[k];
+  }
+}
 const pull = async () => {
   const r = await fetch("save", {cache: "no-store"});
   if (!r.ok) throw new Error("save " + r.status);
@@ -1049,8 +1051,8 @@ function drawStages(){
     // 이름은 한 줄 말줄임, 수치는 "HP 115" 단위로 묶어 숫자만 다음 줄로 밀리지 않게
     const seg = (k, v) => `<span style="white-space:nowrap">${k} ${n(v)}</span>`;
     el.innerHTML = `<div class="e">${slot.emoji}</div>
-      <div class="n"><b class="nm" title="${slot.name}">${done?"✓ ":""}${g}. ${slot.name}의 수호자</b>
-      <small>${MULTIPROV ? `<span class="badge">${slot.prov}</span>` : ""}${
+      <div class="n"><b class="nm" title="${slot.name}">${done?"✓ ":""}${g}. ${slot.name}</b>
+      <small>${
         [seg("HP", b.hp), seg("ATK", b.atk), seg("DEF", b.dfn), seg("SPD", b.spd)].join(" · ")}${
         H.spd>=b.spd ? "" : " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"}
       <br>격파 시 혼 ${n(soulOf(g))}</small></div>`;
@@ -1148,11 +1150,11 @@ function drawMissions(){
   });
 }
 
-// ── 유물: 보스(= 내 프로젝트)가 가끔 떨어뜨린다. 프로젝트마다 하나, 더 높은 등급이 나오면 교체.
+// ── 유물: 보스가 가끔 떨어뜨린다. 보스마다 하나, 더 높은 등급이 나오면 교체.
 // 환생해도 남는 두 번째 영구 성장 축. 등급이 오를 때마다 효과가 두 배.
 const RARITY = [["일반", 60, "var(--dim)"], ["희귀", 28, "var(--on)"], ["영웅", 10, "var(--soul)"], ["전설", 2, "var(--gold)"]];
 const AFFIX = {atk: ["ATK", 3, "%"], hp: ["HP", 3, "%"], dfn: ["DEF", 3, "%"], crit: ["CRIT", 0.5, "%p"], soul: ["혼", 3, "%"]};
-const relicKey = slot => slot.prov + "|" + slot.name;          // 슬롯 순서는 토큰량 따라 바뀌므로 이름으로
+const relicKey = slot => "boss" + slot.slot;                    // 고정 보스라 칸 번호로 충분하다
 const relicOk = r => !!r && !!RARITY[r.r] && !!AFFIX[r.a];      // 고친 저장의 이상한 값은 무시
 const relicVal = r => AFFIX[r.a][1] * Math.pow(2, r.r);
 const relicSum = a => Object.values(save.relics || {}).filter(relicOk)
@@ -1182,14 +1184,13 @@ function drawRelics(){
     .map(([a, v]) => `${AFFIX[a][0]} +${+v.toFixed(1)}${AFFIX[a][2]}`).join(" · ");
   $("relicNews").innerHTML =
     (relicNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${relicNews}</div>` : "") +
-    `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 그 프로젝트의 유물이 나온다
+    `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 그 보스의 유물이 나온다
      (역대 첫 격파 ${RELIC_FIRST*100}%, 재격파 ${RELIC_AGAIN*100}%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}</div>`;
   $("relics").innerHTML = SLOTS.map(s => {
     const r = rs[relicKey(s)];
-    // 긴 프로젝트 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게
+    // 긴 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게
     return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
-        text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${s.name}${
-        MULTIPROV ? ` <span class="dim">${s.prov}</span>` : ""}</span>${relicOk(r)
+        text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${s.name}</span>${relicOk(r)
       ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}${
           r.r < RARITY.length - 1 ? ` <span class="dim">↑${upOdds(r.r)}%</span>` : ""}</span>`
       : '<span class="dim">?</span>'}</div>`;
@@ -1263,7 +1264,7 @@ function fightStart(g, slot, b){
   $("log").innerHTML = ""; $("close").disabled = true; $("close").textContent = "전투 중…";
   $("fight").classList.add("on");
   let turn = 0, myTurn = H.spd >= b.spd;
-  say(`${slot.emoji} ${g}스테이지 — ${slot.name}의 수호자가 나타났다!`);
+  say(`${slot.emoji} ${g}스테이지 — ${slot.name} 등장!`);
   paint(me, foe);
   timer = setInterval(() => {
     if (++turn > 200) return end(false, me, foe, g, slot, "소모전 — 화력이 부족하다");
@@ -1711,7 +1712,7 @@ def main(argv=None):
         agg, projects, _, _ = merge()
         if not projects:
             _no_data_hint(); return 1
-        balance(hero(agg), dungeons(projects)); return 0
+        balance(hero(agg), dungeons()); return 0
     if cmd == "selftest":
         demo(); return 0
     if cmd == "where":
@@ -1890,7 +1891,7 @@ def demo():
     agg, projects, _, _ = merge()
     if not projects:
         print("ok (로컬 데이터 없음 — 밸런스 검증 생략)"); return
-    h, ds = hero(agg), dungeons(projects)
+    h, ds = hero(agg), dungeons()
     n = len(ds)
 
     assert [boss(g)["hp"] for g in range(1, 30)] == sorted(boss(g)["hp"] for g in range(1, 30)), \
@@ -1913,10 +1914,9 @@ def demo():
     floors = {}
     for r, g, fl, _, _ in rows:
         floors.setdefault(fl, r)
-    # 난이도는 STEP^(전역 스테이지)로 연속이고, '층'은 프로젝트 수만큼 묶은 표시
-    # 단위일 뿐이다. 프로바이더를 추가하면 층 크기가 변하므로 절대 횟수를 못박지
-    # 않고, (a) 다음 층은 환생을 요구한다 (b) 그다음은 눈에 띄게 더 요구한다
-    # 두 가지만 본다.
+    # 난이도는 STEP^(전역 스테이지)로 연속이고, '층'은 고정 보스 수만큼 묶은 표시
+    # 단위일 뿐이다. 캐릭터가 토큰 따라 계속 변하므로 절대 횟수를 못박지 않고,
+    # (a) 다음 층은 환생을 요구한다 (b) 그다음은 눈에 띄게 더 요구한다 두 가지만 본다.
     nxt = floors.get(base_floor + 1, 99)
     assert nxt >= 1, f"{base_floor + 1}층을 환생 없이 간다 — 층 벽(STEP)이 너무 낮다"
     deeper = floors.get(base_floor + 2)

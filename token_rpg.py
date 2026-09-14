@@ -111,7 +111,10 @@ def write_save(base, save, snaps=None):
 STEP = 1.28                              # 스테이지 1칸당 보스 배율
 B_HP, B_ATK, B_DEF = 115, 24, 8          # 1스테이지 보스 기준치
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
-GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4, "cdmg": 1}   # 포인트 1점당 상승치 (cdmg 는 %p)
+# 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD 와 같은 자리수에 놓으려고 고른 값이다 —
+# 토큰만으로 얻는 SPD(호출수/400)는 13스테이지 보스의 1/9 이라, 배분 없이 신속의 유산만으로
+# 뒤집으려면 20레벨(혼 6,475)이 든다. 같은 혼이면 힘의 유산 ATK x9.65 다. 그건 선택이 아니다.
+GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4, "cdmg": 1, "spd": 3}
 CRIT_CAP  = 100      # 치명타율 상한(%). 넘친 %p 는 치명타 피해 %p 로 옮겨 간다 — 올려도 헛되지 않게
 CDMG_BASE = 200      # 치명타 피해 기본값(%) = 예전 고정 2배
 TRAIT_CDMG = 5       # '파괴의 유산' 1레벨당 치명타 피해 %p (1pt·5%p 에서 층 진입 회차가 도입 전과 비슷)
@@ -547,6 +550,8 @@ def _splits(pts):
             for d in range(11 - a - hp):
                 for c in range(11 - a - hp - d):
                     x = 10 - a - hp - d - c
+                    # SPD 는 빼 둔다 — turns_to_win 이 선공을 모델에 안 넣어서 값을 못 재고,
+                    # '배분을 SPD 에 쓰지 않는다'가 층 벽 높이로는 안전한 쪽 가정이다.
                     yield {"atk": pts*a/10, "hp": pts*hp/10, "dfn": pts*d/10,
                            "crit": pts*c/10, "cdmg": pts*x/10}
 
@@ -790,14 +795,14 @@ const n = x => Math.abs(x) < 1000 ? String(Math.round(x)) : compact.format(x);
 const nf = x => x < 1000 ? x.toFixed(2) : n(x);
 const MULTIPROV = (D.providers || []).length > 1;
 const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력","DEF"],["crit","치명타","CRIT"],
-                ["cdmg","치명타 피해","CDMG"]];
+                ["cdmg","치명타 피해","CDMG"],["spd","속도","SPD"]];
 const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
                 ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],
                 ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],
                 ["spd","신속의 유산","SPD x"+K.tmul+"/lv"],["soul","수확","얻는 혼 +"+K.tsoul+"%/lv"],
                 ["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
 
-const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0}, cleared:[], souls:0, rebirths:0,
+const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, rbExp:null, farm:0});
 let save = fresh();
@@ -907,7 +912,7 @@ const left       = () => points() - used();
 // 치명타율은 K.critCap 까지, 넘친 %p 는 치명타 피해로 간다
 // 영구 특성에서는 CRIT 을 뺐다 — 상한 100%가 있어 되팔 수 없는 함정이었다.
 // CRIT 은 토큰(thinking)·배분 포인트·유물로만 오른다. 넘친 %p 가 CDMG 로 가는 건 그대로다.
-const spdNow = () => Math.round(Math.max(1, H.spd) * Math.pow(K.tmul, save.traits.spd));
+const spdNow = () => Math.round(F("spd"));
 const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? K.cdmgBase + save.alloc.cdmg*G.cdmg + save.traits.cdmg*K.tcdmg + Math.max(0, critRaw() - K.critCap)
@@ -948,7 +953,7 @@ function drawHero(){
   $("soulsHave").textContent = "보유 " + n(save.souls);
   $("sheet").innerHTML = STATS.map(([k,,s]) =>
     `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b></span>`
-  ).join("") + `<span><span class="dim">SPD</span> <b>${spdNow()}</b></span>`;
+  ).join("");
   // 유물 몫은 한 줄을 따로 쓴다 — 수치 옆에 붙이면 칸이 넘치고 '더 더해진다'로 읽힌다
   const rin = STATS.map(([k,,s]) => [s, relicSum(k), k === "crit" ? "%p" : "%"])
     .filter(([, v]) => v).map(([s, v, u]) => `${s} +${+v.toFixed(1)}${u}`).join(" · ");

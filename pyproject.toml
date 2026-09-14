@@ -21,8 +21,12 @@ dependencies = []          # 표준 라이브러리만 쓴다
 [project.scripts]
 token-rpg = "token_rpg:main"
 
+# gui-scripts 는 윈도우에서 콘솔 없는 실행 파일(pythonw)로 만들어진다 — 트레이 앱에 필요하다
+[project.gui-scripts]
+token-rpg-tray = "token_rpg_tray:main"
+
 [tool.hatch.version]
 path = "token_rpg.py"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["token_rpg.py"]
+only-include = ["token_rpg.py", "token_rpg_tray.py"]

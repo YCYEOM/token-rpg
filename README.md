@@ -13,27 +13,37 @@ Lv.28 코드 술사 🧑‍💻  HP 775 ATK 90 DEF 40.0 CRIT 30.5%  던전 15개
 ## 설치
 
 ```bash
-pipx install token-rpg      # 권장 (또는: uv tool install token-rpg)
-token-rpg open              # 집계 후 브라우저로 열기
+pipx install git+https://github.com/YCYEOM/token-rpg
+token-rpg open              # 집계 후 브라우저로 열기 (Ctrl+C 로 종료)
 ```
 
-의존성은 없다. 표준 라이브러리만 쓴다. macOS·리눅스·윈도우에서 같은 명령으로 돈다.
+의존성은 없다. 표준 라이브러리만 쓴다. Python 3.9+ 만 있으면 macOS·리눅스·윈도우에서
+같은 명령으로 돈다. `uv tool install git+https://github.com/YCYEOM/token-rpg` 도 같다.
+아직 PyPI 에 올리지 않아서 GitHub 주소로 받는다.
 
-### 윈도우
+## 상주 앱
+
+브라우저 탭을 띄워 두지 않고 늘 켜 두고 싶으면 OS 마다 상주 앱이 있다. 둘은 같은 일을
+한다 — 저장 서버를 띄우고, 5분마다 사용량을 다시 집계하고, 아이콘을 누르면 게임을 연다.
+저장 파일 하나를 브라우저와 함께 쓰므로 어느 쪽으로 해도 진행은 이어진다.
+
+### 윈도우 — 알림 영역(트레이)
 
 ```powershell
-pipx install token-rpg
-token-rpg open              # 브라우저로 열린다. 끝내려면 Ctrl+C
+token-rpg-tray                  # 알림 영역에 상주 (콘솔 창 없음)
+token-rpg-tray --startup on     # 로그인할 때 자동 실행
 ```
 
-`pipx`가 없으면 `py -m pip install token-rpg` 후 `py -m token_rpg open`으로도 된다.
-게임 데이터는 `%LOCALAPPDATA%\token-rpg`에 둔다(`token-rpg where`로 확인).
-Stop 훅도 `install-hook`으로 그대로 등록된다 — 윈도우에서는 `cmd.exe` 문법으로 넣는다.
+왼쪽 클릭이면 게임 창이 열리고(Edge 앱 모드 — 주소창 없이 팝오버에 가깝다. 없으면 기본
+브라우저), 오른쪽 클릭이면 `열기 · 지금 갱신 · 자동 실행 · 종료` 메뉴가 나온다.
 
-메뉴 막대 앱에 해당하는 트레이 앱은 아직 없다. 브라우저 탭을 띄워 두면 같은 저장을
-공유하므로 진행은 동일하다.
+윈도우 트레이는 맥 메뉴 막대와 달리 아이콘 옆에 글자를 못 단다. 그래서 레벨과
+배지가 툴팁 첫 줄(`Lv.31 49% ⬆`)로 간다 — 아이콘에 마우스를 올리면 보인다.
 
-### macOS 메뉴 막대 앱
+게임 데이터는 `%LOCALAPPDATA%\token-rpg` 에 둔다(`token-rpg where` 로 확인).
+Stop 훅은 `cmd.exe` 문법으로 등록된다.
+
+### macOS — 메뉴 막대
 
 `Token RPG.app`은 메뉴 막대에 게임패드 아이콘으로 상주한다. 아이콘 옆에 레벨과
 진행률(`Lv.31 49%`)이 뜨고, 마우스를 올리면 오늘 쓴 토큰·다음 레벨까지 남은 EXP를

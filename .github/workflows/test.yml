@@ -20,4 +20,6 @@ jobs:
       # 집계·병합 로직과 난이도/환생 곡선을 검증한다.
       # CI에는 Claude Code 기록이 없으므로 밸런스 검증은 자동으로 생략된다.
       - run: python token_rpg.py selftest
+      # 트레이는 윈도우 전용이지만 순수 로직(툴팁·단위)은 어디서나 검증한다
+      - run: python token_rpg_tray.py --selftest
       - run: pip install . && token-rpg --version && token-rpg where

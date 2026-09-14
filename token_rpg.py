@@ -123,7 +123,8 @@ COST_MUL   = 1.13    # 특성 1레벨당 비용 증가율
 COST_K     = 80      # 특성 1레벨 기본 비용
 SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP
 TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
-TRAIT_CRIT = 2.0     # '예지' 1레벨당 치명타 %p
+# TRAIT_CRIT 은 없앴다 — CRIT 은 상한 100%가 있어 영구 특성으로 두면 되팔 수 없는 함정이 된다.
+# 치명타는 토큰(thinking)·배분 포인트·유물로만 오른다.
 
 # 환생 기운: 환생 1회에 마지막 환생 이후 새로 쓴 토큰(EXP)이 이만큼 필요하다.
 # 진행 속도를 실제 사용량에 묶는다 — 하루 150~250만 쓰면 하루 2회 안팎, 1층(환생 5~6회)에 2~3일.
@@ -516,7 +517,7 @@ def final_stats(h, alloc=None, tr=None):
     """최종 스탯 = (기본 + 배분) x 환생 특성 배율. JS의 F()와 같은 식."""
     a, t = alloc or {}, tr or {}
     m = lambda k: TRAIT_MUL ** t.get(k, 0)
-    crit = h["crit"] + a.get("crit", 0) * GAIN["crit"] + t.get("crit", 0) * TRAIT_CRIT
+    crit = h["crit"] + a.get("crit", 0) * GAIN["crit"]
     return {
         "atk":  (h["atk"] + a.get("atk", 0) * GAIN["atk"]) * m("atk"),
         "hp":   (h["hp"] + a.get("hp", 0) * GAIN["hp"]) * m("hp"),
@@ -565,7 +566,7 @@ def simulate(h, n_slots, rebirths=40):
     """환생을 거듭했을 때 몇 회차에 몇 층에 닿는지. 상수 튜닝의 근거."""
     import itertools
     souls, tr, rows = 0, {}, []
-    cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "crit", "cdmg", "pt"])
+    cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt"])
     for r in range(rebirths + 1):
         g = reach(h, tr)
         rows.append((r, g, (g - 1) // n_slots + 1, souls, sum(tr.values())))
@@ -617,7 +618,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
             "daily": getattr(merge, "daily", {}),
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
-                  "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tcrit": TRAIT_CRIT,
+                  "soulExp": SOUL_EXP, "tpt": TRAIT_PT,
                   "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
                   "rbSoul": REBIRTH_SOUL,
@@ -784,7 +785,7 @@ const MULTIPROV = (D.providers || []).length > 1;
 const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력","DEF"],["crit","치명타","CRIT"],
                 ["cdmg","치명타 피해","CDMG"]];
 const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
-                ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],["crit","예지","CRIT +"+K.tcrit+"%p/lv"],
+                ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],
                 ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0}, cleared:[], souls:0, rebirths:0,
@@ -811,6 +812,16 @@ function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; sa
   for (const s of SLOTS) {
     const r = rs[relicKey(s)];
     if (r && r.a !== s.affix) r.a = s.affix;
+  }
+  // 없어진 예지에 쓴 혼은 전액 돌려준다 — 되팔 수 없는 특성이었으니 떠안기지 않는다
+  const lv = save.traits.crit || 0;
+  if (lv > 0) {
+    let back = 0;
+    for (let i = 0; i < lv; i++) back += costOf(i);
+    save.souls += back;
+    save.traits.crit = 0;
+    refundMsg = `영구 특성 '예지'를 없앴다 (CRIT 상한 100%에 막히는데 되팔 수 없었다).
+                 쓴 혼 ${n(back)}을 전액 돌려줬다 — 다른 특성에 다시 넣어라.`;
   }
 }
 const pull = async () => {
@@ -884,7 +895,9 @@ const left       = () => points() - used();
 // 최종 스탯 = (토큰이 준 기본값 + 배분) x 환생 특성 배율
 // 유물(영구)이 마지막에 곱해진다
 // 치명타율은 K.critCap 까지, 넘친 %p 는 치명타 피해로 간다
-const critRaw = () => H.crit + save.alloc.crit*G.crit + save.traits.crit*K.tcrit + relicSum("crit");
+// 영구 특성에서는 CRIT 을 뺐다 — 상한 100%가 있어 되팔 수 없는 함정이었다.
+// CRIT 은 토큰(thinking)·배분 포인트·유물로만 오른다. 넘친 %p 가 CDMG 로 가는 건 그대로다.
+const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? K.cdmgBase + save.alloc.cdmg*G.cdmg + save.traits.cdmg*K.tcdmg + Math.max(0, critRaw() - K.critCap)
   : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k])
@@ -1236,7 +1249,7 @@ const relicOk = r => !!r && !!RARITY[r.r] && !!AFFIX[r.a];      // 고친 저장
 const relicVal = r => AFFIX[r.a][1] * Math.pow(2, r.r);
 const relicSum = a => Object.values(save.relics || {}).filter(relicOk)
   .reduce((s, r) => s + (r.a === a ? relicVal(r) : 0), 0);
-let relicNews = "";
+let relicNews = "", refundMsg = "";
 // 역대 첫 격파 30%, 재격파 0.5% — 자동 반복이 1초에 한 판이라 재격파 확률이 높으면 금방 다 모인다
 const RELIC_FIRST = 0.3, RELIC_AGAIN = 0.005;
 function rollRelic(g, slot, first){
@@ -1393,6 +1406,7 @@ $("close").onclick = () => $("fight").classList.remove("on");
   if (!save.best && maxCleared()) { save.best = maxCleared(); put(); }   // 옛 저장본 이관
   if (!save.exped.seenExp) { save.exped.seenExp = H.exp; put(); }
   if (typeof save.rbExp !== "number" || save.rbExp > H.exp) { fixRb(); put(); }
+  if (refundMsg) { put(); note(refundMsg); }     // 환불을 바로 저장에 남긴다
   drawAll();
 
   // 돌아왔을 때 그동안의 성과를 알려준다

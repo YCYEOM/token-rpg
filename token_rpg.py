@@ -712,6 +712,7 @@ margin-top:10px;padding-top:8px}
     <div class="bar"><i id="xpbar"></i></div>
     <div class="row"><span class="dim" id="exp"></span><span class="dim" id="tonext"></span></div>
     <div class="sheet" id="sheet"></div>
+    <div id="relicIn" style="margin-top:6px;font-size:11px"></div>
     <div id="rbBonus" style="margin-top:6px;font-size:12px"></div>
   </div>
 </div>
@@ -921,12 +922,14 @@ function drawHero(){
   $("bFloor").textContent   = floorNow() + "층";
   $("bSouls").textContent   = "혼 " + n(save.souls);
   $("soulsHave").textContent = "보유 " + n(save.souls);
-  // 최종값 옆에 그중 유물 몫을 밝힌다 — 숫자가 이미 반영된 값인지 헷갈리지 않게
-  const relicTag = k => { const v = relicSum(k); return v
-    ? ` <small class="gold" title="유물 보너스 (이미 포함된 값)">+${+v.toFixed(1)}${k==="crit"?"%p":"%"}</small>` : ""; };
   $("sheet").innerHTML = STATS.map(([k,,s]) =>
-    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b>${relicTag(k)}</span>`
+    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b></span>`
   ).join("") + `<span><span class="dim">SPD</span> <b>${H.spd}</b></span>`;
+  // 유물 몫은 한 줄을 따로 쓴다 — 수치 옆에 붙이면 칸이 넘치고 '더 더해진다'로 읽힌다
+  const rin = STATS.map(([k,,s]) => [s, relicSum(k), k === "crit" ? "%p" : "%"])
+    .filter(([, v]) => v).map(([s, v, u]) => `${s} +${+v.toFixed(1)}${u}`).join(" · ");
+  $("relicIn").innerHTML = rin
+    ? `<span class="dim">위 수치에 유물 포함 —</span> <span class="gold">${rin}</span>` : "";
   $("left").textContent = "남은 " + left() + "pt";
   // 줄마다 −1 · +1 · +10 · 최대(남은 전부) — 남은 포인트보다 많이는 안 움직인다
   const lf = left();

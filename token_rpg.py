@@ -17,8 +17,10 @@ SETTINGS = os.path.join(CLAUDE_DIR, "settings.json")
 
 def data_dir():
     """게임 데이터를 두는 곳. 설치 경로(site-packages)에는 절대 쓰지 않는다."""
-    d = os.environ.get("TOKEN_RPG_HOME") or os.path.join(
-        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "token-rpg")
+    base = (os.environ.get("XDG_DATA_HOME")
+            or (os.environ.get("LOCALAPPDATA") if os.name == "nt" else None)
+            or os.path.expanduser("~/.local/share"))
+    d = os.environ.get("TOKEN_RPG_HOME") or os.path.join(base, "token-rpg")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -1347,6 +1349,8 @@ HOOK_MARK = "token_rpg"          # 우리가 넣은 훅을 식별하는 표식
 
 def hook_command():
     """이 파이썬으로 이 모듈을 돌린다. PATH에 의존하지 않아 훅 환경에서도 안전하다."""
+    if os.name == "nt":                  # 훅은 cmd.exe 가 돌린다 — /dev/null 도 true 도 없다
+        return f'"{sys.executable}" -m token_rpg build --quiet >NUL 2>&1 || exit /b 0'
     return f'"{sys.executable}" -m token_rpg build >/dev/null 2>&1 || true'
 
 
@@ -1671,6 +1675,12 @@ def cmd_status(args):
 
 
 def main(argv=None):
+    if os.name == "nt":                  # 리다이렉트되면 기본 인코딩이 cp949 -> 이모지에서 죽는다
+        for st in (sys.stdout, sys.stderr):
+            try:
+                st.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError):
+                pass
     p = argparse.ArgumentParser(
         prog="token-rpg",
         description="Claude Code 토큰 사용량으로 성장하는 턴제 RPG")
@@ -1748,7 +1758,7 @@ def demo():
                "message": {"id": "a", "model": "claude-opus-5",
                "usage": {"input_tokens": 10, "output_tokens": 20, "cache_creation_input_tokens": 5,
                          "cache_read_input_tokens": 100, "output_tokens_details": {"thinking_tokens": 7}}}}
-        with open(os.path.join(d, "proj", "s.jsonl"), "w") as f:
+        with open(os.path.join(d, "proj", "s.jsonl"), "w", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n" + json.dumps(rec) + "\n")  # 중복 id -> 1회만
         agg, projects, _, days = collect(d)
         assert agg["calls"] == 1 and agg["input"] == 15 and agg["output"] == 20
@@ -1756,7 +1766,7 @@ def demo():
         assert sum(days.values()) == 35, dict(days)             # 날짜별 합 = EXP 기여
         snaps = os.path.join(d, "snaps")
         _, s1 = save_snapshot(d, snaps)
-        with open(os.path.join(snaps, "otherpc.json"), "w") as f:
+        with open(os.path.join(snaps, "otherpc.json"), "w", encoding="utf-8") as f:
             json.dump({**s1, "host": "otherpc"}, f)
         m, mp, _, hs = merge(snaps)
         assert m["input"] == 30 and mp["claude-code\tproj"] == 70 and m["days"] == 1 and len(hs) == 2
@@ -1768,7 +1778,7 @@ def demo():
         assert ok and cur["rev"] == 1
         ok, cur = write_save(0, {"souls": 999}, d)                 # 오래된 창
         assert not ok and cur["save"] == {"souls": 1}, cur
-        with open(save_path(d), "w") as f:
+        with open(save_path(d), "w", encoding="utf-8") as f:
             f.write("{반쪽")
         try:
             write_save(1, {}, d)
@@ -1820,7 +1830,7 @@ def demo():
                                           "cache_write_input_tokens": 0, "output_tokens": out,
                                           "reasoning_output_tokens": reason, "total_tokens": tot}}}})
         cum = os.path.join(cx, "rollout-cum.jsonl")
-        with open(cum, "w") as f:
+        with open(cum, "w", encoding="utf-8") as f:
             f.write(json.dumps({"type": "session_meta",
                                 "payload": {"cwd": "/x/myproj"}}) + "\n")
             f.write(_tc(100, 60, 10, 3, 110) + "\n")
@@ -1832,14 +1842,14 @@ def demo():
 
         # 세부 항목이 비고 total 만 있는 세션 (실제 로그에 존재)
         deg = os.path.join(cx, "rollout-deg.jsonl")
-        with open(deg, "w") as f:
+        with open(deg, "w", encoding="utf-8") as f:
             f.write(_tc(0, 0, 0, 0, 17647) + "\n")
         a2, _, _, _ = read_codex(deg)
         assert a2["input"] == 17647 and a2["output"] == 0, dict(a2)
 
         # 토큰이 전혀 없는 세션은 통계에서 빠진다
         zero = os.path.join(cx, "rollout-zero.jsonl")
-        with open(zero, "w") as f:
+        with open(zero, "w", encoding="utf-8") as f:
             f.write(_tc(0, 0, 0, 0, 0) + "\n")
         a3, _, _, _ = read_codex(zero)
         assert not a3, dict(a3)
@@ -1862,14 +1872,14 @@ def demo():
         gt = os.path.join(d, "gtmp")
         gs = os.path.join(gt, "someproj", "chats")
         os.makedirs(gs)
-        with open(os.path.join(gt, "someproj", ".project_root"), "w") as f:
+        with open(os.path.join(gt, "someproj", ".project_root"), "w", encoding="utf-8") as f:
             f.write("/x/gproj\n")
         def _gm(mid, inp, out, cached, thoughts, tool):
             return json.dumps({"id": mid, "timestamp": "2026-09-10T08:44:00Z", "type": "gemini",
                 "model": "gemini-3.5-flash", "tokens": {"input": inp, "output": out,
                 "cached": cached, "thoughts": thoughts, "tool": tool,
                 "total": inp + out + thoughts}})
-        with open(os.path.join(gs, "session-a.jsonl"), "w") as f:
+        with open(os.path.join(gs, "session-a.jsonl"), "w", encoding="utf-8") as f:
             f.write(json.dumps({"sessionId": "s", "kind": "main"}) + "\n")
             f.write(json.dumps({"id": "u1", "type": "user", "content": "hi"}) + "\n")
             f.write(_gm("g1", 100, 10, 40, 5, 2) + "\n")
@@ -1937,6 +1947,24 @@ def demo():
 
     # 4) 특성 비용은 반드시 증가한다 (무한 구매 방지)
     assert trait_cost(0) < trait_cost(5) < trait_cost(20), "특성 비용이 증가하지 않는다"
+
+    # 5) 윈도우 분기 — 맥·리눅스에서도 os.name 만 바꿔 끼워 검증한다
+    import tempfile
+    real_name, env = os.name, dict(os.environ)
+    try:
+        os.name = "nt"
+        with tempfile.TemporaryDirectory() as t:
+            os.environ.pop("XDG_DATA_HOME", None); os.environ.pop("TOKEN_RPG_HOME", None)
+            os.environ["LOCALAPPDATA"] = t
+            assert data_dir() == os.path.join(t, "token-rpg"), data_dir()
+        cmd = hook_command()
+        assert "/dev/null" not in cmd and "true" not in cmd and ">NUL" in cmd, cmd
+        assert HOOK_MARK in cmd, cmd          # 재설치·제거가 이 표식으로 훅을 찾는다
+    finally:
+        os.name = real_name
+        os.environ.clear(); os.environ.update(env)
+    assert "/dev/null" in hook_command()      # 원래 플랫폼 분기로 되돌아왔다
+
     print("ok")
 
 

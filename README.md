@@ -17,7 +17,21 @@ pipx install token-rpg      # 권장 (또는: uv tool install token-rpg)
 token-rpg open              # 집계 후 브라우저로 열기
 ```
 
-의존성은 없다. 표준 라이브러리만 쓴다.
+의존성은 없다. 표준 라이브러리만 쓴다. macOS·리눅스·윈도우에서 같은 명령으로 돈다.
+
+### 윈도우
+
+```powershell
+pipx install token-rpg
+token-rpg open              # 브라우저로 열린다. 끝내려면 Ctrl+C
+```
+
+`pipx`가 없으면 `py -m pip install token-rpg` 후 `py -m token_rpg open`으로도 된다.
+게임 데이터는 `%LOCALAPPDATA%\token-rpg`에 둔다(`token-rpg where`로 확인).
+Stop 훅도 `install-hook`으로 그대로 등록된다 — 윈도우에서는 `cmd.exe` 문법으로 넣는다.
+
+메뉴 막대 앱에 해당하는 트레이 앱은 아직 없다. 브라우저 탭을 띄워 두면 같은 저장을
+공유하므로 진행은 동일하다.
 
 ### macOS 메뉴 막대 앱
 

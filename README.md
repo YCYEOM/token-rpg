@@ -18,8 +18,14 @@ token-rpg open              # 집계 후 브라우저로 열기 (Ctrl+C 로 종�
 ```
 
 의존성은 없다. 표준 라이브러리만 쓴다. Python 3.9+ 만 있으면 macOS·리눅스·윈도우에서
-같은 명령으로 돈다. `uv tool install git+https://github.com/YCYEOM/token-rpg` 도 같다.
-아직 PyPI 에 올리지 않아서 GitHub 주소로 받는다.
+같은 명령으로 돈다. 아직 PyPI 에 올리지 않아서 GitHub 주소로 받는다
+(`uv tool install git+https://github.com/YCYEOM/token-rpg` 도 같다).
+
+`git+` 형식은 git 이 PATH 에 있어야 한다. git 없이 받으려면 zip 주소를 쓴다.
+
+```bash
+pipx install https://github.com/YCYEOM/token-rpg/archive/refs/heads/main.zip
+```
 
 ## 상주 앱
 
@@ -127,15 +133,29 @@ token-rpg install-hook      # Claude Code Stop 훅에 등록
 
 ## 여러 PC 합산
 
-각 PC에서 `token-rpg export`를 돌리면 4KB짜리 스냅샷만 남는다.
-스냅샷 폴더를 클라우드 동기화 폴더로 지정하면 모든 기기의 사용량이 합산된다.
-게임 진행 저장(`game.save`)도 이 폴더에 있어서 기기끼리 같은 저장을 쓴다.
-브라우저와 메뉴 막대 앱도 로컬 서버를 거쳐 이 파일 하나를 같이 쓰고, 오래된 창이
-새 진행을 덮어쓰려 하면 거부하고 최신 저장을 불러온다.
+각 PC에서 `token-rpg export`를 돌리면 4KB짜리 스냅샷만 남는다. 스냅샷 폴더를 클라우드
+동기화 폴더로 지정하면 모든 기기가 합쳐진다. 양쪽 OS 에서 같은 폴더를 가리키면 된다.
 
 ```bash
+# macOS · 리눅스 (~/.zshrc 나 ~/.bashrc 에)
 export TOKEN_RPG_SNAPSHOTS=~/Dropbox/token-rpg
 ```
+```powershell
+# 윈도우 — setx 는 새로 여는 창부터 적용된다
+setx TOKEN_RPG_SNAPSHOTS "$env:USERPROFILE\Dropbox\token-rpg"
+```
+
+지정한 뒤 각 PC 에서 `token-rpg export` 를 한 번 돌리면 그 폴더에 스냅샷이 생긴다.
+기존 `snapshots` 폴더에 있던 파일은 새 폴더로 옮긴다 (`token-rpg where` 로 위치 확인).
+
+**사용량은 알아서 합쳐진다.** PC 마다 `<호스트이름>.json` 을 따로 쓰고 합산할 때 전부
+더하므로, 파일당 PC 하나라 충돌이 구조적으로 없다. 여러 PC 에서 동시에 코딩해도 된다.
+
+**게임 진행은 한 번에 한 PC 에서만 한다.** `game.save` 는 파일 하나를 기기끼리 같이 쓴다.
+한 PC 안에서는 브라우저 탭과 상주 앱이 `rev` 번호로 서로를 막아 주지만(오래된 창이
+덮어쓰려 하면 거부하고 최신 저장을 불러온다), 다른 PC 끼리는 서로의 `rev` 를 볼 수 없다.
+두 기기에서 동시에 켜 두면 동기화 서비스가 충돌 사본을 만들거나 늦게 쓴 쪽이 덮어쓴다.
+한쪽에서 게임 창과 상주 앱을 닫고 동기화가 끝난 뒤 다른 쪽을 열면 된다.
 
 ## 명령
 

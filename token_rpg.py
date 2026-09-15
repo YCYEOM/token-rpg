@@ -1557,6 +1557,7 @@ def uninstall_hook():
 
 
 REPO = "YCYEOM/token-rpg"
+PKG = "token-rpg"              # PyPI 배포판 이름
 UPDATE_TTL = 6 * 3600        # 확인 결과를 이만큼 재사용한다 — 열 때마다 GitHub 을 두드리지 않게
 
 
@@ -1580,11 +1581,12 @@ def install_kind():
     return "pip"
 
 
+# PyPI 에 올라간 뒤로는 셋 다 배포판을 받는다 — 릴리스 태그로 새 버전을 알리면서
+# 설치는 main 최신 커밋에서 하던 엇갈림이 없어진다.
 UPDATE_CMD = {
-    "uv":   [["uv", "tool", "install", "--force", "--no-cache",
-              f"git+https://github.com/{REPO}"]],
-    "pipx": [["pipx", "install", "--force",
-              f"https://github.com/{REPO}/archive/refs/heads/main.zip"]],
+    "uv":   [["uv", "tool", "install", "--force", "--no-cache", PKG]],
+    "pipx": [["pipx", "install", "--force", PKG]],
+    "pip":  [[sys.executable, "-m", "pip", "install", "--upgrade", PKG]],
 }
 
 

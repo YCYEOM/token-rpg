@@ -1,0 +1,35 @@
+name: macOS DMG
+
+# 릴리스를 발행하면 DMG 를 만들어 그 릴리스에 붙인다. 손으로 빌드해 올리던 것을
+# 잊으면 사용자가 옛 앱을 받게 되므로 CI 에 맡긴다.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "DMG 를 붙일 릴리스 태그 (예: v0.5.0)"
+        required: true
+
+jobs:
+  dmg:
+    runs-on: macos-latest
+    permissions:
+      contents: write          # 릴리스에 파일을 붙이는 데 필요하다
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - name: 빌드
+        run: zsh scripts/build-macos-app.sh
+      # 번들 안 사본이 태그의 소스와 같은지 본다 — 옛 앱이 붙는 사고를 여기서 막는다
+      - name: 번들 검증
+        run: |
+          diff token_rpg.py "dist-macos/Token RPG.app/Contents/Resources/token_rpg.py"
+          codesign --verify --deep --strict "dist-macos/Token RPG.app"
+      - name: 릴리스에 붙이기
+        run: gh release upload "$TAG" dist-macos/Token-RPG-macOS.dmg --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

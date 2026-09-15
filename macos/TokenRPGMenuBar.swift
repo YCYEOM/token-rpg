@@ -89,7 +89,10 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
         let defaults = UserDefaults.standard
-        if defaults.integer(forKey: "seenLevel") == 0 { defaults.set(h.level, forKey: "seenLevel") }
+        // 초월하면 레벨이 1로 돌아간다 — 기준을 낮춰 두지 않으면 ⬆ 가 다시는 안 뜬다
+        if defaults.integer(forKey: "seenLevel") == 0 || h.level < defaults.integer(forKey: "seenLevel") {
+            defaults.set(h.level, forKey: "seenLevel")
+        }
         // 배지: ⬆ 레벨 업(팝오버를 열어 보기 전까지) · ⛏ 원정 가득
         let leveledUp = h.level > defaults.integer(forKey: "seenLevel")
         let expedFull = status?.expedFull == true

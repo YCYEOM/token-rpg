@@ -175,11 +175,17 @@ BOSSES = [("버그 벌레", "🐛", "atk"), ("무한 루프 뱀", "🐍", "crit"
           ("프로덕션 장애 드래곤", "🐲", "hp"), ("토큰 한도의 군주", "👑", "soul")]
 
 
+LV_EXP = 50_000                          # 레벨 1칸의 EXP 기울기
+MAX_LV = 99                              # 여기서 막힌다 — 넘기려면 초월한다
+
+
 def level_of(exp):
-    return min(int((exp / 50_000) ** 0.5) + 1, 99)
+    return min(int((max(exp, 0) / LV_EXP) ** 0.5) + 1, MAX_LV)
 
 def exp_for(lv):
-    return int(((lv - 1) ** 2) * 50_000)
+    return int(((lv - 1) ** 2) * LV_EXP)
+
+TRANS_EXP = exp_for(MAX_LV)              # 초월 한 번에 들어가는 EXP
 
 def tier_of(lv):
     return [t for t in TIERS if lv >= t[0]][-1]
@@ -483,14 +489,21 @@ def merge(snaps=None):
     return agg, projects, models, hosts
 
 
-def hero(agg):
-    """토큰 종류가 스탯을 정한다 — 사용 패턴이 곧 캐릭터 빌드."""
-    exp = agg["input"] + agg["output"]
+def hero(agg, trans=0):
+    """토큰 종류가 스탯을 정한다 — 사용 패턴이 곧 캐릭터 빌드.
+
+    trans 는 초월 횟수. 레벨만 그만큼 되돌리고, 준 배분 포인트는 적립해 둔다
+    (JS 의 lvNow()·pointsOf() 와 같은 식이어야 메뉴 막대 배지가 어긋나지 않는다)."""
+    total = agg["input"] + agg["output"]
+    trans = max(0, min(int(trans or 0), total // TRANS_EXP))
+    exp = total - trans * TRANS_EXP
     lv = level_of(exp)
     cur, nxt = exp_for(lv), exp_for(lv + 1)
     return {
-        "exp": exp, "level": lv, "points": lv * PT_PER_LEVEL,
+        "exp": exp, "total": total, "trans": trans,
+        "level": lv, "points": (trans * MAX_LV + lv) * PT_PER_LEVEL,
         "pct": round(100 * (exp - cur) / max(nxt - cur, 1), 1), "toNext": nxt - exp,
+        "canTrans": lv >= MAX_LV,
         "emoji": tier_of(lv)[1], "title": tier_of(lv)[2],
         "hp":   round(100 + agg["output"] / 8_000),
         "atk":  round(agg["output"] / 60_000),
@@ -633,6 +646,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
+                  "maxLv": MAX_LV, "lvExp": LV_EXP, "tiers": TIERS,
                   "rbSoul": REBIRTH_SOUL,
                   "dayBudget": DAY_BUDGET, "weekBudget": WEEK_BUDGET,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
@@ -724,6 +738,7 @@ margin-top:10px;padding-top:8px}
       <span class="badge" id="bFloor"></span><span class="badge soul" id="bSouls"></span></div>
     <div class="bar"><i id="xpbar"></i></div>
     <div class="row"><span class="dim" id="exp"></span><span class="dim" id="tonext"></span></div>
+    <div id="transBox"></div>
     <div class="sheet" id="sheet"></div>
     <div id="relicIn" style="margin-top:6px;font-size:11px"></div>
     <div id="rbBonus" style="margin-top:6px;font-size:12px"></div>
@@ -804,7 +819,24 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, rbExp:null, farm:0});
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, rbExp:null, farm:0,
+            trans:0});
+
+// ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
+// EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
+// 이미 받은 배분 포인트는 적립해 둔다 — 99 에서 토큰이 아무것도 안 주던 벽을 없애는 게 목적이라
+// 초월이 손해가 되면 아무도 안 누른다.
+const levelOf = e => Math.min(Math.floor(Math.sqrt(Math.max(e,0) / K.lvExp)) + 1, K.maxLv);
+const expFor  = lv => (lv-1) * (lv-1) * K.lvExp;
+const TRANS_EXP = expFor(K.maxLv);
+const tierOf  = lv => K.tiers.filter(t => lv >= t[0]).pop();
+const transOf = s => Math.max(0, Math.min(s.trans|0, Math.floor(H.exp / TRANS_EXP)));
+const expNow  = () => Math.max(0, H.exp - transOf(save) * TRANS_EXP);
+const lvNow   = () => levelOf(expNow());
+const canTrans = () => lvNow() >= K.maxLv;
+// 레벨이 준 배분 포인트 — 초월로 되돌린 몫은 적립분으로 남는다
+const pointsOf = s => (transOf(s) * K.maxLv + levelOf(Math.max(0, H.exp - transOf(s) * TRANS_EXP)))
+                      * K.ptPerLevel + (s.traits.pt|0) * K.tpt;
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -904,7 +936,7 @@ const pending  = () => idleRate() * idleSecs();
 const maxCleared = () => save.cleared.length ? Math.max(...save.cleared) : 0;
 const markBest = g => { if (g > (save.best || 0)) save.best = g; };
 const floorNow   = () => Math.floor(maxCleared() / N) + 1;
-const points     = () => H.level * K.ptPerLevel + save.traits.pt * K.tpt;
+const points     = () => pointsOf(save);
 const used       = () => STATS.reduce((s,[k]) => s + save.alloc[k], 0);
 const left       = () => points() - used();
 // 최종 스탯 = (토큰이 준 기본값 + 배분) x 환생 특성 배율
@@ -931,11 +963,6 @@ document.querySelectorAll("details[data-k]").forEach(d => {
   };
 });
 
-$("face").textContent = H.emoji; $("title").textContent = H.title;
-$("lv").textContent = "Lv." + H.level;
-$("xpbar").style.width = H.pct + "%";
-$("exp").textContent = n(H.exp) + " EXP";
-$("tonext").textContent = "다음까지 " + n(H.toNext);
 $("provs").innerHTML = (D.providers || []).length < 2 ? "" :
   '<div class="dim" style="margin-bottom:4px">프로바이더별</div>' +
   D.providers.map(([p,v]) =>
@@ -947,6 +974,13 @@ $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
 const capNote = k => k === "crit" && critRaw() >= K.critCap
   ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — 넘친 %p는 치명타 피해로</small>` : "";
 function drawHero(){
+  const lv = lvNow(), e = expNow(), cur = expFor(lv), nxt = expFor(lv + 1), t = tierOf(lv);
+  $("face").textContent = t[1]; $("title").textContent = t[2];
+  $("lv").innerHTML = "Lv." + lv + (transOf(save) ? ` <span class="soul">초월 ${transOf(save)}</span>` : "");
+  $("xpbar").style.width = (lv >= K.maxLv ? 100 : 100 * (e - cur) / Math.max(nxt - cur, 1)) + "%";
+  $("exp").textContent = n(e) + " EXP" + (transOf(save) ? ` (누적 ${n(H.exp)})` : "");
+  $("tonext").textContent = lv >= K.maxLv ? "초월할 수 있다" : "다음까지 " + n(nxt - e);
+  drawTrans();
   $("bRebirth").textContent = "환생 " + save.rebirths + "회";
   $("bFloor").textContent   = floorNow() + "층";
   $("bSouls").textContent   = "혼 " + n(save.souls);
@@ -1028,6 +1062,26 @@ function drawRebirth(){
   };
 }
 
+function drawTrans(){
+  const t = transOf(save);
+  if (!canTrans() && !t) { $("transBox").innerHTML = ""; return; }   // 아직 볼 일이 없다
+  $("transBox").innerHTML = canTrans()
+    ? `<button class="big" id="transBtn" style="margin-top:10px">초월 — 배분 ${
+         K.maxLv * K.ptPerLevel}pt 적립하고 Lv.1 부터 다시</button>
+       <div class="dim" style="font-size:11px;margin-top:6px">
+         Lv.${K.maxLv} 위로는 토큰을 더 써도 배분 포인트가 늘지 않는다. 초월하면 레벨과 칭호만
+         처음으로 돌아가고, 지금까지 레벨이 준 포인트는 그대로 남은 채 다시 올릴 수 있다.
+         스탯 배분·혼·유물·클리어 기록은 건드리지 않는다.</div>`
+    : `<div class="dim" style="font-size:11px;margin-top:6px">초월 ${t}회 —
+         적립된 배분 ${n(t * K.maxLv * K.ptPerLevel)}pt</div>`;
+  const b = $("transBtn");
+  if (b) b.onclick = () => {
+    save.trans = transOf(save) + 1;
+    put(); drawAll(); window.scrollTo({top:0, behavior:"smooth"});
+    note(`초월 ${save.trans}회 — 배분 ${n(save.trans * K.maxLv * K.ptPerLevel)}pt 가 적립됐다.`);
+  };
+}
+
 $("reset").onclick = () => { STATS.forEach(([k]) => save.alloc[k]=0); put(); drawAll(); };
 
 // 저장 옮기기: 브라우저 <-> 메뉴 막대 앱. 덮어쓰기는 되돌릴 수 없어 두 번 눌러야 실행
@@ -1045,9 +1099,11 @@ const decodeSave = code => {
 };
 // 체크섬이 맞아도 규칙상 불가능한 값은 거른다: 음수·소수, 레벨이 준 것보다 많은 배분
 const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.alloc && !!s.exped
-  && [s.souls, s.rebirths, s.best, ...s.cleared, ...Object.values(s.traits), ...Object.values(s.alloc)]
+  && [s.souls, s.rebirths, s.best, s.trans ?? 0, ...s.cleared,
+      ...Object.values(s.traits), ...Object.values(s.alloc)]
        .every(v => Number.isInteger(v) && v >= 0)
-  && STATS.reduce((t, [k]) => t + (s.alloc[k] || 0), 0) <= H.level * K.ptPerLevel + s.traits.pt * K.tpt;
+  && (s.trans ?? 0) * TRANS_EXP <= H.exp                 // 쓴 토큰보다 많이 초월할 수는 없다
+  && STATS.reduce((t, [k]) => t + (s.alloc[k] || 0), 0) <= pointsOf(s);
 
 let loadArmed = false;
 $("saveShow").onclick = () => {
@@ -1375,7 +1431,7 @@ let timer = null;
 function fightStart(g, slot, b){
   clearInterval(timer);
   const [me, foe] = newFighters(b);
-  $("fh").textContent = H.emoji; $("fb").textContent = slot.emoji; $("fbn").textContent = slot.name;
+  $("fh").textContent = tierOf(lvNow())[1]; $("fb").textContent = slot.emoji; $("fbn").textContent = slot.name;
   $("log").innerHTML = ""; $("close").disabled = true; $("close").textContent = "전투 중…";
   $("fight").classList.add("on");
   let turn = 0, myTurn = spdNow() >= b.spd;
@@ -1912,6 +1968,14 @@ def _exped_full(snaps=None):
             and time.time() * 1000 - since >= IDLE_CAP_H * 3600 * 1000)
 
 
+def _saved_trans(snaps=None):
+    """저장에 적힌 초월 횟수. 못 읽으면 0 — 배지가 조금 어긋날 뿐 진행에는 영향이 없다."""
+    try:
+        return int((read_save(snaps).get("save") or {}).get("trans") or 0)
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
 def cmd_status(args):
     """메뉴 막대 앱처럼 사람이 아닌 클라이언트가 읽을 수 있는 현재 요약.
 
@@ -1922,7 +1986,7 @@ def cmd_status(args):
     if not agg.get("calls"):
         print(json.dumps({"ok": False, "error": "no_usage"}, ensure_ascii=False))
         return 1
-    h = hero(agg)
+    h = hero(agg, _saved_trans())
     providers = [
         {"id": pid, "name": PROVIDERS[pid]["label"], "tokens": total}
         for pid, total in sorted(per.items(), key=lambda kv: -kv[1])
@@ -2024,7 +2088,26 @@ def main(argv=None):
     return 1
 
 
+def _check_trans():
+    """초월: 레벨만 되돌리고 준 배분 포인트는 적립한다.
+
+    같은 식이 JS 쪽 lvNow()·pointsOf() 에도 있다. 한쪽만 고치면 화면과 메뉴 막대
+    배지가 어긋나므로 여기서 표를 박아 둔다."""
+    T = TRANS_EXP
+    table = [                     # (누적토큰, 초월, 기대 레벨, 기대 배분pt)
+        (0, 0, 1, 2), (T - 1, 0, MAX_LV - 1, 196), (T, 0, MAX_LV, 198),
+        (T, 1, 1, 200), (2 * T, 1, MAX_LV, 396), (2 * T, 2, 1, 398),
+        (T, 5, 1, 200), (0, 3, 1, 2),             # 쓴 토큰보다 많이 초월할 수는 없다
+        (3 * T + 123_456, 2, MAX_LV, 594),
+    ]
+    for total, tr, lv, pt in table:
+        h = hero({"input": total, "output": 0, "cache_read": 0, "thinking": 0, "calls": 0}, tr)
+        assert (h["level"], h["points"]) == (lv, pt), (total, tr, h["level"], h["points"], lv, pt)
+    assert hero({"input": T, "output": 0, "cache_read": 0, "thinking": 0, "calls": 0})["canTrans"]
+
+
 def demo():
+    _check_trans()
     assert level_of(0) == 1 and level_of(50_000) == 2 and level_of(200_000) == 3
     assert tier_of(1)[2] == "토큰 알" and tier_of(99)[2] == "토큰 드래곤"
     import tempfile
@@ -2061,6 +2144,12 @@ def demo():
             raise AssertionError("깨진 저장 파일을 덮어썼다")
         except ValueError:
             pass
+        os.remove(save_path(d))
+
+        # 초월 횟수는 저장에서 읽는다 — 못 읽으면 0 이어야 한다(배지가 어긋날 뿐 진행은 무사)
+        assert _saved_trans(d) == 0
+        write_save(0, {"trans": 2}, d)
+        assert _saved_trans(d) == 2
         os.remove(save_path(d))
 
         # 메뉴 막대 ⛏ 배지: 깬 스테이지가 있고 마지막 수령 뒤 IDLE_CAP_H 가 지났을 때만

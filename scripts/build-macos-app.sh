@@ -11,6 +11,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -parse-as-library "$ROOT/macos/TokenRPGMenuBar.swift" -framework Cocoa -framework WebKit -o "$APP/Contents/MacOS/TokenRPG"
 cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
+# 버전은 token_rpg.py 한 곳에서만 온다 — plist 를 손으로 맞추면 또 뒤처진다
+VER="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$ROOT/token_rpg.py")"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" "$APP/Contents/Info.plist"
 cp "$ROOT/token_rpg.py" "$APP/Contents/Resources/token_rpg.py"
 # swiftc 는 실행 파일만 임시 서명한다. 번들 전체를 다시 봉인하지 않으면
 # 서명이 깨진 앱이 되어 다른 Mac(격리 속성)에서는 실행이 막힌다.

@@ -154,7 +154,7 @@ private struct Status: Decodable {
 }
 
 /// 팝오버 = 게임 화면. 로컬 서버가 주는 game.html 을 그대로 띄운다.
-private final class GameViewController: NSViewController, WKNavigationDelegate {
+private final class GameViewController: NSViewController, WKNavigationDelegate, WKUIDelegate {
     var gamePath: String?
     private let web = WKWebView()
     private var loadedAt: Date?
@@ -163,6 +163,7 @@ private final class GameViewController: NSViewController, WKNavigationDelegate {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 640))
         web.underPageBackgroundColor = NSColor(red: 13 / 255, green: 17 / 255, blue: 23 / 255, alpha: 1)
         web.navigationDelegate = self
+        web.uiDelegate = self
 
         let bar = NSStackView()
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
@@ -195,6 +196,29 @@ private final class GameViewController: NSViewController, WKNavigationDelegate {
         guard let mtime, mtime != loadedAt else { return }
         loadedAt = mtime
         web.load(URLRequest(url: gameURL))
+    }
+
+    /// target="_blank" 링크. WKWebView 는 이걸 구현하지 않으면 새 창을 못 만들어
+    /// 클릭을 조용히 버린다 — 팝오버 안에서 "눌러도 무반응" 으로 보인다.
+    /// 팝오버에 창을 띄울 자리가 없으니 기본 브라우저로 넘긴다.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url { NSWorkspace.shared.open(url) }
+        return nil
+    }
+
+    /// 팝오버는 게임 한 페이지만 띄운다. 바깥 주소로 나가려 하면 브라우저로 보낸다 —
+    /// 여기서 그냥 두면 게임이 그 페이지로 덮여 돌아올 길이 없다.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard navigationAction.navigationType == .linkActivated,
+              let url = navigationAction.request.url,
+              url.host != "127.0.0.1", url.host != "localhost" else {
+            return decisionHandler(.allow)
+        }
+        NSWorkspace.shared.open(url)
+        decisionHandler(.cancel)
     }
 
     // 서버가 아직 안 떴거나 죽었으면 안내하고, 다음에 열 때 다시 시도한다

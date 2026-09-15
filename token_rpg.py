@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1504,23 +1504,27 @@ $("close").onclick = () => $("fight").classList.remove("on");
 // 새 버전 알림. 확인은 서버(파이썬)가 하고 결과를 6시간 재사용한다 — 페이지가 직접 바깥으로 나가지 않는다.
 if (SERVED) fetch("update", {cache: "no-store"}).then(r => r.json()).then(u => {
   if (!u || !u.newer) return;
-  // 앱 번들 안의 사본은 갈아치울 수 없다 — 그때는 DMG 로 보낸다
-  const act = u.kind === "app"
-    ? `<a href="${u.url}" target="_blank" rel="noopener"><button>DMG 받기</button></a>`
-    : `<button id="updBtn">업데이트</button>`;
+  // 앱 번들 안의 사본은 갈아치울 수 없다 — 그때는 서버가 릴리스 페이지를 브라우저로 연다.
+  // 링크(target=_blank)로 두면 메뉴 막대 팝오버(WKWebView)가 새 창을 못 띄워 눌러도 무반응이다.
+  const isApp = u.kind === "app", label = isApp ? "DMG 받기" : "업데이트";
   $("updBanner").innerHTML = `<div class="banner" style="color:var(--gold);border-color:var(--gold);
     display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
-    <span id="updMsg">새 버전 ${u.latest} — 지금은 ${u.current}</span>${act}</div>`;
+    <span id="updMsg">새 버전 ${u.latest} — 지금은 ${u.current}</span>
+    <button id="updBtn">${label}</button></div>`;
   const b = $("updBtn");
   if (b) b.onclick = async () => {
-    b.disabled = true; b.textContent = "업데이트 중…";
+    b.disabled = true; b.textContent = isApp ? "여는 중…" : "업데이트 중…";
     try {
       const r = await fetch("update", {method: "POST", cache: "no-store",
         headers: {"Content-Type": "application/json"}, body: "{}"});
       const d = await r.json();
       $("updMsg").textContent = d.msg;
-      b.textContent = d.ok ? "완료" : "실패";
-    } catch (e) { $("updMsg").textContent = "업데이트하지 못했다 — " + u.cmd; b.textContent = "실패"; }
+      b.textContent = d.ok ? (isApp ? "열었다" : "완료") : "실패";
+      if (!d.ok) b.disabled = false;              // 다시 눌러볼 수 있게
+    } catch (e) {
+      $("updMsg").textContent = isApp ? `${u.url} 에서 DMG 를 받아라` : "업데이트하지 못했다 — " + u.cmd;
+      b.textContent = "실패"; b.disabled = false;
+    }
   };
 }).catch(() => {});
 
@@ -1678,7 +1682,17 @@ def update_check(cfg=None, force=False):
 
 def update_run():
     """감지한 방식으로 업그레이드한다. 지금 도는 프로세스를 갈아치우므로 따로 띄우고 기다린다."""
-    cmd = UPDATE_CMD.get(install_kind())
+    kind = install_kind()
+    if kind == "app":
+        # 앱 번들 안의 사본은 못 갈아치운다 -> 릴리스 페이지를 기본 브라우저로 연다.
+        # 페이지가 직접 여는 링크는 팝오버(WKWebView)에서 새 창을 못 띄워 먹통이 된다.
+        url = f"https://github.com/{REPO}/releases/latest"
+        try:
+            webbrowser.open(url)
+        except Exception as e:                       # 브라우저가 없거나 못 띄웠다
+            return False, f"브라우저를 열지 못했다 — {url} 에서 DMG 를 받아라 ({e})"
+        return True, "브라우저에서 릴리스 페이지를 열었다 — DMG 를 받아 Applications 에 덮어써라"
+    cmd = UPDATE_CMD.get(kind)
     if not cmd:
         return False, "이 설치 방식은 자동 업그레이드를 지원하지 않는다"
     try:
@@ -2106,8 +2120,30 @@ def _check_trans():
     assert hero({"input": T, "output": 0, "cache_read": 0, "thinking": 0, "calls": 0})["canTrans"]
 
 
+def _check_update_app():
+    """앱 번들은 자기 사본을 못 갈아치운다 -> 브라우저로 릴리스 페이지를 연다.
+    페이지 쪽 링크로 두면 메뉴 막대 팝오버(WKWebView)가 새 창을 못 띄워 무반응이 된다."""
+    real_kind, real_open = install_kind, webbrowser.open
+    opened = []
+    try:
+        globals()["install_kind"] = lambda: "app"
+        webbrowser.open = lambda u: opened.append(u) or True
+        ok, _ = update_run()
+        assert ok and opened == [f"https://github.com/{REPO}/releases/latest"], opened
+
+        def boom(_u):
+            raise RuntimeError("브라우저 없음")
+        webbrowser.open = boom
+        ok, msg = update_run()
+        assert not ok and "releases/latest" in msg, msg        # 주소는 알려 준다
+    finally:
+        globals()["install_kind"] = real_kind
+        webbrowser.open = real_open
+
+
 def demo():
     _check_trans()
+    _check_update_app()
     assert level_of(0) == 1 and level_of(50_000) == 2 and level_of(200_000) == 3
     assert tier_of(1)[2] == "토큰 알" and tier_of(99)[2] == "토큰 드래곤"
     import tempfile

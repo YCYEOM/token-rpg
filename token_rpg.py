@@ -676,9 +676,9 @@ font-size:12px;margin-top:6px}.sheet>span{white-space:nowrap}
 .badge{display:inline-block;border:1px solid var(--line);border-radius:20px;
 padding:0 9px;font-size:11px;margin-right:5px}
 .alloc{display:grid;gap:6px;align-items:center;font-size:13px}
-#alloc{grid-template-columns:1fr auto auto auto auto auto}#traits{grid-template-columns:1fr auto auto auto auto}
+#alloc{grid-template-columns:1fr auto auto auto auto auto auto}#traits{grid-template-columns:1fr auto auto auto auto}
 .alloc small{display:block;color:var(--dim);font-size:11px;white-space:nowrap}
-.alloc>b{min-width:34px;text-align:right}.alloc button{white-space:nowrap}
+.alloc>b{min-width:34px;text-align:right}.alloc button{white-space:nowrap;padding:2px 7px}
 details.card>summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:6px;user-select:none}
 details.card>summary::-webkit-details-marker{display:none}
 details.card>summary::before{content:"▸";display:inline-block;color:var(--dim);font-size:10px;transition:transform .15s}
@@ -960,11 +960,13 @@ function drawHero(){
   $("relicIn").innerHTML = rin
     ? `<span class="dim">위 수치에 유물 포함 —</span> <span class="gold">${rin}</span>` : "";
   $("left").textContent = "남은 " + left() + "pt";
-  // 줄마다 −1 · +1 · +10 · 최대(남은 전부) — 남은 포인트보다 많이는 안 움직인다
+  // 줄마다 최소(그 줄 전부 회수) · −1 · +1 · +10 · 최대(남은 전부)
+  // — 넣는 쪽만 한 번에 되고 빼는 쪽은 한 점씩이라 되돌리기가 번거로웠다
   const lf = left();
   $("alloc").innerHTML = STATS.map(([k,ko,s]) =>
     `<span>${ko}<small>${s} +${G[k]}${k==="cdmg"?"%p":""}/pt</small>${capNote(k)}</span>
      <b class="gold">${save.alloc[k]}</b>
+     <button data-k="${k}" data-d="min" ${save.alloc[k]<=0?"disabled":""}>최소</button>
      <button data-k="${k}" data-d="-1" ${save.alloc[k]<=0?"disabled":""}>−</button>
      <button data-k="${k}" data-d="1" ${lf<=0?"disabled":""}>+1</button>
      <button data-k="${k}" data-d="10" ${lf<=0?"disabled":""}>+10</button>
@@ -972,7 +974,9 @@ function drawHero(){
   ).join("");
   $("alloc").querySelectorAll("button").forEach(b => b.onclick = () => {
     const k = b.dataset.k, d = b.dataset.d, room = left();
-    save.alloc[k] += d === "-1" ? -Math.min(1, save.alloc[k]) : d === "max" ? room : Math.min(+d, room);
+    save.alloc[k] += d === "min" ? -save.alloc[k]
+                   : d === "-1"  ? -Math.min(1, save.alloc[k])
+                   : d === "max" ? room : Math.min(+d, room);
     put(); drawAll();
   });
   // 줄마다 구입(1레벨) · 최대(혼이 되는 만큼)

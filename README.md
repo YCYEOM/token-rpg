@@ -13,18 +13,17 @@ Lv.28 코드 술사 🧑‍💻  HP 775 ATK 90 DEF 40.0 CRIT 30.5%  던전 15개
 ## 설치
 
 ```bash
-pipx install git+https://github.com/YCYEOM/token-rpg
+pipx install token-rpg
 token-rpg open              # 집계 후 브라우저로 열기 (Ctrl+C 로 종료)
 ```
 
 의존성은 없다. 표준 라이브러리만 쓴다. Python 3.9+ 만 있으면 macOS·리눅스·윈도우에서
-같은 명령으로 돈다. 아직 PyPI 에 올리지 않아서 GitHub 주소로 받는다
-(`uv tool install git+https://github.com/YCYEOM/token-rpg` 도 같다).
+같은 명령으로 돈다 (`uv tool install token-rpg`·`pip install token-rpg` 도 같다).
 
-`git+` 형식은 git 이 PATH 에 있어야 한다. git 없이 받으려면 zip 주소를 쓴다.
+아직 안 나온 최신 커밋을 받고 싶으면 GitHub 주소를 그대로 쓴다.
 
 ```bash
-pipx install https://github.com/YCYEOM/token-rpg/archive/refs/heads/main.zip
+pipx install git+https://github.com/YCYEOM/token-rpg
 ```
 
 ## 상주 앱

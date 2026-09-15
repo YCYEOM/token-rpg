@@ -57,15 +57,19 @@ Stop 훅은 `cmd.exe` 문법으로 등록된다.
 배지: `⬆` 레벨이 올랐는데 아직 안 열어 봄 · `⛏` 원정이 가득 참 (수령해야 다시 쌓인다).
 앱은 5분마다 사용량을 다시 집계하므로 Codex·Gemini 사용분도 반영된다.
 
-개발용으로 설치 파일을 만들려면 macOS Command Line Tools에서 다음을 실행한다.
+받는 곳은 [릴리스 페이지](https://github.com/YCYEOM/token-rpg/releases/latest) —
+`Token-RPG-macOS.dmg` 를 받아 안에 든 `Token RPG.app` 을 `Applications` 로 드래그한다.
+새 버전이 나오면 같은 자리에서 다시 받아 덮어쓰면 된다(메뉴 막대 앱은 자기 사본을
+갈아치우지 못한다).
+
+직접 빌드하려면 macOS Command Line Tools에서 다음을 실행한다.
 
 ```bash
 zsh scripts/build-macos-app.sh
 open dist-macos/Token-RPG-macOS.dmg
 ```
 
-DMG 안의 `Token RPG.app`을 `Applications`로 드래그하면 된다. 앱은 독립적인
-Swift/AppKit UI이지만, 사용량 집계 로직은 번들에 든 `token_rpg.py`로 실행하므로
+앱은 독립적인 Swift/AppKit UI이지만, 사용량 집계 로직은 번들에 든 `token_rpg.py`로 실행하므로
 `python3`가 PATH에 있어야 한다. 앱이 읽는 것은 로컬 로그뿐이며, 데이터를 외부로
 전송하지 않는다.
 

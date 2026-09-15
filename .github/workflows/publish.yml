@@ -5,6 +5,7 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  workflow_dispatch:        # 이미 나간 릴리스를 손으로 다시 올릴 때
 
 jobs:
   build:

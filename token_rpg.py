@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -247,6 +247,15 @@ def read_claude(path):
     return agg, proj, days, models
 
 
+def _codex_fresh(t):
+    """이번 세션에서 **새로 처리한** 입력 토큰. Codex 의 input_tokens 는 캐시 재사용분을
+    품고 있다(cached_input_tokens 가 그 부분집합이고, input + output == total 이 성립한다).
+    Claude 는 input_tokens 가 캐시를 뺀 값이고 cache_read 가 따로라, 그대로 더하면 Codex 만
+    같은 일을 하고도 EXP 를 몇 배로 받는다 — 실제 로그에서 input 의 67~97% 가 캐시였다.
+    cache_write 는 실측에서 늘 0 이고 input 밖이라는 증거도 없어 따로 더하지 않는다."""
+    return max(0, t.get("input_tokens", 0) - t.get("cached_input_tokens", 0))
+
+
 def read_codex(path):
     """Codex CLI: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 
@@ -285,8 +294,7 @@ def read_codex(path):
         if isinstance(tot, dict):
             last = tot
             # 누적값이 늘어난 만큼을 그 이벤트의 날짜에 준다 -> 날짜별 사용량 (미션용)
-            v = (tot.get("input_tokens", 0) + tot.get("cache_write_input_tokens", 0)
-                 + tot.get("output_tokens", 0)) or tot.get("total_tokens", 0)
+            v = _codex_fresh(tot) + tot.get("output_tokens", 0) or tot.get("total_tokens", 0)
             ts = d.get("timestamp") or ""
             if ts and v > seen_v:
                 days[_day(ts)] += v - seen_v
@@ -294,7 +302,7 @@ def read_codex(path):
 
     agg = collections.Counter()
     if last:
-        agg["input"] = last.get("input_tokens", 0) + last.get("cache_write_input_tokens", 0)
+        agg["input"] = _codex_fresh(last)
         agg["output"] = last.get("output_tokens", 0)
         agg["cache_read"] = last.get("cached_input_tokens", 0)
         agg["thinking"] = last.get("reasoning_output_tokens", 0)
@@ -997,7 +1005,9 @@ function drawHero(){
     .filter(([, v]) => v).map(([s, v, u]) => `${s} +${+v.toFixed(1)}${u}`).join(" · ");
   $("relicIn").innerHTML = rin
     ? `<span class="dim">위 수치에 유물 포함 —</span> <span class="gold">${rin}</span>` : "";
-  $("left").textContent = "남은 " + left() + "pt";
+  // 집계가 바뀌어 EXP 가 줄면(프로바이더 보정 등) 이미 쓴 포인트가 준 것보다 많아질 수 있다.
+  // 넣는 버튼은 이미 막히니 남은 건 읽히게만 해 준다 — "남은 -6pt" 는 무슨 뜻인지 알 수 없다.
+  $("left").textContent = left() < 0 ? `${-left()}pt 초과 — 빼야 한다` : "남은 " + left() + "pt";
   // 줄마다 최소(그 줄 전부 회수) · −1 · +1 · +10 · 최대(남은 전부)
   // — 넣는 쪽만 한 번에 되고 빼는 쪽은 한 점씩이라 되돌리기가 번거로웠다
   const lf = left();
@@ -2391,9 +2401,18 @@ def demo():
             f.write(_tc(100, 60, 10, 3, 110) + "\n")
             f.write(_tc(250, 150, 25, 8, 275) + "\n")     # 누적이므로 이 값만 유효
         a1, proj, days, _ = read_codex(cum)
-        assert (a1["input"], a1["output"]) == (250, 25), f"누적 처리 실패: {dict(a1)}"
+        # 250 중 150 이 캐시 재사용 -> 새로 처리한 입력은 100. Claude 와 같은 뜻이 된다.
+        assert (a1["input"], a1["output"]) == (100, 25), f"누적·캐시 처리 실패: {dict(a1)}"
         assert (a1["cache_read"], a1["thinking"]) == (150, 8), dict(a1)
-        assert a1["calls"] == 2 and proj == "myproj" and dict(days) == {"2026-09-10": 275}, dict(days)
+        assert a1["calls"] == 2 and proj == "myproj" and dict(days) == {"2026-09-10": 125}, dict(days)
+
+        # 캐시가 input 을 거의 다 차지해도 EXP 가 부풀지 않는다 (실제 로그의 97% 재사용 재현)
+        hot = os.path.join(cx, "rollout-hot.jsonl")
+        with open(hot, "w", encoding="utf-8") as f:
+            f.write(_tc(7_573_626, 7_372_032, 19_645, 4_538, 7_679_071) + "\n")
+        ah, _, _, _ = read_codex(hot)
+        assert ah["input"] == 201_594, dict(ah)          # 7.57M 이 아니라 0.20M
+        assert ah["cache_read"] == 7_372_032, dict(ah)   # 캐시는 DEF 로만 간다
 
         # 세부 항목이 비고 total 만 있는 세션 (실제 로그에 존재)
         deg = os.path.join(cx, "rollout-deg.jsonl")
@@ -2414,8 +2433,8 @@ def demo():
         roots = provider_roots("codex", cfg)
         assert cx in roots, f"추가 스캔 폴더 미반영: {roots}"
         agg, projects, _, _ = collect(pid="codex", roots=[cx])
-        assert agg["input"] == 250 + 17647 and projects["codex\tmyproj"] == 275, (dict(agg), dict(projects))
-        assert agg["sessions"] == 2, agg["sessions"]      # 빈 세션은 세지 않는다
+        assert agg["input"] == 100 + 17647 + 201_594 and projects["codex\tmyproj"] == 125, (dict(agg), dict(projects))
+        assert agg["sessions"] == 3, agg["sessions"]      # 빈 세션은 세지 않는다
 
         # build/save_snapshot 이 기본 인자 탓에 한 프로바이더만 읽는 회귀를 막는다
         import inspect

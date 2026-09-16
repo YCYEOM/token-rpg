@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.6.3"
+__version__ = "0.7.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1506,22 +1506,22 @@ $("close").onclick = () => $("fight").classList.remove("on");
 // 새 버전 알림. 확인은 서버(파이썬)가 하고 결과를 6시간 재사용한다 — 페이지가 직접 바깥으로 나가지 않는다.
 if (SERVED) fetch("update", {cache: "no-store"}).then(r => r.json()).then(u => {
   if (!u || !u.newer) return;
-  // 앱 번들 안의 사본은 갈아치울 수 없다 — 그때는 서버가 릴리스 페이지를 브라우저로 연다.
+  // 어느 설치 방식이든 서버가 알아서 올린다 — 앱은 DMG 를 직접 받아 번들을 갈아끼운다.
   // 링크(target=_blank)로 두면 메뉴 막대 팝오버(WKWebView)가 새 창을 못 띄워 눌러도 무반응이다.
-  const isApp = u.kind === "app", label = isApp ? "DMG 받기" : "업데이트";
+  const isApp = u.kind === "app";
   $("updBanner").innerHTML = `<div class="banner" style="color:var(--gold);border-color:var(--gold);
     display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
     <span id="updMsg">새 버전 ${u.latest} — 지금은 ${u.current}</span>
-    <button id="updBtn">${label}</button></div>`;
+    <button id="updBtn">업데이트</button></div>`;
   const b = $("updBtn");
   if (b) b.onclick = async () => {
-    b.disabled = true; b.textContent = isApp ? "여는 중…" : "업데이트 중…";
+    b.disabled = true; b.textContent = isApp ? "받는 중…" : "업데이트 중…";
     try {
       const r = await fetch("update", {method: "POST", cache: "no-store",
         headers: {"Content-Type": "application/json"}, body: "{}"});
       const d = await r.json();
       $("updMsg").textContent = d.msg;
-      b.textContent = d.ok ? (isApp ? "열었다" : "완료") : "실패";
+      b.textContent = d.ok ? (isApp ? "다시 뜬다" : "완료") : "실패";
       if (!d.ok) b.disabled = false;              // 다시 눌러볼 수 있게
     } catch (e) {
       $("updMsg").textContent = isApp ? `${u.url} 에서 DMG 를 받아라` : "업데이트하지 못했다 — " + u.cmd;
@@ -1682,18 +1682,87 @@ def update_check(cfg=None, force=False):
             "newer": bool(tag) and _ver(tag) > _ver(__version__)}
 
 
+def app_bundle(path=None):
+    """이 사본을 담고 있는 .app 경로. 앱 안에서 도는 게 아니면 None."""
+    here = os.path.abspath(path or __file__)
+    i = here.find(".app" + os.sep + "Contents" + os.sep)
+    return here[:i + 4] if i > 0 else None
+
+
+def _dmg_url():
+    """최신 릴리스에 붙은 DMG 주소. CI(macos-dmg.yml)가 릴리스마다 올려 둔다."""
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{REPO}/releases/latest",
+        headers={"Accept": "application/vnd.github+json",
+                 "User-Agent": f"token-rpg/{__version__}"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        for a in json.load(r).get("assets") or []:
+            if str(a.get("name", "")).endswith(".dmg"):
+                return a.get("browser_download_url")
+    return None
+
+
+# 앱은 자기가 도는 동안 자기를 갈아치울 수 없다 -> 앱을 닫고, 바꾸고, 다시 띄우는 일을
+# 분리된 셸에 맡긴다. 새 번들을 옆에 펼친 뒤 이름만 바꾸므로 중간에 죽어도 옛 앱이 남는다.
+_SWAP_SH = r"""
+APP="$1"; DMG="$2"; PID="$3"
+kill -TERM "$PID" 2>/dev/null
+n=0; while kill -0 "$PID" 2>/dev/null && [ "$n" -lt 80 ]; do sleep 0.25; n=$((n + 1)); done
+MNT=$(hdiutil attach "$DMG" -nobrowse -readonly | grep -o '/Volumes/.*' | tail -1)
+NEW=$(find "$MNT" -maxdepth 1 -name '*.app' | head -1)
+if [ -n "$NEW" ]; then
+  rm -rf "$APP.new" "$APP.old"
+  if ditto "$NEW" "$APP.new"; then
+    mv "$APP" "$APP.old" && mv "$APP.new" "$APP" || mv "$APP.old" "$APP"
+  fi
+  rm -rf "$APP.new" "$APP.old"
+fi
+[ -n "$MNT" ] && hdiutil detach "$MNT" -quiet
+rm -f "$DMG"
+open "$APP"
+"""
+
+
+def update_app(bundle):
+    """DMG 를 직접 받아 번들을 갈아끼운다. 브라우저를 거치지 않으니 quarantine 딱지도
+    안 붙는다 — 그 딱지는 서명 유무가 아니라 받은 프로그램(브라우저)이 찍는 것이다."""
+    if not os.access(os.path.dirname(bundle), os.W_OK) or not os.access(bundle, os.W_OK):
+        return False, f"{bundle} 를 고칠 권한이 없다 — 직접 받아 덮어써라"
+    try:
+        url = _dmg_url()
+        if not url:
+            return False, "이번 릴리스에는 DMG 가 없다"
+        dmg = os.path.join(data_dir(), "update.dmg")
+        with urllib.request.urlopen(url, timeout=120) as r, open(dmg, "wb") as f:
+            shutil.copyfileobj(r, f)
+    except Exception as e:                            # 네트워크·디스크 — 옛 앱은 그대로다
+        return False, f"DMG 를 받지 못했다 — {e}"
+    # 부모가 곧 메뉴 막대 앱이다(앱이 serve 를 띄운다). 스크립트는 우리가 죽어도 살아야 하므로
+    # 새 세션으로 떼어 놓는다 — 앱을 닫는 순간 이 파이썬도 같이 죽는다.
+    subprocess.Popen(["/bin/sh", "-c", _SWAP_SH, "swap", bundle, dmg, str(os.getppid())],
+                     start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True, "새 버전을 받았다 — 앱이 잠깐 닫혔다 다시 뜬다"
+
+
+_real_update_app = update_app
+
+
 def update_run():
     """감지한 방식으로 업그레이드한다. 지금 도는 프로세스를 갈아치우므로 따로 띄우고 기다린다."""
     kind = install_kind()
-    if kind == "app":
-        # 앱 번들 안의 사본은 못 갈아치운다 -> 릴리스 페이지를 기본 브라우저로 연다.
-        # 페이지가 직접 여는 링크는 팝오버(WKWebView)에서 새 창을 못 띄워 먹통이 된다.
+    bundle = app_bundle()
+    if kind == "app" and bundle:
+        ok, msg = update_app(bundle)
+        if ok:
+            return ok, msg
+        # 자동으로 못 바꿨을 때만 사람 손에 넘긴다 — 주소는 알려 준다.
         url = f"https://github.com/{REPO}/releases/latest"
         try:
             webbrowser.open(url)
-        except Exception as e:                       # 브라우저가 없거나 못 띄웠다
-            return False, f"브라우저를 열지 못했다 — {url} 에서 DMG 를 받아라 ({e})"
-        return True, "브라우저에서 릴리스 페이지를 열었다 — DMG 를 받아 Applications 에 덮어써라"
+        except Exception:                            # 브라우저도 못 띄웠다
+            return False, f"{msg} ({url})"
+        return False, f"{msg} — 릴리스 페이지를 열었다"
     cmd = UPDATE_CMD.get(kind)
     if not cmd:
         return False, "이 설치 방식은 자동 업그레이드를 지원하지 않는다"
@@ -2139,23 +2208,43 @@ def _check_trans():
 
 
 def _check_update_app():
-    """앱 번들은 자기 사본을 못 갈아치운다 -> 브라우저로 릴리스 페이지를 연다.
-    페이지 쪽 링크로 두면 메뉴 막대 팝오버(WKWebView)가 새 창을 못 띄워 무반응이 된다."""
-    real_kind, real_open = install_kind, webbrowser.open
-    opened = []
+    """앱은 DMG 를 직접 받아 번들을 갈아끼운다. 브라우저를 거치지 않으니 quarantine 도 안 붙는다
+    (그 딱지는 서명이 아니라 받은 프로그램이 찍는다). 못 바꿀 때만 릴리스 페이지로 넘긴다."""
+    import tempfile
+    real_kind, real_bundle, real_open = install_kind, app_bundle, webbrowser.open
+    opened, swapped = [], []
     try:
         globals()["install_kind"] = lambda: "app"
         webbrowser.open = lambda u: opened.append(u) or True
-        ok, _ = update_run()
-        assert ok and opened == [f"https://github.com/{REPO}/releases/latest"], opened
 
-        def boom(_u):
-            raise RuntimeError("브라우저 없음")
-        webbrowser.open = boom
-        ok, msg = update_run()
-        assert not ok and "releases/latest" in msg, msg        # 주소는 알려 준다
+        with tempfile.TemporaryDirectory() as d:
+            bundle = os.path.join(d, "Token RPG.app")
+            os.makedirs(os.path.join(bundle, "Contents", "Resources"))
+            globals()["app_bundle"] = lambda: bundle
+
+            # 받아서 갈아끼운다 — 셸에 넘기는 인자가 번들·DMG·앱 PID 순이어야 한다
+            globals()["update_app"] = lambda b: swapped.append(b) or (True, "새 버전을 받았다")
+            ok, msg = update_run()
+            assert ok and swapped == [bundle] and not opened, (ok, msg, swapped, opened)
+
+            # 못 바꿨으면 실패로 알리고 릴리스 페이지를 대신 연다
+            globals()["update_app"] = lambda b: (False, "권한이 없다")
+            ok, msg = update_run()
+            assert not ok and "권한이 없다" in msg, msg
+            assert opened == [f"https://github.com/{REPO}/releases/latest"], opened
+
+            # 번들 경로는 .app 에서 끊는다 — Contents 안쪽까지 넘기면 그걸 통째로 지우게 된다
+            inside = os.path.join(bundle, "Contents", "Resources", "token_rpg.py")
+            assert real_bundle(inside) == bundle, real_bundle(inside)
+            assert real_bundle("/usr/local/bin/token_rpg.py") is None
+
+        # 쓸 수 없는 번들은 건드리지 않는다
+        ok, msg = update_app("/nonexistent/Token RPG.app")
+        assert not ok and "권한" in msg, msg
     finally:
         globals()["install_kind"] = real_kind
+        globals()["app_bundle"] = real_bundle
+        globals()["update_app"] = _real_update_app
         webbrowser.open = real_open
 
 

@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -704,6 +704,8 @@ button:hover:not(:disabled){border-color:var(--on)}button:disabled{opacity:.35;c
 button.big{padding:7px 14px;width:100%}
 button.rb{border-color:var(--soul);color:var(--soul)}
 button.on{border-color:var(--on);color:var(--on);background:#1c2531}
+button.chip{padding:1px 6px;font-size:11px}
+#picks{flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;max-height:76px;overflow-y:auto}
 .pulse{animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.45}}
 .banner{border:1px dashed var(--xp);border-radius:8px;padding:9px;margin-bottom:10px;
@@ -1132,10 +1134,15 @@ const beatable = b => {
 // ── 자동 도전: 첫 환생 후 해금. 1초에 한 판씩 연출 없이 같은 규칙으로 싸운다.
 // 목표(save.farm: 0 = 끝까지, g = g스테이지)까지 한 칸씩 오르고, 더 못 오르면 멈추지 않고
 // 목표(또는 이번 판 가장 깊은 곳)를 반복한다 — 유물 파밍. 환생해도 켜 둔 채면 다시 오른다.
-let autoMsg = "", autoFailSig = "", autoKey = "", farmW = 0, farmL = 0;
+let autoMsg = "", autoFailSig = "", autoKey = "", farmW = 0, farmL = 0, farmI = 0;
 // 능력치가 그대로면 진 스테이지로 다시 오르지 않는다 (치명타 운으로 벽을 넘는 반복 방지)
 const statSig = () => STATS.map(([k]) => F(k)).join();
-const autoReset = () => { autoFailSig = ""; autoMsg = ""; farmW = farmL = 0; };
+const autoReset = () => { autoFailSig = ""; autoMsg = ""; farmW = farmL = farmI = 0; };
+// 반복할 스테이지들. 옛 저장은 숫자 하나였다 — 읽을 때 배열로 맞춘다.
+// 비어 있으면 예전처럼 끝까지 오르고 이길 수 있는 가장 깊은 곳을 돈다.
+const picks = () => (Array.isArray(save.farm) ? save.farm : save.farm > 0 ? [save.farm] : [])
+  .filter(g => Number.isInteger(g) && g >= 1 && g <= save.best).sort((a, b) => a - b);
+const setPicks = ps => { save.farm = [...new Set(ps)].sort((a, b) => a - b); autoReset(); put(); drawAuto(); };
 const autoSay = m => { if (m !== autoMsg) { autoMsg = m; drawAuto(); } };
 function drawAuto(){
   if (!save.rebirths) {
@@ -1143,24 +1150,37 @@ function drawAuto(){
     $("auto").innerHTML = '<span class="dim" style="font-size:11px">자동 도전 — 첫 환생 후 해금</span>';
     return;
   }
-  // 버튼·목록은 바뀔 때만 다시 그린다 — 매초 갈아엎으면 열어 둔 목록이 닫힌다
-  const key = `${save.auto}|${save.farm}|${save.best}`;
+  // 버튼·칸은 바뀔 때만 다시 그린다 — 매초 갈아엎으면 누르는 중에 사라진다
+  const ps = picks(), on = new Set(ps), best = save.best || 0;
+  const key = `${save.auto}|${ps.join()}|${best}`;
   if (key !== autoKey || !$("autoMsg")) {
     autoKey = key;
-    const opts = ['<option value="0">최고 기록까지 오르고 가장 깊은 곳 반복</option>'];
-    for (let g = save.best || 0; g >= 1; g--)
-      opts.push(`<option value="${g}" ${save.farm === g ? "selected" : ""}>${g}. ${SLOTS[(g-1)%N].name} 반복</option>`);
+    // 스테이지마다 유물 속성이 다르다 — 여러 곳을 골라 돌려야 속성이 골고루 모인다
+    const chips = [];
+    for (let g = 1; g <= best; g++)
+      chips.push(`<button class="chip${on.has(g) ? " on" : ""}" data-g="${g}"
+        title="${g}. ${SLOTS[(g-1)%N].name}">${SLOTS[(g-1)%N].emoji}${g}</button>`);
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
-      <select id="farmSel" style="flex:1;min-width:0">${opts.join("")}</select>
+      <button id="pickAll">${ps.length === best && best ? "전체 해제" : "전체 반복"}</button>
+      <span class="dim" style="font-size:11px">${ps.length
+        ? `고른 ${ps.length}곳을 차례로 반복` : "끝까지 오르고 가장 깊은 곳 반복"}</span>
+      <div id="picks">${chips.join("")}</div>
       <span class="dim" id="autoMsg" style="font-size:11px;flex-basis:100%"></span>`;
     $("autoBtn").onclick = () => { save.auto = !save.auto; autoReset(); put(); drawAuto(); };
-    $("farmSel").onchange = e => { save.farm = +e.target.value; autoReset(); put(); drawAuto(); };
+    $("pickAll").onclick = () => setPicks(ps.length === best
+      ? [] : Array.from({length: best}, (_, i) => i + 1));
+    $("picks").onclick = e => {                       // 칸 하나하나가 아니라 묶어서 듣는다
+      const g = +(e.target.dataset || {}).g;
+      if (g) setPicks(on.has(g) ? ps.filter(x => x !== g) : [...ps, g]);
+    };
   }
   $("autoMsg").textContent = save.auto ? autoMsg : "";
 }
 function autoStep(){
   if (!save.auto || !save.rebirths) return;
-  const tgt = Number.isInteger(save.farm) && save.farm > 0 ? save.farm : Infinity;
+  const ps = picks();
+  // 고른 곳이 있으면 가장 깊은 것까지만 오른다 — 하나만 고른 건 예전 동작 그대로다
+  const tgt = ps.length ? ps[ps.length - 1] : Infinity;
   const top = maxCleared(), next = top + 1;
   // 1) 목표까지 한 칸씩 오른다
   if (next <= tgt && beatable(boss(next)) && autoFailSig !== statSig() + "@" + next) {
@@ -1173,16 +1193,25 @@ function autoStep(){
     return;
   }
   // 2) 더 못 오르면 반복. 이긴 판은 저장할 게 없으니 유물이 나왔을 때만 쓴다
-  let g = Math.min(tgt, top);
-  // 끝까지 모드: 이길 수 있는 가장 깊은 곳을 반복. 직접 고른 스테이지는 그대로 둔다
-  if (tgt === Infinity) while (g > 1 && !beatable(boss(g))) g--;
+  let g;
+  if (ps.length) {
+    // 고른 곳을 한 판씩 돌아가며 — 아직 못 깼거나 못 이기는 곳은 건너뛴다
+    const ok = ps.filter(x => x <= top && beatable(boss(x)));
+    if (!ok.length) return autoSay(`고른 ${ps.length}곳을 아직 못 이긴다 — 능력치를 올려라`);
+    g = ok[farmI++ % ok.length];
+  } else {
+    g = top;
+    // 끝까지 모드: 이길 수 있는 가장 깊은 곳을 반복
+    while (g > 1 && !beatable(boss(g))) g--;
+  }
   if (g < 1) return autoSay(`${next}스테이지 앞에서 대기 — 능력치를 올려라`);
   if (quickFight(boss(g))) {
     farmW++;
     const drop = rollRelic(g, SLOTS[(g-1)%N], false);
     if (drop) { relicNews = drop; put(); drawAll(); }
   } else farmL++;
-  autoSay(`${g}스테이지 반복 중 · 승 ${farmW} 패 ${farmL}${next <= tgt ? ` · ${next}스테이지는 아직 무리` : ""}`);
+  autoSay(`${g}스테이지 반복 중${ps.length > 1 ? ` (고른 ${ps.length}곳 순회)` : ""}`
+    + ` · 승 ${farmW} 패 ${farmL}${next <= tgt ? ` · ${next}스테이지는 아직 무리` : ""}`);
 }
 
 function drawStages(){

@@ -229,7 +229,8 @@ private final class GameViewController: NSViewController, WKNavigationDelegate, 
 
     @objc private func rebuild(_ sender: Any?) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let out = String(decoding: runTokenRPG(["build"]), as: UTF8.self)
+            // 손으로 누른 갱신에서만 새 버전을 다시 확인한다 — Stop 훅이 부르는 build 는 응답마다 돈다
+            let out = String(decoding: runTokenRPG(["build", "--check-update"]), as: UTF8.self)
             let first = out.split(separator: "\n").first.map(String.init)
             DispatchQueue.main.async {
                 guard let path = first, FileManager.default.fileExists(atPath: path) else {

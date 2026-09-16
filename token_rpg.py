@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1821,13 +1821,17 @@ def cmd_toggle(args, on):
 
 
 def cmd_build(args):
+    # 갱신 버튼은 "지금 것으로 맞춰라"는 뜻이다 — 6시간 캐시가 남아 새 릴리스가 안 보이면
+    # 눌러도 아무 일이 없다. 결과는 config 에 떨어져 서버의 GET /update 가 곧바로 읽는다.
+    if getattr(args, "check_update", False):
+        update_check(force=True)
     agg, _, _, _, _ = collect_all()
     if not agg.get("calls") and not glob.glob(os.path.join(snap_dir(), "*.json")):
         _no_data_hint()
         return 1
     path, d = build()
     h = d["hero"]
-    if not args.quiet:
+    if not getattr(args, "quiet", False):
         print(f"{path}")
         print(f"Lv.{h['level']} {h['title']} {h['emoji']}  HP {h['hp']} ATK {h['atk']} "
               f"DEF {h['dfn']} CRIT {h['crit']}%  배분 {h['points']}pt  던전 {len(d['dungeons'])}개")
@@ -2023,19 +2027,22 @@ def cmd_status(args):
     return 0
 
 
-def main(argv=None):
-    if os.name == "nt":                  # 리다이렉트되면 기본 인코딩이 cp949 -> 이모지에서 죽는다
-        for st in (sys.stdout, sys.stderr):
-            try:
-                st.reconfigure(encoding="utf-8", errors="replace")
-            except (AttributeError, OSError):
-                pass
+def build_parser():
     p = argparse.ArgumentParser(
         prog="token-rpg",
         description="Claude Code 토큰 사용량으로 성장하는 턴제 RPG")
     p.add_argument("--version", action="version", version=f"token-rpg {__version__}")
+    # build 용 플래그. 최상위에만 두면 "build --quiet" 가 argparse 오류로 죽는다 — 윈도우
+    # Stop 훅이 그 형태였다. SUPPRESS 라 서브파서 사본이 앞에서 받은 값을 덮지 않는다.
+    common = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
+    common.add_argument("-q", "--quiet", action="store_true", help="출력 억제")
+    common.add_argument("--check-update", action="store_true",
+                        help="캐시를 무시하고 새 버전을 다시 확인한다 (메뉴 막대 갱신 버튼이 쓴다)")
+    p.add_argument("-q", "--quiet", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--check-update", action="store_true", help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="cmd")
-    sub.add_parser("build", help="사용량을 다시 집계해 game.html 갱신 (기본)")
+    sub.add_parser("build", parents=[common],
+                   help="사용량을 다시 집계해 game.html 갱신 (기본)")
     sub.add_parser("open", help="갱신한 뒤 브라우저로 연다 (저장 서버 포함, Ctrl+C 로 종료)")
     sub.add_parser("serve", help="게임과 저장을 127.0.0.1 로 제공 (메뉴 막대 앱용)")
     sub.add_parser("status", help="현재 스탯을 JSON으로 출력 (메뉴 막대 앱용)")
@@ -2056,8 +2063,17 @@ def main(argv=None):
     for name, on in (("enable", True), ("disable", False)):
         q = sub.add_parser(name, help=f"프로바이더 {'켜기' if on else '끄기'}")
         q.add_argument("provider")
-    p.add_argument("-q", "--quiet", action="store_true", help="출력 억제")
-    a = p.parse_args(argv)
+    return p
+
+
+def main(argv=None):
+    if os.name == "nt":                  # 리다이렉트되면 기본 인코딩이 cp949 -> 이모지에서 죽는다
+        for st in (sys.stdout, sys.stderr):
+            try:
+                st.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError):
+                pass
+    a = build_parser().parse_args(argv)
 
     cmd = a.cmd or "build"
     if cmd == "build":
@@ -2143,9 +2159,23 @@ def _check_update_app():
         webbrowser.open = real_open
 
 
+def _check_cli_flags():
+    """build 용 플래그는 서브커맨드 앞뒤 어디든 먹어야 한다. 최상위에만 달아 뒀을 때
+    윈도우 Stop 훅의 `token_rpg build --quiet` 가 argparse 오류로 조용히 죽고 있었다."""
+    import contextlib, io
+    for argv in (["build", "--quiet"], ["--quiet", "build"], ["build", "-q"],
+                 ["build", "--check-update"], ["--check-update", "build"]):
+        with contextlib.redirect_stderr(io.StringIO()):
+            a = build_parser().parse_args(argv)          # SystemExit 면 파서가 거부한 것
+        assert a.cmd == "build", (argv, a)
+        assert getattr(a, "quiet", False) or getattr(a, "check_update", False), (argv, a)
+    assert "build --quiet" in hook_command() or os.name != "nt"
+
+
 def demo():
     _check_trans()
     _check_update_app()
+    _check_cli_flags()
     assert level_of(0) == 1 and level_of(50_000) == 2 and level_of(200_000) == 3
     assert tier_of(1)[2] == "토큰 알" and tier_of(99)[2] == "토큰 드래곤"
     import tempfile

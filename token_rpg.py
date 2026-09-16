@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -806,6 +806,8 @@ const D = __DATA__, H = D.hero, G = H.gain, K = D.k, SLOTS = D.dungeons, N = SLO
 // 1,000 이상은 1.25K · 12.5M · 3.4B 처럼 줄인다 — 커진 숫자가 좁은 팝오버에서 밀리지 않게
 const compact = new Intl.NumberFormat("en", {notation: "compact", maximumSignificantDigits: 3});
 const n = x => Math.abs(x) < 1000 ? String(Math.round(x)) : compact.format(x);
+// 스탯은 1,000 아래에서 소수 한 자리가 뜻이 있다(DEF 281.8) — 그 위는 n() 으로 줄인다
+const ns = (x, d) => Math.abs(x) < 1000 ? x.toFixed(d) : n(x);
 // 원정은 초당 소수점 단위로 쌓인다 — 정수로 표시하면 멈춘 것처럼 보인다
 const nf = x => x < 1000 ? x.toFixed(2) : n(x);
 const MULTIPROV = (D.providers || []).length > 1;
@@ -986,7 +988,7 @@ function drawHero(){
   $("bSouls").textContent   = "혼 " + n(save.souls);
   $("soulsHave").textContent = "보유 " + n(save.souls);
   $("sheet").innerHTML = STATS.map(([k,,s]) =>
-    `<span><span class="dim">${s}</span> <b>${F(k).toFixed(k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b></span>`
+    `<span><span class="dim">${s}</span> <b>${ns(F(k), k==="dfn"||k==="crit"?1:0)}${k==="crit"||k==="cdmg"?"%":""}</b></span>`
   ).join("");
   // 유물 몫은 한 줄을 따로 쓴다 — 수치 옆에 붙이면 칸이 넘치고 '더 더해진다'로 읽힌다
   const rin = STATS.map(([k,,s]) => [s, relicSum(k), k === "crit" ? "%p" : "%"])

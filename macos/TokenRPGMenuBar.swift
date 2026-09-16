@@ -73,7 +73,9 @@ final class TokenRPGApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// 리로드는 페이지 안의 상태(자동 도전 승/패 카운터)를 날리므로, 꼭 필요할 때만 돌린다.
     private func refresh(build: Bool = true) {
         DispatchQueue.global(qos: .utility).async {
-            if build { _ = runTokenRPG(["-q", "build"]) }
+            // 5분마다 도는 자리다 — 새 버전 확인도 여기 얹는다. 시간당 12번이라 제한에
+            // 여유가 있고, 사용자가 아무것도 안 눌러도 배너가 저절로 뜬다.
+            if build { _ = runTokenRPG(["-q", "build", "--check-update"]) }
             let status = try? JSONDecoder().decode(Status.self, from: runTokenRPG(["status"]))
             DispatchQueue.main.async { self.show(status) }
         }

@@ -8,7 +8,7 @@ import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, w
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1653,7 +1653,8 @@ def uninstall_hook():
 
 REPO = "YCYEOM/token-rpg"
 PKG = "token-rpg"              # PyPI 배포판 이름
-UPDATE_TTL = 6 * 3600        # 확인 결과를 이만큼 재사용한다 — 열 때마다 GitHub 을 두드리지 않게
+UPDATE_TTL = 60              # 확인 결과를 이만큼만 재사용한다. 0 으로 두면 팝오버를 여닫을 때마다
+                             # GitHub 을 두드리는데, 인증 없이는 시간당 60번이 상한이다.
 
 
 def _ver(v):
@@ -1701,7 +1702,10 @@ def update_check(cfg=None, force=False):
             cfg["update"] = seen
             save_config(cfg)
         except Exception:                 # 오프라인·차단·API 제한 — 조용히 넘어간다
-            pass
+            # 실패도 시각을 남긴다. 안 남기면 다음 호출이 곧바로 또 두드려, 제한에 걸린 뒤
+            # 팝오버를 열 때마다 헛물을 켠다. 아는 태그는 그대로 들고 간다.
+            cfg["update"] = seen = {**seen, "at": time.time()}
+            save_config(cfg)
     kind = install_kind()
     tag = seen.get("tag") or ""
     cmd = UPDATE_CMD.get(kind, [])

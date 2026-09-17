@@ -4,11 +4,11 @@
 설계: 내 스탯은 토큰에 선형으로, 보스 능력치는 토큰의 거듭제곱근(<1)으로 커진다.
 따라서 막힌 스테이지는 토큰을 더 쓰면 반드시 넘을 수 있다.
 """
-import argparse, json, sys, glob, os, shutil, socket, subprocess, collections, webbrowser
+import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, socket, subprocess, sys, webbrowser
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -47,6 +47,77 @@ def save_config(cfg):
     os.replace(tmp, config_path())
 
 
+# --- 봉인: 진행 저장과 스냅샷은 base64(JSON).HMAC 으로 적는다 ---
+# 텍스트 편집기로 열어 혼·환생·토큰 숫자만 고치는 짓을 막는다. 파일은 한 줄 난수처럼 보인다.
+# ponytail: 열쇠가 이 파일 안에 있어 소스를 읽으면 위조할 수 있다. 로컬 단인용 게임이라
+# 진짜로 막으려면 저장을 서버가 들고 있어야 한다 — 막는 대상은 '파일 열어서 0 하나 더 붙이기'다.
+_SEAL_KEY = b"token-rpg/seal/v1"
+
+
+def _mac(b):
+    return hmac.new(_SEAL_KEY, b.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def seal(obj):
+    b = base64.b64encode(json.dumps(obj, ensure_ascii=False).encode()).decode()
+    return b + "." + _mac(b)
+
+
+def unseal(text):
+    """봉인을 푼다. 봉인이 아니거나 고쳐졌으면 None — 옛 평문 파일과 구분해야 해서 예외를 안 쓴다."""
+    b, dot, mac = text.strip().partition(".")
+    if not dot or not hmac.compare_digest(mac, _mac(b)):
+        return None
+    try:
+        return json.loads(base64.b64decode(b))
+    except ValueError:          # binascii.Error 도 ValueError 다
+        return None
+
+
+def _sealed_era(cfg=None):
+    """봉인을 쓰기 시작했는가. 한 번 켜지면 평문 파일은 더 안 받는다 —
+    계속 받아 주면 평문으로 써넣는 것만으로 봉인을 비켜갈 수 있다."""
+    return bool((cfg if cfg is not None else load_config()).get("sealed"))
+
+
+def _load_sealed(path):
+    """봉인된 파일을 읽는다. 옛 버전이 남긴 평문은 봉인 시대 전에만 받아 준다."""
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    d = unseal(text)
+    if d is None:
+        if _sealed_era():
+            raise ValueError("봉인이 없거나 맞지 않는다")
+        d = json.loads(text)        # 다음 쓰기에서 봉인된다
+    return d
+
+
+def _dump_sealed(path, obj):
+    tmp = path + f".{os.getpid()}.tmp"       # 원자적 교체: 훅이 동시에 돌 수 있다
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(seal(obj))
+    os.replace(tmp, path)
+
+
+def start_sealing(snaps=None):
+    """설치당 한 번: 폴더에 남아 있던 평문 저장·스냅샷을 봉인해 두고 봉인 시대를 연다.
+    이관을 안 하면 업데이트하는 순간 진행과 다른 PC 집계가 통째로 버려진다."""
+    cfg = load_config()
+    if cfg.get("sealed"):
+        return
+    snaps = snaps or snap_dir()
+    for p in glob.glob(os.path.join(snaps, "*.json")) + [save_path(snaps)]:
+        try:
+            with open(p, encoding="utf-8") as f:
+                text = f.read()
+            if unseal(text) is None:
+                _dump_sealed(p, json.loads(text))
+        except (OSError, ValueError):
+            pass                                # 깨진 파일은 그대로 둔다
+    cfg["sealed"] = True
+    save_config(cfg)
+
+
 def since_ts(cfg=None):
     """이 설치가 언제부터 센 것인지. 처음 돌 때 정한다 — 쌓여 있던 로그로 레벨이
     순간에 치솟으면 성장이 통째로 사라지기 때문이다. 0 이면 전체 기록을 센다."""
@@ -75,10 +146,9 @@ def save_path(snaps=None):
 
 def read_save(snaps=None):
     """{"rev": n, "save": {...}}. 파일이 없으면 rev 0.
-    깨진 파일은 ValueError 를 올린다 — 동기화 중인 반쪽 파일을 새 저장으로 덮어 진행을 날리지 않게."""
+    깨졌거나 봉인이 맞지 않는 파일은 ValueError 를 올린다 — 동기화 중인 반쪽 파일을 새 저장으로 덮어 진행을 날리지 않게."""
     try:
-        with open(save_path(snaps), encoding="utf-8") as f:
-            d = json.load(f)
+        d = _load_sealed(save_path(snaps))
     except FileNotFoundError:
         return {"rev": 0}
     if not isinstance(d, dict) or type(d.get("rev")) is not int:
@@ -98,11 +168,7 @@ def write_save(base, save, snaps=None):
         if cur["rev"] != base:
             return False, cur
         new = {"rev": base + 1, "save": save}
-        path = save_path(snaps)
-        tmp = path + f".{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(new, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        _dump_sealed(save_path(snaps), new)
         return True, new
 
 # --- 밸런스 조절 손잡이 (python3 build.py --balance 로 확인) ---
@@ -446,6 +512,7 @@ def save_snapshot(root=None, snaps=None):   # root 는 테스트용 단일 경�
     """이 PC의 집계만 작은 JSON으로 남긴다. 190MB 트랜스크립트는 옮기지 않는다."""
     snaps = snaps or snap_dir()
     os.makedirs(snaps, exist_ok=True)      # 명시로 넘긴 경로도 없으면 만든다
+    start_sealing(snaps)                   # 옛 평문 파일 이관 — 설치당 한 번만 돈다
     if root:                                # 테스트용 단일 경로
         agg, projects, models, days = collect(root)
         per = {"claude-code": agg["input"] + agg["output"]}
@@ -460,17 +527,13 @@ def save_snapshot(root=None, snaps=None):   # root 는 테스트용 단일 경�
             "daily": {k: v for k, v in days.items() if k >= recent}}
     path = os.path.join(snaps, snap["host"].replace(os.sep, "_") + ".json")
     try:                                    # 값이 그대로면 updated 도 그대로 둔다
-        with open(path, encoding="utf-8") as f:
-            old = json.load(f)
+        old = _load_sealed(path)
         if {k: v for k, v in old.items() if k != "updated"} == \
            {k: v for k, v in snap.items() if k != "updated"}:
             return path, old
     except (OSError, ValueError):
         pass
-    tmp = path + f".{os.getpid()}.tmp"          # 원자적 교체: 훅이 동시에 돌 수 있다
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(snap, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    _dump_sealed(path, snap)
     return path, snap
 
 
@@ -481,8 +544,11 @@ def merge(snaps=None):
     days, hosts, provs = set(), [], {}
     daily = collections.defaultdict(collections.Counter)      # 날짜 -> 프로바이더 -> 토큰
     for p in sorted(glob.glob(os.path.join(snaps, "*.json"))):
-        with open(p, encoding="utf-8") as f:
-            snap = json.load(f)
+        try:
+            snap = _load_sealed(p)
+        except (OSError, ValueError) as e:      # 손댄 파일·옛 버전 PC 가 남긴 평문
+            print(f"스냅샷 건너뜀 {os.path.basename(p)}: {e}", file=sys.stderr)
+            continue
         agg.update(snap["agg"]); projects.update(snap["projects"]); models.update(snap["models"])
         days |= set(snap.get("days", []))
         for day, per in (snap.get("daily") or {}).items():
@@ -2305,6 +2371,21 @@ def _check_cli_flags():
 
 
 def demo():
+    """진짜 설치를 건드리지 않게 임시 데이터 폴더에서 돈다 — 봉인 플래그가 사용자 config 로
+    새면 다음 실행에서 옛 평문 파일을 못 받는다."""
+    import tempfile
+    _demo.real = merge()                  # 밸런스 검증용 — 진짜 스냅샷은 지금 읽어 둔다
+    keep = dict(os.environ)
+    with tempfile.TemporaryDirectory() as home:
+        os.environ["TOKEN_RPG_HOME"] = home
+        os.environ.pop("TOKEN_RPG_SNAPSHOTS", None)
+        try:
+            _demo()
+        finally:
+            os.environ.clear(); os.environ.update(keep)
+
+
+def _demo():
     _check_trans()
     _check_update_app()
     _check_cli_flags()
@@ -2325,16 +2406,31 @@ def demo():
         assert sum(days.values()) == 35, dict(days)             # 날짜별 합 = EXP 기여
         snaps = os.path.join(d, "snaps")
         _, s1 = save_snapshot(d, snaps)
-        with open(os.path.join(snaps, "otherpc.json"), "w", encoding="utf-8") as f:
-            json.dump({**s1, "host": "otherpc"}, f)
+        _dump_sealed(os.path.join(snaps, "otherpc.json"), {**s1, "host": "otherpc"})
         m, mp, _, hs = merge(snaps)
         assert m["input"] == 30 and mp["claude-code\tproj"] == 70 and m["days"] == 1 and len(hs) == 2
         assert [sum(v.values()) for v in merge.daily.values()] == [70], merge.daily   # 기기 합산
+
+        # 봉인: 파일을 손대면 그 PC 집계는 세지 않는다 (평문으로 써넣어도 마찬가지)
+        with open(os.path.join(snaps, "otherpc.json"), encoding="utf-8") as f:
+            sealed = f.read()
+        assert '"host"' not in sealed and unseal(sealed)["host"] == "otherpc", sealed[:60]
+        for forged in (sealed[:-1] + ("0" if sealed[-1] != "0" else "1"),
+                       json.dumps({**s1, "host": "otherpc", "agg": {**s1["agg"], "input": 10**9}})):
+            with open(os.path.join(snaps, "otherpc.json"), "w", encoding="utf-8") as f:
+                f.write(forged)
+            import contextlib, io
+            with contextlib.redirect_stderr(io.StringIO()):     # 건너뜀 안내는 여기선 정상
+                m2, _, _, hs2 = merge(snaps)
+            assert m2["input"] == 15 and len(hs2) == 1, (dict(m2), hs2)
 
     # 저장 서버: 오래된 rev 의 쓰기·깨진 파일 덮어쓰기·다른 Host·JSON 아닌 쓰기는 거부한다
     with tempfile.TemporaryDirectory() as d:
         ok, cur = write_save(0, {"souls": 1}, d)
         assert ok and cur["rev"] == 1
+        with open(save_path(d), encoding="utf-8") as f:     # 봉인: 눈으로 고칠 수 없는 한 줄
+            blob = f.read()
+        assert "souls" not in blob and unseal(blob) == cur, blob[:60]
         ok, cur = write_save(0, {"souls": 999}, d)                 # 오래된 창
         assert not ok and cur["save"] == {"souls": 1}, cur
         with open(save_path(d), "w", encoding="utf-8") as f:
@@ -2471,8 +2567,8 @@ def demo():
         a3, _, _, _, per = collect_all(off)
         assert not a3.get("calls") and per == {}, (dict(a3), per)
 
-    # 밸런스: 환생 설계가 성립하는지 검증한다.
-    agg, projects, _, _ = merge()
+    # 밸런스: 환생 설계가 성립하는지 검증한다. 임시 폴더에는 스냅샷이 없어 진짜 폴더 것을 쓴다.
+    agg, projects, _, _ = _demo.real
     if not projects:
         print("ok (로컬 데이터 없음 — 밸런스 검증 생략)"); return
     h, ds = hero(agg), dungeons()

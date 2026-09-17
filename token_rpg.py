@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -80,15 +80,21 @@ def _sealed_era(cfg=None):
     return bool((cfg if cfg is not None else load_config()).get("sealed"))
 
 
-def _load_sealed(path):
-    """봉인된 파일을 읽는다. 옛 버전이 남긴 평문은 봉인 시대 전에만 받아 준다."""
+def _load_sealed(path, strict=True):
+    """봉인된 파일을 읽는다. 봉인이 붙어 있는데 서명이 깨졌으면 언제나 거부한다.
+    strict 가 거짓이면 평문 JSON 도 받는다 — 스냅샷이 그렇다. 한 PC 안에서도
+    설치본이 여러 개라(uv tool·pip·앱 번들) 옛 사본의 훅이 평문으로 덮어쓰는데,
+    그걸 거부하면 그 PC 토큰이 통째로 0 이 된다. 스냅샷은 매 훅마다 진짜 로그에서
+    다시 만들어지니 잃을 게 없지만, 진행 저장(game.save)은 재생성이 안 돼 strict 로 지킨다."""
     with open(path, encoding="utf-8") as f:
         text = f.read()
+    if text.lstrip().startswith("{"):           # 옛 버전·다른 사본이 남긴 평문
+        if strict:
+            raise ValueError("봉인이 없다")
+        return json.loads(text)
     d = unseal(text)
     if d is None:
-        if _sealed_era():
-            raise ValueError("봉인이 없거나 맞지 않는다")
-        d = json.loads(text)        # 다음 쓰기에서 봉인된다
+        raise ValueError("봉인이 맞지 않는다")
     return d
 
 
@@ -100,20 +106,19 @@ def _dump_sealed(path, obj):
 
 
 def start_sealing(snaps=None):
-    """설치당 한 번: 폴더에 남아 있던 평문 저장·스냅샷을 봉인해 두고 봉인 시대를 연다.
-    이관을 안 하면 업데이트하는 순간 진행과 다른 PC 집계가 통째로 버려진다."""
+    """설치당 한 번: 남아 있던 평문 진행 저장을 봉인해 두고 봉인 시대를 연다.
+    이관을 안 하면 업데이트하는 순간 진행(혼·환생·배분)이 통째로 버려진다."""
     cfg = load_config()
     if cfg.get("sealed"):
         return
-    snaps = snaps or snap_dir()
-    for p in glob.glob(os.path.join(snaps, "*.json")) + [save_path(snaps)]:
-        try:
-            with open(p, encoding="utf-8") as f:
-                text = f.read()
-            if unseal(text) is None:
-                _dump_sealed(p, json.loads(text))
-        except (OSError, ValueError):
-            pass                                # 깨진 파일은 그대로 둔다
+    try:
+        path = save_path(snaps)
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        if text.lstrip().startswith("{"):
+            _dump_sealed(path, json.loads(text))
+    except (OSError, ValueError):
+        pass                                    # 없거나 깨진 파일은 그대로 둔다
     cfg["sealed"] = True
     save_config(cfg)
 
@@ -148,7 +153,7 @@ def read_save(snaps=None):
     """{"rev": n, "save": {...}}. 파일이 없으면 rev 0.
     깨졌거나 봉인이 맞지 않는 파일은 ValueError 를 올린다 — 동기화 중인 반쪽 파일을 새 저장으로 덮어 진행을 날리지 않게."""
     try:
-        d = _load_sealed(save_path(snaps))
+        d = _load_sealed(save_path(snaps), strict=_sealed_era())
     except FileNotFoundError:
         return {"rev": 0}
     if not isinstance(d, dict) or type(d.get("rev")) is not int:
@@ -176,6 +181,11 @@ def write_save(base, save, snaps=None):
 # 끊기지 않고, 한 층(=고정 보스 15종)을 돌 때마다 STEP^N 배씩 벽이 높아진다.
 STEP = 1.28                              # 스테이지 1칸당 보스 배율
 B_HP, B_ATK, B_DEF = 115, 24, 8          # 1스테이지 보스 기준치
+# 극초반 벽 낮추기: 토큰이 0 인 Lv.1 은 ATK 도 0 이라 DEF 8 인 1스테이지 보스에게 데미지가
+# 한 점도 안 들어갔다. 1스테이지를 이기는 데 누적 200만 토큰이 필요했고, 그전까지 게임이
+# 시작조차 안 됐다. EARLY_G 까지는 배율을 눌러 두고 거기서 원래 곡선에 합류시킨다.
+EARLY_G   = 6                            # 여기부터는 원래 곡선 그대로
+EARLY_MUL = 0.12                         # 1스테이지 배율 (EARLY_G 에서 1.0 으로 복귀)
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
 # 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD 와 같은 자리수에 놓으려고 고른 값이다 —
 # 토큰만으로 얻는 SPD(호출수/400)는 13스테이지 보스의 1/9 이라, 배분 없이 신속의 유산만으로
@@ -241,15 +251,24 @@ BOSSES = [("버그 벌레", "🐛", "atk"), ("무한 루프 뱀", "🐍", "crit"
           ("프로덕션 장애 드래곤", "🐲", "hp"), ("토큰 한도의 군주", "👑", "soul")]
 
 
-LV_EXP = 50_000                          # 레벨 1칸의 EXP 기울기
-MAX_LV = 99                              # 여기서 막힌다 — 넘기려면 초월한다
+# 레벨 곡선 = LV_EXP * x^3/(x+LV_EASE), x = lv-1. 예전 제곱 곡선(LV_EXP 5만)을 저렙 쪽만
+# 완만하게 눌러 놓은 모양이다 — Lv.2 가 9배 빠르고, Lv.32 에서 1.18배, Lv.70 위로는 사실상 같다.
+# LV_EXP 54,600 은 Lv.99 총량(=초월 비용)을 예전 4.8억에 맞춰 고른 값이다. 후반과 초월은 그대로 두고
+# 극초반만 손본다. level_of 는 이 식의 역함수를 닫힌 꼴로 못 구해 훑어서 찾는다(최대 99칸).
+LV_EXP  = 54_600                         # 레벨 1칸의 EXP 기울기
+LV_EASE = 9                              # 저렙 완만화. 0 이면 예전 제곱 곡선 그대로
+MAX_LV  = 99                             # 여기서 막힌다 — 넘기려면 초월한다
 
-
-def level_of(exp):
-    return min(int((max(exp, 0) / LV_EXP) ** 0.5) + 1, MAX_LV)
 
 def exp_for(lv):
-    return int(((lv - 1) ** 2) * LV_EXP)
+    x = lv - 1
+    return int(LV_EXP * x ** 3 / (x + LV_EASE))
+
+def level_of(exp):
+    exp, lv = max(exp, 0), 1
+    while lv < MAX_LV and exp_for(lv + 1) <= exp:
+        lv += 1
+    return lv
 
 TRANS_EXP = exp_for(MAX_LV)              # 초월 한 번에 들어가는 EXP
 
@@ -527,7 +546,7 @@ def save_snapshot(root=None, snaps=None):   # root 는 테스트용 단일 경�
             "daily": {k: v for k, v in days.items() if k >= recent}}
     path = os.path.join(snaps, snap["host"].replace(os.sep, "_") + ".json")
     try:                                    # 값이 그대로면 updated 도 그대로 둔다
-        old = _load_sealed(path)
+        old = _load_sealed(path, strict=False)
         if {k: v for k, v in old.items() if k != "updated"} == \
            {k: v for k, v in snap.items() if k != "updated"}:
             return path, old
@@ -545,8 +564,8 @@ def merge(snaps=None):
     daily = collections.defaultdict(collections.Counter)      # 날짜 -> 프로바이더 -> 토큰
     for p in sorted(glob.glob(os.path.join(snaps, "*.json"))):
         try:
-            snap = _load_sealed(p)
-        except (OSError, ValueError) as e:      # 손댄 파일·옛 버전 PC 가 남긴 평문
+            snap = _load_sealed(p, strict=False)
+        except (OSError, ValueError) as e:      # 봉인이 붙어 있는데 서명이 깨진 것만 뺀다
             print(f"스냅샷 건너뜀 {os.path.basename(p)}: {e}", file=sys.stderr)
             continue
         agg.update(snap["agg"]); projects.update(snap["projects"]); models.update(snap["models"])
@@ -598,8 +617,10 @@ def dungeons():
 
 
 def boss(g):
-    """전역 스테이지 번호 g(1부터) -> 보스 능력치."""
+    """전역 스테이지 번호 g(1부터) -> 보스 능력치. JS 의 boss() 와 같은 식이어야 한다."""
     p = STEP ** (g - 1)
+    if g < EARLY_G:                       # 초반 램프 — 지수 보간이라 단조 증가가 유지된다
+        p *= EARLY_MUL ** ((EARLY_G - g) / (EARLY_G - 1))
     return {"hp": round(B_HP * p), "atk": round(B_ATK * p),
             "dfn": round(B_DEF * p), "spd": round(B_DEF * p * 0.9)}
 
@@ -716,6 +737,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
             "models": models.most_common(),
             "daily": getattr(merge, "daily", {}),
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
+                  "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
@@ -904,8 +926,11 @@ const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], 
 // EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
 // 이미 받은 배분 포인트는 적립해 둔다 — 99 에서 토큰이 아무것도 안 주던 벽을 없애는 게 목적이라
 // 초월이 손해가 되면 아무도 안 누른다.
-const levelOf = e => Math.min(Math.floor(Math.sqrt(Math.max(e,0) / K.lvExp)) + 1, K.maxLv);
-const expFor  = lv => (lv-1) * (lv-1) * K.lvExp;
+// 레벨 곡선·보스 곡선은 파이썬 exp_for()/level_of()/boss() 와 같은 식이어야 한다 —
+// 한쪽만 고치면 화면과 메뉴 막대 배지가 어긋난다 (selftest 의 _check_trans 가 붙들고 있다)
+const expFor  = lv => Math.floor(K.lvExp * Math.pow(lv-1, 3) / (lv - 1 + K.lvEase));
+const levelOf = e => { let lv = 1, x = Math.max(e, 0);
+                       while (lv < K.maxLv && expFor(lv + 1) <= x) lv++; return lv; };
 const TRANS_EXP = expFor(K.maxLv);
 const tierOf  = lv => K.tiers.filter(t => lv >= t[0]).pop();
 const transOf = s => Math.max(0, Math.min(s.trans|0, Math.floor(H.exp / TRANS_EXP)));
@@ -969,7 +994,9 @@ const put = () => {
 };
 
 // 보스: 전역 스테이지 번호의 지수 곡선. 층이 바뀌어도 난이도가 끊기지 않는다.
-const boss = g => { const p = Math.pow(K.step, g-1); return {
+const boss = g => { let p = Math.pow(K.step, g-1);
+  if (g < K.earlyG) p *= Math.pow(K.earlyMul, (K.earlyG - g) / (K.earlyG - 1));
+  return {
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
   dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9) }; };
 const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul
@@ -2316,6 +2343,26 @@ def _check_trans():
     assert hero({"input": T, "output": 0, "cache_read": 0, "thinking": 0, "calls": 0})["canTrans"]
 
 
+def _check_early():
+    """극초반: 토큰 한 톨 없는 Lv.1 이 1스테이지를 이겨야 한다. 안 그러면 게임이 시작조차
+    안 된다 — 예전엔 1스테이지 보스를 잡는 데 누적 200만 토큰이 필요했다."""
+    zero = collections.Counter({"input": 0, "output": 0, "cache_read": 0, "thinking": 0,
+                                "calls": 0, "sessions": 0, "days": 0})
+    h = hero(zero)
+    assert h["level"] == 1 and h["atk"] == 0, h
+    assert reach(h) >= 1, "무토큰 Lv.1 이 1스테이지도 못 깬다 — 시작 벽이 너무 높다"
+
+    # 램프는 EARLY_G 에서 원래 곡선에 정확히 합류하고, 그 전까지 단조 증가여야 한다
+    assert boss(EARLY_G)["hp"] == round(B_HP * STEP ** (EARLY_G - 1)), boss(EARLY_G)
+    hps = [boss(g)["hp"] for g in range(1, EARLY_G + 3)]
+    assert hps == sorted(hps) and hps[0] < B_HP, hps
+
+    # 램프가 후반까지 새지 않는다 — 초반 몇 칸을 쉽게 하려고 전체를 무르게 만들면 곤란하다
+    h10 = hero(collections.Counter({"input": 7_000_000, "output": 3_000_000,
+                                    "cache_read": 0, "thinking": 0, "calls": 0}))
+    assert reach(h10) <= 2 * len(BOSSES), f"1천만 토큰으로 {reach(h10)}스테이지 — 벽이 사라졌다"
+
+
 def _check_update_app():
     """앱은 DMG 를 직접 받아 번들을 갈아끼운다. 브라우저를 거치지 않으니 quarantine 도 안 붙는다
     (그 딱지는 서명이 아니라 받은 프로그램이 찍는다). 못 바꿀 때만 릴리스 페이지로 넘긴다."""
@@ -2389,8 +2436,13 @@ def _demo():
     _check_trans()
     _check_update_app()
     _check_cli_flags()
-    assert level_of(0) == 1 and level_of(50_000) == 2 and level_of(200_000) == 3
+    assert level_of(0) == 1 and level_of(exp_for(2)) == 2 and level_of(exp_for(2) - 1) == 1
+    assert [level_of(e) for e in (5_460, 268_800, 2_211_300)] == [2, 5, 10]   # 저렙 완만 구간
+    assert exp_for(MAX_LV) == TRANS_EXP and abs(TRANS_EXP / 480_200_000 - 1) < 0.01, \
+        "초월 비용이 예전 4.8억에서 벗어났다 — 저렙만 손보기로 한 약속이 깨진다"
+    assert all(exp_for(lv) < exp_for(lv + 1) for lv in range(1, MAX_LV)), "레벨 곡선이 뒤집혔다"
     assert tier_of(1)[2] == "토큰 알" and tier_of(99)[2] == "토큰 드래곤"
+    _check_early()
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "proj"))
@@ -2411,18 +2463,23 @@ def _demo():
         assert m["input"] == 30 and mp["claude-code\tproj"] == 70 and m["days"] == 1 and len(hs) == 2
         assert [sum(v.values()) for v in merge.daily.values()] == [70], merge.daily   # 기기 합산
 
-        # 봉인: 파일을 손대면 그 PC 집계는 세지 않는다 (평문으로 써넣어도 마찬가지)
+        # 봉인: 서명을 고치면 그 PC 집계는 세지 않는다
         with open(os.path.join(snaps, "otherpc.json"), encoding="utf-8") as f:
             sealed = f.read()
         assert '"host"' not in sealed and unseal(sealed)["host"] == "otherpc", sealed[:60]
-        for forged in (sealed[:-1] + ("0" if sealed[-1] != "0" else "1"),
-                       json.dumps({**s1, "host": "otherpc", "agg": {**s1["agg"], "input": 10**9}})):
-            with open(os.path.join(snaps, "otherpc.json"), "w", encoding="utf-8") as f:
-                f.write(forged)
-            import contextlib, io
-            with contextlib.redirect_stderr(io.StringIO()):     # 건너뜀 안내는 여기선 정상
-                m2, _, _, hs2 = merge(snaps)
-            assert m2["input"] == 15 and len(hs2) == 1, (dict(m2), hs2)
+        with open(os.path.join(snaps, "otherpc.json"), "w", encoding="utf-8") as f:
+            f.write(sealed[:-1] + ("0" if sealed[-1] != "0" else "1"))
+        import contextlib, io
+        with contextlib.redirect_stderr(io.StringIO()):         # 건너뜀 안내는 여기선 정상
+            m2, _, _, hs2 = merge(snaps)
+        assert m2["input"] == 15 and len(hs2) == 1, (dict(m2), hs2)
+
+        # 평문 스냅샷은 받아 준다 — 한 PC 안에서도 옛 설치본의 훅이 평문으로 덮어쓴다.
+        # 여기서 거부하면 그 PC 토큰이 0 이 된다 (v0.10.0 이 실제로 그랬다).
+        with open(os.path.join(snaps, "otherpc.json"), "w", encoding="utf-8") as f:
+            json.dump({**s1, "host": "otherpc"}, f)
+        m3, _, _, hs3 = merge(snaps)
+        assert m3["input"] == 30 and len(hs3) == 2, (dict(m3), hs3)
 
     # 저장 서버: 오래된 rev 의 쓰기·깨진 파일 덮어쓰기·다른 Host·JSON 아닌 쓰기는 거부한다
     with tempfile.TemporaryDirectory() as d:
@@ -2431,6 +2488,15 @@ def _demo():
         with open(save_path(d), encoding="utf-8") as f:     # 봉인: 눈으로 고칠 수 없는 한 줄
             blob = f.read()
         assert "souls" not in blob and unseal(blob) == cur, blob[:60]
+        start_sealing(d)                                    # 봉인 시대 — 평문 저장은 이제 거부
+        with open(save_path(d), "w", encoding="utf-8") as f:
+            json.dump({"rev": 1, "save": {"souls": 10 ** 9}}, f)
+        try:
+            read_save(d)
+            raise AssertionError("평문으로 써넣은 저장이 먹혔다")
+        except ValueError:
+            pass
+        _dump_sealed(save_path(d), cur)                     # 원상복구
         ok, cur = write_save(0, {"souls": 999}, d)                 # 오래된 창
         assert not ok and cur["save"] == {"souls": 1}, cur
         with open(save_path(d), "w", encoding="utf-8") as f:

@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -193,7 +193,11 @@ PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
 GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4, "cdmg": 1, "spd": 3}
 CRIT_CAP  = 100      # 치명타율 상한(%). 넘친 %p 는 치명타 피해 %p 로 옮겨 간다 — 올려도 헛되지 않게
 CDMG_BASE = 200      # 치명타 피해 기본값(%) = 예전 고정 2배
-TRAIT_CDMG = 5       # '파괴의 유산' 1레벨당 치명타 피해 %p (1pt·5%p 에서 층 진입 회차가 도입 전과 비슷)
+# '파괴의 유산'은 치명타 피해에 TRAIT_MUL 을 곱한다. 전에는 레벨당 +5%p 가산이었는데,
+# 보스가 스테이지마다 x1.28 로 곱해지는 곡선이라 가산은 따라가지 못했다 — 혼 23,455 를
+# 부어도 도달 스테이지가 9 에서 9 로 그대로였다(같은 혼이면 힘의 유산이 16). 곱으로 바꾸면
+# 힘의 유산보다 한 칸 뒤에 서고, CRIT 이 높을수록 좁혀진다 = 빌드가 고르는 선택이 된다.
+# demo() 의 _check_cdmg 가 이 성질을 붙들고 있다.
 
 # 환생: 클리어 기록과 배분을 버리고 '혼'을 얻어 영구 특성을 산다.
 # 특성 효과는 배율(지수), 비용도 지수 -> 층 벽을 넘으려면 환생을 거듭해야 한다.
@@ -645,8 +649,8 @@ def final_stats(h, alloc=None, tr=None):
         "hp":   (h["hp"] + a.get("hp", 0) * GAIN["hp"]) * m("hp"),
         "dfn":  (h["dfn"] + a.get("dfn", 0) * GAIN["dfn"]) * m("dfn"),
         "crit": min(CRIT_CAP, crit),
-        "cdmg": CDMG_BASE + a.get("cdmg", 0) * GAIN["cdmg"] + t.get("cdmg", 0) * TRAIT_CDMG
-                + max(0, crit - CRIT_CAP),
+        "cdmg": (CDMG_BASE + a.get("cdmg", 0) * GAIN["cdmg"]
+                 + max(0, crit - CRIT_CAP)) * m("cdmg"),
     }
 
 
@@ -746,7 +750,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
-                  "tcdmg": TRAIT_CDMG, "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
+                  "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
                   "maxLv": MAX_LV, "lvExp": LV_EXP, "tiers": TIERS,
                   "rbSoul": REBIRTH_SOUL,
@@ -930,7 +934,7 @@ const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력
                 ["cdmg","치명타 피해","CDMG"],["spd","속도","SPD"]];
 const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
                 ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],
-                ["cdmg","파괴의 유산","CDMG +"+K.tcdmg+"%p/lv"],
+                ["cdmg","파괴의 유산","CDMG x"+K.tmul+"/lv"],
                 ["spd","신속의 유산","SPD x"+K.tmul+"/lv"],["soul","수확","얻는 혼 +"+K.tsoul+"%/lv"],
                 ["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
 
@@ -1064,12 +1068,14 @@ const left       = () => points() - used();
 // 최종 스탯 = (토큰이 준 기본값 + 배분) x 환생 특성 배율
 // 유물(영구)이 마지막에 곱해진다
 // 치명타율은 K.critCap 까지, 넘친 %p 는 치명타 피해로 간다
+// 파괴의 유산은 CDMG 에 배율로 곱한다 — 가산이던 시절엔 혼을 부어도 깊이가 안 늘었다.
 // 영구 특성에서는 CRIT 을 뺐다 — 상한 100%가 있어 되팔 수 없는 함정이었다.
 // CRIT 은 토큰(thinking)·배분 포인트·유물로만 오른다. 넘친 %p 가 CDMG 로 가는 건 그대로다.
 const spdNow = () => Math.round(F("spd"));
 const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
-  : k === "cdmg" ? K.cdmgBase + save.alloc.cdmg*G.cdmg + save.traits.cdmg*K.tcdmg + Math.max(0, critRaw() - K.critCap)
+  : k === "cdmg" ? (K.cdmgBase + save.alloc.cdmg*G.cdmg + Math.max(0, critRaw() - K.critCap))
+                   * Math.pow(K.tmul, save.traits.cdmg)
   : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k])
     * (1 + relicSum(k)/100);
 
@@ -2825,6 +2831,18 @@ def _demo():
     dup = float(re.search(r"RELIC_DUP = ([\d.]+)", TEMPLATE).group(1))
     assert again / dup <= 0.005 / 10 + 1e-12, \
         f"재격파 파밍 혼 수입이 늘었다 ({again}/{dup}) — RELIC_DUP 를 같이 올려라"
+
+    # 3-2) 파괴의 유산이 혼을 깊이로 바꾸는가. 가산이던 시절엔 어떤 레벨을 사도 도달이
+    #      그대로여서, 사면 손해인 특성이었다. 절대 스테이지는 사용자마다 다르니
+    #      (a) 사면 더 깊이 간다 (b) 힘의 유산과 같은 줄에 선다 두 가지만 본다.
+    base_r = reach(h)
+    atk20, cdmg20 = reach(h, {"atk": 20}), reach(h, {"cdmg": 20})
+    assert cdmg20 > base_r, \
+        f"파괴의 유산 20레벨이 도달 스테이지를 못 늘린다 ({base_r} -> {cdmg20}) — 혼을 버리는 특성이다"
+    assert cdmg20 >= atk20 - 3, \
+        f"파괴({cdmg20})가 힘({atk20})보다 세 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
+    assert cdmg20 <= atk20, \
+        f"파괴({cdmg20})가 힘({atk20})을 넘어섰다 — 치명타 빌드만 정답이 된다"
 
     # 4) 특성 비용은 반드시 증가한다 (무한 구매 방지)
     assert trait_cost(0) < trait_cost(5) < trait_cost(20), "특성 비용이 증가하지 않는다"

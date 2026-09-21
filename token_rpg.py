@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -221,6 +221,12 @@ REBIRTH_SOUL = 0.02  # 환생 1회마다 얻는 혼 +2% (선형 누적). 옛 축
 # 나눠 갖는다. 미션을 쪼개도 총합이 그대로라 진행 속도가 빨라지지 않는다.
 # 환생이 주 수입원이어야 하므로 demo() 에서 환생 수입과 비교해 상한을 지킨다.
 DAY_BUDGET, WEEK_BUDGET = 5, 20
+
+# 미니게임(혼 사냥): 손으로 직접 벌어가는 칸. 단위는 미션과 같다(최고 스테이지 보스 격파 몇 번분).
+# 하루 예산이 고정이라 아무리 잘해도 진행 속도가 흔들리지 않는다 — 실력은 '얼마나 빨리 하루치를
+# 채우느냐'만 바꾼다. MINI_BEST 는 과녁 한가운데(정확)일 때 배수다.
+MINI_TRIES, MINI_BUDGET, MINI_BEST = 3, 2, 1.5
+MINI_SHOTS = 5       # 한 판에 쏘는 횟수. 발마다 표식이 빨라진다 — 한 번 눌러 끝나면 게임이 아니다
 
 # 원정(방치 수입): 클리어한 가장 깊은 스테이지를 자동 반복해 혼을 캔다.
 # 초당 수확 = soulOf(최고 클리어) / IDLE_DIV. 8시간이면 환생 1회분 언저리 =
@@ -746,7 +752,9 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "rbSoul": REBIRTH_SOUL,
                   "dayBudget": DAY_BUDGET, "weekBudget": WEEK_BUDGET,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
-                  "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX}}
+                  "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX,
+                  "miniTries": MINI_TRIES, "miniBudget": MINI_BUDGET, "miniBest": MINI_BEST,
+                  "miniShots": MINI_SHOTS}}
     out = out or game_path()
     html = TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False))
     try:                                        # 내용이 같으면 건드리지 않는다 — mtime 이 바뀌면
@@ -766,7 +774,7 @@ TEMPLATE = r"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Token RPG</title><style>
 :root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--line:#30363d;--gold:#ffd166;
---hp:#f2545b;--xp:#7ee787;--on:#58a6ff;--soul:#c792ea}
+--hp:#f2545b;--xp:#7ee787;--on:#58a6ff;--soul:#c792ea;--myth:#ff5edb}
 *{box-sizing:border-box}body{margin:0;padding:20px 14px;background:var(--bg);color:var(--fg);
 font:14px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
 font-variant-numeric:tabular-nums}
@@ -821,6 +829,10 @@ padding:18px;background:#161b22}
 .vs{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:10px}
 .vs>div{width:46%}.vs .e{font-size:44px;text-align:center}
 .hit{animation:hit .3s}@keyframes hit{50%{transform:translateX(9px) scale(.92);filter:brightness(2)}}
+.thud{animation:thud .35s ease-out}
+@keyframes thud{0%{transform:scaleY(2.2);filter:brightness(3)}60%{transform:scaleY(1);filter:brightness(1.6)}}
+.miss{animation:miss .35s ease-out}
+@keyframes miss{0%,60%{opacity:.25}30%{opacity:1}}
 #log{height:132px;overflow-y:auto;font-size:12px;border-top:1px solid var(--line);
 margin-top:10px;padding-top:8px}
 #log div{margin:1px 0}.crit{color:var(--gold);font-weight:700}.win{color:var(--xp);font-weight:700}
@@ -855,6 +867,11 @@ margin-top:10px;padding-top:8px}
 <details class="card" data-k="missions" open>
   <summary><h2>미션 <span class="gold" id="streak"></span></h2></summary>
   <div id="missions"></div>
+</details>
+
+<details class="card" data-k="mini" open>
+  <summary><h2>혼 사냥 <span class="soul" id="miniLeft"></span></h2></summary>
+  <div id="mini"></div>
 </details>
 
 <details class="card" data-k="exped" open>
@@ -920,7 +937,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유�
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, rbExp:null, farm:0,
-            trans:0});
+            trans:0, mini:{day:"", n:0}});
 
 // ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
 // EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
@@ -1206,7 +1223,7 @@ const decodeSave = code => {
 };
 // 체크섬이 맞아도 규칙상 불가능한 값은 거른다: 음수·소수, 레벨이 준 것보다 많은 배분
 const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.alloc && !!s.exped
-  && [s.souls, s.rebirths, s.best, s.trans ?? 0, ...s.cleared,
+  && [s.souls, s.rebirths, s.best, s.trans ?? 0, (s.mini || {}).n || 0, ...s.cleared,
       ...Object.values(s.traits), ...Object.values(s.alloc)]
        .every(v => Number.isInteger(v) && v >= 0)
   && (s.trans ?? 0) * TRANS_EXP <= H.exp                 // 쓴 토큰보다 많이 초월할 수는 없다
@@ -1450,9 +1467,111 @@ function drawMissions(){
   });
 }
 
+// ── 혼 사냥: 하루 K.miniTries 판, 한 판은 K.miniShots 발. 왕복하는 표식을 과녁에서 멈춘다.
+// 게임 안의 행동으로 혼을 버는 유일한 칸이라 예산을 미션과 같은 단위로 묶어 뒀다 —
+// 아무리 잘해도 하루 K.miniBudget x K.miniBest 격파분이 끝이다. 실력은 수입의 상한이 아니라
+// 그 상한을 채우는 속도만 바꾼다. (demo() 의 밸런스 검사가 이 상한을 붙들고 있다)
+const MINI_P0 = 2400;           // 첫 발 왕복(ms)
+// 맞힌 발 하나당 이만큼 빨라진다. '발 수'가 아니라 '명중 수'에 걸어 둔다 —
+// 빗나가면 속도가 그대로라, 못 맞히는 사람에게 벌로 더 어려워지지 않는다.
+const MINI_RAMP = 0.85;
+const MINI_HALF = 9;            // 과녁 반폭(%)
+const MINI_EYE = 0.2;           // 이 안쪽이 한가운데(x K.miniBest). 화면의 금색 띠와 같은 값이어야 한다
+const MINI_HOLD = 650;          // 맞은 자리를 보여주는 시간(ms) — 바로 다음 발이 뛰면 맞췄는지 알 수 없다
+const miniDay = () => { const m = save.mini || {}; return m.day === daysBack(0) ? m : {day: daysBack(0), n: 0}; };
+const miniLeft = () => Math.max(0, K.miniTries - (miniDay().n | 0));
+const miniP = () => MINI_P0 * Math.pow(MINI_RAMP, miniHits);
+const miniSpd = () => MINI_P0 / miniP();        // 지금 속도 배수 (표시용)
+// 표식 위치: 이번 발이 시작된 때부터의 삼각파. 프레임을 건너뛰어도 위치가 어긋나지 않는다
+const miniPos = () => { const x = ((Date.now() - miniT0) % miniP()) / miniP() * 2; return 100 * (x < 1 ? x : 2 - x); };
+const miniAcc = d => d > MINI_HALF ? 0 : d < MINI_HALF * MINI_EYE ? K.miniBest : 1 - d / MINI_HALF;
+let miniRun = false, miniHold = false, miniT0 = 0, miniZone = 50;
+let miniShot = 0, miniHits = 0, miniEarned = 0, miniMsg = "", miniMark = null;
+
+const miniAim = () => { miniZone = MINI_HALF + Math.random() * (100 - 2 * MINI_HALF); miniT0 = Date.now(); };
+const miniStep = () => { if (!miniRun || miniHold) return;
+  const pin = $("miniPin"); if (pin) pin.style.left = miniPos() + "%";
+  requestAnimationFrame(miniStep); };
+
+function miniStart(){
+  if (miniRun || miniHold || !save.best || miniLeft() <= 0) return;
+  // 판을 시작하는 순간 1회가 빠진다 — 불리한 발을 새로고침으로 무를 수 없게
+  save.mini = {day: daysBack(0), n: (miniDay().n | 0) + 1};
+  miniShot = 0; miniHits = 0; miniEarned = 0; miniMsg = ""; miniMark = null; miniRun = true;
+  miniAim(); put(); drawAll(); miniStep();
+}
+function miniStop(){
+  if (!miniRun || miniHold) return;
+  const at = miniPos(), acc = miniAcc(Math.abs(at - miniZone));
+  // 혼은 발마다 바로 들어온다 — 스테이지 격파와 달리 환생 정산을 기다리지 않는다
+  const pay = Math.round(soulOf(Math.max(1, save.best))
+                         * K.miniBudget / (K.miniTries * K.miniShots) * acc);
+  save.souls += pay; miniEarned += pay;
+  // 멈춘 자리를 그대로 남겨 둔다 — 과녁과 얼마나 어긋났는지 눈으로 봐야 다음 발이 는다
+  miniMark = {at, acc};
+  const off = Math.abs(at - miniZone).toFixed(1);
+  const hit = acc >= K.miniBest ? `<span class="crit">한가운데! +${n(pay)} 혼</span>`
+            : acc ? `<span class="win">명중 +${n(pay)} 혼</span> <span class="dim">· ${off}%p 빗나감 (x${acc.toFixed(2)})</span>`
+                  : `<span class="lose">빗나갔다</span> <span class="dim">· ${off}%p</span>`;
+  miniHold = true;
+  if (acc) miniHits++;                     // 맞힐수록 다음 발이 빨라진다
+  const last = ++miniShot >= K.miniShots;
+  miniMsg = last ? `${hit} · <span class="soul">이번 판 혼 ${n(miniEarned)}</span>`
+         : acc  ? `${hit} <span class="dim">· 다음 발 속도 x${miniSpd().toFixed(2)}</span>`
+                : `${hit} <span class="dim">· 속도는 그대로다 (x${miniSpd().toFixed(2)})</span>`;
+  if (last) miniRun = false;
+  put(); drawAll();
+  setTimeout(() => {                       // 결과를 보여준 뒤 다음 발
+    miniHold = false;
+    if (!last) { miniMark = null; miniAim(); drawMini(); miniStep(); } else { drawMini(); }
+  }, MINI_HOLD);
+}
+function drawMini(){
+  const rest = miniLeft();
+  $("miniLeft").textContent = save.best
+    ? (miniRun ? `${Math.min(miniShot + 1, K.miniShots)}/${K.miniShots}발 · 명중 ${miniHits} · 속도 x${miniSpd().toFixed(2)} · 혼 ${n(miniEarned)}`
+               : `오늘 ${rest}/${K.miniTries}판`)
+    : "";
+  if (!save.best) {
+    $("mini").innerHTML = '<div class="dim">스테이지를 하나 클리어하면 사냥터가 열린다.</div>';
+    return;
+  }
+  const full = Math.round(soulOf(save.best) * K.miniBudget / K.miniTries * K.miniBest);
+  const m = miniMark;
+  // 멈춘 표식: 한가운데 금색 · 명중 초록 · 빗나감 빨강. 흐르는 표식은 늘 금색 실선
+  const mc = !m ? "" : m.acc >= K.miniBest ? "var(--gold)" : m.acc ? "var(--xp)" : "var(--hp)";
+  $("mini").innerHTML =
+    `<div class="bar" style="height:22px;position:relative;margin:2px 0 8px;overflow:visible">
+       <i style="position:absolute;left:${miniZone - MINI_HALF}%;width:${2 * MINI_HALF}%;height:100%;
+          background:var(--soul);opacity:${m && m.acc ? .75 : .35}"></i>
+       <i style="position:absolute;left:${miniZone - MINI_HALF * MINI_EYE}%;
+          width:${2 * MINI_HALF * MINI_EYE}%;height:100%;background:var(--gold);
+          opacity:${m && m.acc >= K.miniBest ? 1 : .6}"></i>
+       ${m ? `<i class="${m.acc ? "thud" : "miss"}" style="position:absolute;left:${m.at}%;
+          width:5px;height:100%;background:${mc};box-shadow:0 0 8px ${mc}"></i>` : ""}
+       <i id="miniPin" style="position:absolute;left:${miniRun && !miniHold ? miniPos() : 0}%;
+          width:3px;height:100%;background:var(--fg);
+          visibility:${miniRun && !miniHold ? "visible" : "hidden"}"></i></div>
+     <button class="big" id="miniBtn" ${(rest <= 0 && !miniRun) || miniHold ? "disabled" : ""}>${
+       miniRun ? `멈춰라! (${Math.min(miniShot + 1, K.miniShots)}/${K.miniShots})`
+               : rest > 0 ? `사냥 시작 — ${K.miniShots}발` : "오늘 몫을 다 캤다 — 자정에 다시"}</button>
+     <div style="margin-top:8px;font-size:13px;min-height:20px">${miniMsg}</div>
+     <div class="dim" style="font-size:11px">
+       <span class="gold">금색 띠</span>가 한가운데 — 거기서 멈추면 x${K.miniBest},
+       <span class="soul">보라 띠</span> 안이면 중심에 가까울수록 더 준다. 밖이면 0이다.
+       한 판 ${K.miniShots}발. <b>맞힐수록 표식이 빨라지고</b>, 빗나가면 속도는 그대로다 —
+       다 맞히면 최대 혼 ${n(full)}.
+       보상은 역대 최고 스테이지(${save.best})를 따라 오른다.
+       하루 ${K.miniTries}판, 시작하면 한 판이 빠진다. 자정에 초기화된다.</div>`;
+  const b = $("miniBtn");
+  if (b) b.onclick = () => miniRun ? miniStop() : miniStart();
+}
+
 // ── 유물: 보스가 가끔 떨어뜨린다. 보스마다 하나, 더 높은 등급이 나오면 교체.
 // 환생해도 남는 두 번째 영구 성장 축. 등급이 오를 때마다 효과가 두 배.
-const RARITY = [["일반", 60, "var(--dim)"], ["희귀", 28, "var(--on)"], ["영웅", 10, "var(--soul)"], ["전설", 2, "var(--gold)"]];
+// 합 100%. 등급이 오를 때마다 효과가 두 배라 신화는 일반의 16배다 — 그래서 0.4% 다
+const RARITY = [["일반", 60, "var(--dim)"], ["희귀", 28, "var(--on)"], ["영웅", 10, "var(--soul)"],
+                ["전설", 1.6, "var(--gold)"], ["신화", 0.4, "var(--myth)"]];
 const AFFIX = {atk: ["ATK", 3, "%"], hp: ["HP", 3, "%"], dfn: ["DEF", 3, "%"], crit: ["CRIT", 0.5, "%p"], soul: ["혼", 3, "%"]};
 const relicKey = slot => "boss" + slot.slot;                    // 고정 보스라 칸 번호로 충분하다
 const relicOk = r => !!r && !!RARITY[r.r] && !!AFFIX[r.a];      // 고친 저장의 이상한 값은 무시
@@ -1460,8 +1579,13 @@ const relicVal = r => AFFIX[r.a][1] * Math.pow(2, r.r);
 const relicSum = a => Object.values(save.relics || {}).filter(relicOk)
   .reduce((s, r) => s + (r.a === a ? relicVal(r) : 0), 0);
 let relicNews = "", refundMsg = "";
-// 역대 첫 격파 30%, 재격파 0.5% — 자동 반복이 1초에 한 판이라 재격파 확률이 높으면 금방 다 모인다
-const RELIC_FIRST = 0.3, RELIC_AGAIN = 0.005;
+// 역대 첫 격파 30%, 재격파 1% — 자동 반복이 1초에 한 판이라 재격파 확률이 높으면 금방 다 모인다.
+// 신화(0.4%)까지 생겨 도감 끝이 멀어진 만큼 0.5% 에서 올렸다.
+const RELIC_FIRST = 0.3, RELIC_AGAIN = 0.01;
+// 중복 유물 -> 혼 환산 나누기. 재격파 확률을 2배로 올린 만큼 1/10 에서 1/20 으로 낮춘다 —
+// 도감만 두 배로 빨리 차고, 켜 두기만 해서 버는 혼(= 환생 기운 우회)은 그대로다.
+// demo() 가 RELIC_AGAIN / RELIC_DUP 를 붙들고 있다.
+const RELIC_DUP = 20;
 function rollRelic(g, slot, first){
   if (Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN)) return "";
   let x = Math.random() * 100, r = 0;
@@ -1471,7 +1595,7 @@ function rollRelic(g, slot, first){
   const k = relicKey(slot), old = save.relics[k];
   if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
     // 반복 파밍 중복은 1/10 — 켜 두기만 해도 혼이 쏟아져 환생 기운(토큰) 제한을 우회하지 않게
-    const s = first ? soulOf(g) : Math.round(soulOf(g) / 10); save.souls += s;
+    const s = first ? soulOf(g) : Math.round(soulOf(g) / RELIC_DUP); save.souls += s;
     // 획득 메시지처럼 보스 이름을 밝힌다 — 능력치가 보스마다 고정이라 어디서 나왔는지가 정보다
     return `${slot.name} — ${RARITY[r][0]} 유물 중복, 혼 ${n(s)}로 바꿨다`;
   }
@@ -1529,7 +1653,7 @@ function drawRbBonus(){
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawExped(); drawStages(); drawRelics(); };
+const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawMini(); drawExped(); drawStages(); drawRelics(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 const dmgOf = (a, d, crit) =>
@@ -2682,11 +2806,25 @@ def _demo():
             f"{last//n}층 방치 수입 {idle8:.0f}이 환생 {rebirth}의 4배 이상 — IDLE_DIV 상향 필요"
         # 미션도 보조 수입이어야 한다. 한 주치 미션 vs 한 주치 환생(하루 2회 = 토큰 200만/일).
         # 1.7 = 연속 7일 최대 배율(streakMul). 미션을 쪼개도 예산이 고정이라 여기가 안 움직인다.
-        wk_mission = (DAY_BUDGET * 7 + WEEK_BUDGET) * soul_of(last) * 1.7
+        # 혼 사냥은 연속 배율(streakMul)을 안 받고, 대신 정확도 최대 MINI_BEST 배까지 간다
+        wk_mission = ((DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7
+                      + MINI_BUDGET * MINI_BEST * 7) * soul_of(last)
         wk_rebirth = 14 * rebirth
         assert wk_mission < wk_rebirth * 2, (
             f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
             f"— DAY_BUDGET·WEEK_BUDGET 하향 필요")
+
+    # 3-1) 유물 등급표는 합이 100% 여야 한다 — 어긋나면 마지막 등급이 나머지를 통째로 먹는다
+    import re
+    odds = [float(x) for x in re.findall(r'"[^"]+", ([\d.]+),', 
+                  re.search(r"const RARITY = \[(.+?)\];", TEMPLATE, re.S).group(1))]
+    assert len(odds) >= 4 and abs(sum(odds) - 100) < 1e-9, f"유물 등급 확률 합이 {sum(odds)}% 다: {odds}"
+    # 재격파 파밍으로 버는 혼(중복 환산)이 늘면 환생 기운(토큰) 제한을 우회한다.
+    # 확률을 올리려면 환산 나누기도 같이 올려야 한다 — 곱이 옛 값(0.5% x 1/10)을 넘으면 안 된다.
+    again = float(re.search(r"RELIC_AGAIN = ([\d.]+)", TEMPLATE).group(1))
+    dup = float(re.search(r"RELIC_DUP = ([\d.]+)", TEMPLATE).group(1))
+    assert again / dup <= 0.005 / 10 + 1e-12, \
+        f"재격파 파밍 혼 수입이 늘었다 ({again}/{dup}) — RELIC_DUP 를 같이 올려라"
 
     # 4) 특성 비용은 반드시 증가한다 (무한 구매 방지)
     assert trait_cost(0) < trait_cost(5) < trait_cost(20), "특성 비용이 증가하지 않는다"

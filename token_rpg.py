@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -231,6 +231,16 @@ DAY_BUDGET, WEEK_BUDGET = 5, 20
 # 채우느냐'만 바꾼다. MINI_BEST 는 과녁 한가운데(정확)일 때 배수다.
 MINI_TRIES, MINI_BUDGET, MINI_BEST = 3, 2, 1.5
 MINI_SHOTS = 5       # 한 판에 쏘는 횟수. 발마다 표식이 빨라진다 — 한 번 눌러 끝나면 게임이 아니다
+
+# 슬롯: 실력이 없는 칸이라 하루 판수만 정해 주고 나머지는 운에 맡긴다. 단위는 위와 같다.
+# SLOT_AVG 는 SLOT_SYM 문양표에서 나오는 한 판 평균 배당이고, 지급을 이 값으로 나눠 둔다 —
+# 그래야 표를 어떻게 흔들어도 하루 기대 수입이 SLOT_BUDGET 에 붙박이고 변동성만 남는다.
+# (selftest 가 문양표에서 다시 계산해 이 값을 붙들고 있다)
+# 예산이 2 면 selftest 의 1층 상한(주간 미션 수입 < 환생 x2)을 넘는다 — 하루 벌이 칸이
+# 미션·혼 사냥으로 이미 거의 차 있어서 여기 남은 자리가 1 격파분뿐이다.
+SLOT_TRIES, SLOT_BUDGET, SLOT_AVG = 10, 1, 2.42
+# 하루 몫을 다 쓴 뒤에도 돌리는 것 자체는 막지 않는다(연습판). 혼만 안 들어간다 —
+# 못 누르게 막아 두면 하루 열 판이 끝인 칸이 되고, 돌리는 재미가 예산과 묶일 이유는 없다.
 
 # 원정(방치 수입): 클리어한 가장 깊은 스테이지를 자동 반복해 혼을 캔다.
 # 초당 수확 = soulOf(최고 클리어) / IDLE_DIV. 8시간이면 환생 1회분 언저리 =
@@ -758,7 +768,8 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX,
                   "miniTries": MINI_TRIES, "miniBudget": MINI_BUDGET, "miniBest": MINI_BEST,
-                  "miniShots": MINI_SHOTS}}
+                  "miniShots": MINI_SHOTS,
+                  "slotTries": SLOT_TRIES, "slotBudget": SLOT_BUDGET, "slotAvg": SLOT_AVG}}
     out = out or game_path()
     html = TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False))
     try:                                        # 내용이 같으면 건드리지 않는다 — mtime 이 바뀌면
@@ -837,6 +848,11 @@ padding:18px;background:#161b22}
 @keyframes thud{0%{transform:scaleY(2.2);filter:brightness(3)}60%{transform:scaleY(1);filter:brightness(1.6)}}
 .miss{animation:miss .35s ease-out}
 @keyframes miss{0%,60%{opacity:.25}30%{opacity:1}}
+.reels{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:2px 0 10px}
+.reels .cell{height:64px;display:flex;align-items:center;justify-content:center;font-size:34px;
+border:1px solid var(--line);border-radius:8px;background:#0d1117}
+.reels .lit{border-color:var(--gold);box-shadow:0 0 10px var(--gold);animation:thud .35s ease-out}
+.reels .spin{filter:blur(1.6px);opacity:.75}
 #log{height:132px;overflow-y:auto;font-size:12px;border-top:1px solid var(--line);
 margin-top:10px;padding-top:8px}
 #log div{margin:1px 0}.crit{color:var(--gold);font-weight:700}.win{color:var(--xp);font-weight:700}
@@ -876,6 +892,11 @@ margin-top:10px;padding-top:8px}
 <details class="card" data-k="mini" open>
   <summary><h2>혼 사냥 <span class="soul" id="miniLeft"></span></h2></summary>
   <div id="mini"></div>
+</details>
+
+<details class="card" data-k="slot" open>
+  <summary><h2>슬롯 <span class="gold" id="slotHead"></span></h2></summary>
+  <div id="slot"></div>
 </details>
 
 <details class="card" data-k="exped" open>
@@ -1573,6 +1594,95 @@ function drawMini(){
   if (b) b.onclick = () => miniRun ? miniStop() : miniStart();
 }
 
+// ── 슬롯: 3x3, 가로 셋 + 대각 둘 = 다섯 줄. 하루 K.slotTries 판을 그냥 준다.
+// 혼 사냥이 실력으로 버는 칸이라면 여기는 운으로 버는 칸이다 — 잘 하고 못 하고가 없으니
+// 하루 기대 수입을 K.slotBudget 격파분에 못박고(slotPay 가 평균 배당으로 나눈다) 변동성만 남긴다.
+// 스테이지 클리어마다 한 장씩 주는 안은 접었다 — 원정 자동반복이 1초에 한 판이라 티켓이 무한이 되고,
+// '처음 깬 스테이지만' 으로 막으면 이번엔 하루 한두 장이라 열어볼 이유가 안 된다.
+const SLOT_SYM = [["🪙", 30, 4], ["🐛", 23, 6], ["🐍", 18, 9], ["🦇", 13, 15],
+                  ["🗿", 9, 30], ["🐉", 4, 90], ["💎", 3, 300]];  // 문양, 가중치(합 100), 석 줄 배당
+// 줄마다 [칸, 행] 셋. 세로는 한 칸에서 세 행을 쓰므로 '칸마다 행 하나' 로는 적을 수 없다.
+// 실제 슬롯은 세로를 라인으로 안 세지만(릴 하나가 보여주는 창일 뿐이다) 3x3 격자를 보면
+// 누구나 세로도 센다 — 화면이 말하는 것과 규칙이 어긋나면 그건 규칙이 틀린 것이다.
+const SLOT_LINE = [
+  [[0, 0], [1, 0], [2, 0]], [[0, 1], [1, 1], [2, 1]], [[0, 2], [1, 2], [2, 2]],   // 가로 셋
+  [[0, 0], [0, 1], [0, 2]], [[1, 0], [1, 1], [1, 2]], [[2, 0], [2, 1], [2, 2]],   // 세로 셋
+  [[0, 0], [1, 1], [2, 2]], [[0, 2], [1, 1], [2, 0]]];                            // 대각 둘
+const SLOT_TICK = 70, SLOT_STOP = [700, 1050, 1400];  // 칸은 왼쪽부터 차례로 선다 — 한꺼번에 서면 밋밋하다
+const slotRoll = () => { let x = Math.random() * 100, i = 0;
+  while (i < SLOT_SYM.length - 1 && x >= SLOT_SYM[i][1]) { x -= SLOT_SYM[i][1]; i++; }
+  return i; };
+let slotG = [[0, 1, 2], [3, 1, 0], [2, 0, 4]], slotDone = 3, slotWin = [], slotMsg = "";
+let slotEarned = 0;                             // 오늘 이 칸에서 번 혼 — 화면에만 쓰고 저장하지 않는다
+let slotDry = false;                            // 이번 판이 연습판인가(오늘 몫을 다 쓴 뒤)
+const slotLit = (c, r) => slotWin.some(L => L.some(x => x[0] === c && x[1] === r));
+// 남은 판수는 혼 사냥과 같은 모양으로 저장한다(날짜 + 쓴 횟수). 자정에 저절로 초기화된다
+const slotDay = () => { const t = save.slot || {}; return t.day === daysBack(0) ? t : {day: daysBack(0), n: 0}; };
+const slotLeft = () => Math.max(0, K.slotTries - (slotDay().n | 0));
+// 한 판 지급 = 하루 예산 / (판수 x 평균 배당) x 이번 배당. 운이 나빠도 좋아도 하루 기대값은 그대로다
+const slotPay = mul => Math.round(soulOf(Math.max(1, save.best)) * K.slotBudget
+                                  / (K.slotTries * K.slotAvg) * mul);
+
+function slotScore(){
+  let sum = 0;
+  slotWin = SLOT_LINE.filter(L => {
+    const s = slotG[L[0][0]][L[0][1]];
+    if (!L.every(x => slotG[x[0]][x[1]] === s)) return false;
+    sum += SLOT_SYM[s][2]; return true;
+  });
+  const pay = sum && !slotDry ? slotPay(sum) : 0;
+  save.souls += pay; slotEarned += pay;         // 혼 사냥과 같이 판마다 바로 들어온다
+  slotMsg = sum
+    ? `<span class="${sum >= 90 ? "crit" : "win"}">${slotWin.length}줄 · 배당 x${sum}</span>`
+      + (slotDry ? ` <span class="dim">· 연습판이라 혼은 안 들어온다</span>`
+                 : ` <span class="soul">+${n(pay)} 혼</span>`)
+    : `<span class="dim">꽝 — 다시</span>`;
+  put(); drawAll();
+}
+function slotSpin(){
+  if (slotDone < 3 || !save.best) return;
+  slotDry = slotLeft() <= 0;                    // 오늘 몫을 다 썼으면 돌아가되 혼은 안 준다
+  // 돌리는 순간 한 판이 빠진다 — 결과를 보고 새로고침으로 무를 수 없게
+  if (!slotDry) save.slot = {day: daysBack(0), n: (slotDay().n | 0) + 1};
+  slotDone = 0; slotWin = []; slotMsg = ""; put();
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    slotDone = SLOT_STOP.filter(t => Date.now() - t0 >= t).length;
+    for (let c = slotDone; c < 3; c++) slotG[c] = [slotRoll(), slotRoll(), slotRoll()];
+    if (slotDone >= 3) { clearInterval(iv); slotScore(); }
+    drawSlot();
+  }, SLOT_TICK);
+}
+function drawSlot(){
+  const rest = slotLeft();
+  $("slotHead").textContent = save.best
+    ? (rest > 0 ? `오늘 ${rest}/${K.slotTries}판` : "오늘 몫 소진 — 연습판")
+      + (slotEarned ? ` · 혼 ${n(slotEarned)}` : "")
+    : "";
+  if (!save.best) {
+    $("slot").innerHTML = '<div class="dim">스테이지를 하나 클리어하면 슬롯이 열린다.</div>';
+    return;
+  }
+  $("slot").innerHTML =
+    `<div class="reels">${[0, 1, 2].map(r => [0, 1, 2].map(c =>
+       `<div class="cell${slotLit(c, r) ? " lit" : ""}${c >= slotDone ? " spin" : ""}"
+        >${SLOT_SYM[slotG[c][r]][0]}</div>`).join("")).join("")}</div>
+     <button class="big" id="slotBtn" ${slotDone < 3 ? "disabled" : ""}>${
+       slotDone < 3 ? "도는 중…" : rest > 0 ? `돌려라 — ${rest}판 남음`
+                                            : "연습으로 돌려라 — 혼은 안 들어온다"}</button>
+     <div style="margin-top:8px;font-size:13px;min-height:20px">${slotMsg}</div>
+     <div class="dim" style="font-size:11px">
+       가로 셋·세로 셋·대각선 둘, 모두 여덟 줄이다. 한 줄에 같은 문양이 셋이면 배당이 붙는다 —
+       ${SLOT_SYM.map(x => `${x[0]} x${x[2]}`).join(" · ")}.
+       세 판 중 한 판꼴로 맞고, 한 판 평균은 x${K.slotAvg} 다.
+       실력이 없는 칸이라 <b>하루 기대 수입이 ${K.slotBudget} 격파분에 고정</b>돼 있다 —
+       운은 언제 받느냐만 바꾼다. x1 당 혼 ${n(slotPay(1))}, 보상은 역대 최고 스테이지(${save.best})를 따라 오른다.
+       하루 ${K.slotTries}판, 돌리면 한 판이 빠지고 자정에 초기화된다.
+       <b>다 쓴 뒤에도 돌리는 것 자체는 막지 않는다</b> — 혼만 안 들어오는 연습판이다.</div>`;
+  const b = $("slotBtn");
+  if (b) b.onclick = slotSpin;
+}
+
 // ── 유물: 보스가 가끔 떨어뜨린다. 보스마다 하나, 더 높은 등급이 나오면 교체.
 // 환생해도 남는 두 번째 영구 성장 축. 등급이 오를 때마다 효과가 두 배.
 // 합 100%. 등급이 오를 때마다 효과가 두 배라 신화는 일반의 16배다 — 그래서 0.4% 다
@@ -1659,7 +1769,7 @@ function drawRbBonus(){
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawMini(); drawExped(); drawStages(); drawRelics(); };
+const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 const dmgOf = (a, d, crit) =>
@@ -2813,8 +2923,9 @@ def _demo():
         # 미션도 보조 수입이어야 한다. 한 주치 미션 vs 한 주치 환생(하루 2회 = 토큰 200만/일).
         # 1.7 = 연속 7일 최대 배율(streakMul). 미션을 쪼개도 예산이 고정이라 여기가 안 움직인다.
         # 혼 사냥은 연속 배율(streakMul)을 안 받고, 대신 정확도 최대 MINI_BEST 배까지 간다
+        # 슬롯은 운이라 평균으로 센다 — 지급을 평균 배당으로 나눠 둬서 하루 기대값이 SLOT_BUDGET 이다
         wk_mission = ((DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7
-                      + MINI_BUDGET * MINI_BEST * 7) * soul_of(last)
+                      + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7) * soul_of(last)
         wk_rebirth = 14 * rebirth
         assert wk_mission < wk_rebirth * 2, (
             f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
@@ -2825,6 +2936,18 @@ def _demo():
     odds = [float(x) for x in re.findall(r'"[^"]+", ([\d.]+),', 
                   re.search(r"const RARITY = \[(.+?)\];", TEMPLATE, re.S).group(1))]
     assert len(odds) >= 4 and abs(sum(odds) - 100) < 1e-9, f"유물 등급 확률 합이 {sum(odds)}% 다: {odds}"
+    # 3-2) 슬롯 문양표도 합이 100% 여야 한다 — 어긋나면 마지막 문양이 나머지를 통째로 먹는다
+    sw = [float(x) for x in re.findall(r'", (\d+), \d+\]',
+                 re.search(r"const SLOT_SYM = \[(.+?)\];", TEMPLATE, re.S).group(1))]
+    assert len(sw) >= 5 and abs(sum(sw) - 100) < 1e-9, f"슬롯 문양 확률 합이 {sum(sw)}% 다: {sw}"
+    # SLOT_AVG 는 문양표에서 나오는 값이라 표를 고치면 같이 움직여야 한다 — 어긋나면
+    # 하루 기대 수입이 SLOT_BUDGET 에서 벗어난다(지급을 이 값으로 나누기 때문).
+    pays = [int(x) for x in re.findall(r'", \d+, (\d+)\]',
+                 re.search(r"const SLOT_SYM = \[(.+?)\];", TEMPLATE, re.S).group(1))]
+    lines = len(re.findall(r"\[\[\d, \d\]",
+                re.search(r"const SLOT_LINE = \[(.+?)\];", TEMPLATE, re.S).group(1)))
+    avg = lines * sum((w / 100) ** 3 * p for w, p in zip(sw, pays))
+    assert abs(avg - SLOT_AVG) < 0.01, f"슬롯 평균 배당은 x{avg:.3f} 인데 SLOT_AVG 는 {SLOT_AVG} 다"
     # 재격파 파밍으로 버는 혼(중복 환산)이 늘면 환생 기운(토큰) 제한을 우회한다.
     # 확률을 올리려면 환산 나누기도 같이 올려야 한다 — 곱이 옛 값(0.5% x 1/10)을 넘으면 안 된다.
     again = float(re.search(r"RELIC_AGAIN = ([\d.]+)", TEMPLATE).group(1))

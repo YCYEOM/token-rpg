@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.3"
+__version__ = "0.14.4"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -981,6 +981,9 @@ margin-top:10px;padding-top:8px}
 <script>
 const $ = id => document.getElementById(id);   // id 암시적 전역은 window.close 등과 충돌한다
 const D = __DATA__, H = D.hero, G = H.gain, K = D.k, SLOTS = D.dungeons, N = SLOTS.length;
+// 특성 배율은 스탯마다 다르다 (파이썬 tmul_of). TRAITS 가 로드 시점에 부르므로 여기 있어야 한다 —
+// 아래에 두면 TDZ 로 스크립트 전체가 죽는다. node --check 는 문법만 보므로 이걸 못 잡는다.
+const TM = k => K.tmuls[k] || K.tmul;
 // 1,000 이상은 1.25K · 12.5M · 3.4B 처럼 줄인다 — 커진 숫자가 좁은 팝오버에서 밀리지 않게
 const compact = new Intl.NumberFormat("en", {notation: "compact", maximumSignificantDigits: 3});
 const n = x => Math.abs(x) < 1000 ? String(Math.round(x)) : compact.format(x);
@@ -1130,7 +1133,6 @@ const left       = () => points() - used();
 // 파괴의 유산은 CDMG 에 배율로 곱한다 — 가산이던 시절엔 혼을 부어도 깊이가 안 늘었다.
 // 영구 특성에서는 CRIT 을 뺐다 — 상한 100%가 있어 되팔 수 없는 함정이었다.
 // CRIT 은 토큰(thinking)·배분 포인트·유물로만 오른다. 넘친 %p 가 CDMG 로 가는 건 그대로다.
-const TM = k => K.tmuls[k] || K.tmul;      // 특성 배율은 스탯마다 다르다 (파이썬 tmul_of)
 const spdNow = () => Math.round(F("spd"));
 const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
@@ -3082,6 +3084,10 @@ def _demo():
     assert spd20 <= atk20, f"신속({spd20})이 힘({atk20})을 넘어섰다 — 속도 빌드만 정답이 된다"
     for tag in ("hitsOf", "K.tmuls", "p * p / (p + d.dfn)"):
         assert tag in TEMPLATE, f"게임 쪽이 {tag} 를 안 읽는다 — 화면과 모델이 어긋난다"
+    # 로드 시점에 불리는 헬퍼는 선언이 먼저 와야 한다. 뒤에 있으면 TDZ 로 스크립트가 통째로
+    # 죽어 화면이 빈칸만 남는다 — 실제로 한 번 냈고, node --check 는 문법만 봐서 못 잡는다.
+    assert TEMPLATE.index("const TM = ") < TEMPLATE.index("const TRAITS = "), \
+        "TM 이 TRAITS 보다 뒤에 있다 — 로드 시점 TDZ 로 게임 화면이 통째로 빈다"
 
     # 4) 특성 비용은 반드시 증가한다 (무한 구매 방지)
     assert trait_cost(0) < trait_cost(5) < trait_cost(20), "특성 비용이 증가하지 않는다"

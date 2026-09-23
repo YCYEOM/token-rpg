@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.0"
+__version__ = "0.14.3"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -191,6 +191,10 @@ PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
 # 토큰만으로 얻는 SPD(호출수/400)는 13스테이지 보스의 1/9 이라, 배분 없이 신속의 유산만으로
 # 뒤집으려면 20레벨(혼 6,475)이 든다. 같은 혼이면 힘의 유산 ATK x9.65 다. 그건 선택이 아니다.
 GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4, "cdmg": 1, "spd": 3}
+# 보스보다 N 배 빠르면 한 턴에 N 번 친다. 소수점은 확률로 한 번 더 친다.
+# 상한을 뒀던 시절엔 효과가 '피해 두 배'에서 멈춰, 배율 특성(힘의 유산 20레벨 = ATK x9.65)과
+# 애초에 겨룰 수가 없었다 — 상한이 곧 천장이라 신속은 영원히 들러리였다. 상한을 없애고
+# 타격 수를 그대로 늘린다. 벽은 demo() 가 붙든다 (추가타가 벽을 한 칸 넘게 밀면 실패).
 CRIT_CAP  = 100      # 치명타율 상한(%). 넘친 %p 는 치명타 피해 %p 로 옮겨 간다 — 올려도 헛되지 않게
 CDMG_BASE = 200      # 치명타 피해 기본값(%) = 예전 고정 2배
 # '파괴의 유산'은 치명타 피해에 TRAIT_MUL 을 곱한다. 전에는 레벨당 +5%p 가산이었는데,
@@ -201,7 +205,17 @@ CDMG_BASE = 200      # 치명타 피해 기본값(%) = 예전 고정 2배
 
 # 환생: 클리어 기록과 배분을 버리고 '혼'을 얻어 영구 특성을 산다.
 # 특성 효과는 배율(지수), 비용도 지수 -> 층 벽을 넘으려면 환생을 거듭해야 한다.
-TRAIT_MUL  = 1.12    # 특성 1레벨당 스탯 배율
+TRAIT_MUL  = 1.12    # 특성 1레벨당 스탯 배율 (기본값)
+# 배율은 그 스탯이 '무엇과 겨루는지'에 맞춘다. 전부 x1.12 이던 시절엔 벽과 신속이 죽어 있었다 —
+# 혼을 얼마를 부어도 도달 스테이지가 그대로라, 사면 손해인 특성이었다.
+#   힘·파괴  피해에 곱으로 붙는다. x1.12 로 충분하다.
+#   벽       보스 ATK 와 1:1 로 맞선다. 보스 ATK 는 스테이지마다 STEP 이므로 벽도 STEP —
+#            벽 1레벨이 보스 한 스테이지분이다. x1.12 면 60레벨을 사도 도달이 15 에서 멈췄다.
+#   신속     보스 SPD 와의 비율 싸움. 타격 수가 배로 늘어 STEP 은 과했다(도달 26 > 힘 24).
+#   혼(HP)   피해를 견디는 쪽. 벽과 함께 크므로 그 사이 값이면 된다.
+# 다섯이 도달 스테이지에서 서로 두 칸 안에 서고 힘을 넘지 않는 값이다 (demo() 가 붙든다).
+TRAIT_MULS = {"dfn": STEP, "spd": 1.20, "hp": 1.16}
+tmul_of = lambda k: TRAIT_MULS.get(k, TRAIT_MUL)
 COST_MUL   = 1.13    # 특성 1레벨당 비용 증가율
 COST_K     = 80      # 특성 1레벨 기본 비용
 SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP
@@ -209,8 +223,9 @@ TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
 # '수확' 1레벨당 혼 획득 +%p. 3 이면 예지를 뺀 만큼(3층 27회)이 원래 속도(23회)로 돌아온다.
 # 더 올리면 층 벽이 무너진다 — 6 에서 19회, 10 에서 17회. simulate() 로 잰 값이다.
 TRAIT_SOUL = 3
-# '신속' 은 다른 유산과 같은 배율(TRAIT_MUL). SPD 는 선공만 정하고 평균 피해 모델에는
-# 안 들어가서 reach()·simulate() 이 값을 못 재는데, 효과가 '한 대 먼저'로 묶여 있어 괜찮다.
+# '신속' 은 TRAIT_SPD_MUL 을 쓴다(위 참고). SPD 가 추가타를 주고부터는 turns_to_win 이
+# 값을 재므로 reach() 도 SPD 배분을 고른다. 그래도 추가타는 피해 두 배가 끝이라
+# 힘의 유산(ATK x9.65 @20lv)을 넘지는 못한다 — 세 번째 화력원이지 주력이 아니다.
 # TRAIT_CRIT 은 없앴다 — CRIT 은 상한 100%가 있어 영구 특성으로 두면 되팔 수 없는 함정이 된다.
 # 치명타는 토큰(thinking)·배분 포인트·유물로만 오른다.
 
@@ -645,6 +660,22 @@ def boss(g):
             "dfn": round(B_DEF * p), "spd": round(B_DEF * p * 0.9)}
 
 
+def mitigate(atk, dfn):
+    """DEF 가 깎고 남은 피해. JS 의 dmgOf 와 같은 식이어야 한다.
+
+    예전엔 그냥 빼기(atk - dfn)였다. 보스 ATK 가 49스테이지에 336만인데 내 DEF 는 아무리
+    올려도 6만이라 피해가 1.88% 줄었고, 벽의 유산은 0레벨이든 70레벨이든 도달이 똑같았다.
+    비율로 깎으면 DEF 가 보스 ATK 와 같은 자리수에 서는 만큼 값을 한다 — 같으면 절반이다.
+    뚫고 못 뚫고의 벼랑도 사라진다(예전엔 못 뚫으면 타격당 1 피해였다).
+    """
+    return max(1.0, atk * atk / (atk + dfn)) if atk > 0 else 1.0   # 한 대의 최소 피해는 1 (JS 와 같다)
+
+
+def spd_extra(spd, bspd):
+    """보스보다 빠른 만큼 늘어나는 추가 타격 수. JS 의 xtra() 와 같은 식이어야 한다."""
+    return max(0.0, spd / max(1, bspd) - 1)
+
+
 def trait_cost(lv):
     return round(COST_K * COST_MUL ** lv)
 
@@ -652,7 +683,7 @@ def trait_cost(lv):
 def final_stats(h, alloc=None, tr=None):
     """최종 스탯 = (기본 + 배분) x 환생 특성 배율. JS의 F()와 같은 식."""
     a, t = alloc or {}, tr or {}
-    m = lambda k: TRAIT_MUL ** t.get(k, 0)
+    m = lambda k: tmul_of(k) ** t.get(k, 0)
     crit = h["crit"] + a.get("crit", 0) * GAIN["crit"]
     return {
         "atk":  (h["atk"] + a.get("atk", 0) * GAIN["atk"]) * m("atk"),
@@ -661,6 +692,7 @@ def final_stats(h, alloc=None, tr=None):
         "crit": min(CRIT_CAP, crit),
         "cdmg": (CDMG_BASE + a.get("cdmg", 0) * GAIN["cdmg"]
                  + max(0, crit - CRIT_CAP)) * m("cdmg"),
+        "spd":  (h["spd"] + a.get("spd", 0) * GAIN["spd"]) * m("spd"),
     }
 
 
@@ -669,19 +701,20 @@ def turns_to_win(h, b, alloc=None, tr=None):
     치명타는 기대값으로 반영. JS 전투와 같은 공식, 난수만 뺐다 = 밸런스 검증용."""
     s = final_stats(h, alloc, tr)
     eff = s["atk"] * (1 + s["crit"] / 100 * (s["cdmg"] / 100 - 1))
-    return b["hp"] / max(1, eff - b["dfn"]), s["hp"] / max(1, b["atk"] - s["dfn"])
+    hit = 1 + spd_extra(s["spd"], b["spd"])      # 추가타는 '타격 수'를 늘린다
+    return b["hp"] / (mitigate(eff, b["dfn"]) * hit), s["hp"] / mitigate(b["atk"], s["dfn"])
 
 
 def _splits(pts):
+    # SPD 도 넣는다 — 추가타가 생긴 뒤로는 turns_to_win 이 값을 잴 수 있다.
     for a in range(11):
         for hp in range(11 - a):
             for d in range(11 - a - hp):
                 for c in range(11 - a - hp - d):
-                    x = 10 - a - hp - d - c
-                    # SPD 는 빼 둔다 — turns_to_win 이 선공을 모델에 안 넣어서 값을 못 재고,
-                    # '배분을 SPD 에 쓰지 않는다'가 층 벽 높이로는 안전한 쪽 가정이다.
-                    yield {"atk": pts*a/10, "hp": pts*hp/10, "dfn": pts*d/10,
-                           "crit": pts*c/10, "cdmg": pts*x/10}
+                    for x in range(11 - a - hp - d - c):
+                        sp = 10 - a - hp - d - c - x
+                        yield {"atk": pts*a/10, "hp": pts*hp/10, "dfn": pts*d/10,
+                               "crit": pts*c/10, "cdmg": pts*x/10, "spd": pts*sp/10}
 
 
 def reach(h, tr=None, cap=400):
@@ -704,7 +737,8 @@ def simulate(h, n_slots, rebirths=40):
     """환생을 거듭했을 때 몇 회차에 몇 층에 닿는지. 상수 튜닝의 근거."""
     import itertools
     souls, tr, rows = 0, {}, []
-    # 신속은 빠졌다 — 평균 피해 모델이 SPD 를 안 보므로 넣어도 0 으로 값이 매겨진다
+    # 신속은 빼 둔다 — 추가타로 값을 재긴 하지만 상한이 있어 힘·혼·벽보다 뒤에 선다.
+    # 안 사는 쪽이 층 벽 높이로는 안전한 가정이다.
     cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt", "soul"])
     for r in range(rebirths + 1):
         g = reach(h, tr)
@@ -736,7 +770,8 @@ def balance(h, ds):
               f" {kill:>7.1f} {die:>7.1f}  {'승' if kill < die else '패 <- 벽'}")
         if kill >= die and g > n:
             break
-    print(f"\n[환생 진행] 특성 비용 {COST_K}x{COST_MUL}^lv, 효과 x{TRAIT_MUL}/lv")
+    print(f"\n[환생 진행] 특성 비용 {COST_K}x{COST_MUL}^lv, 효과 x{TRAIT_MUL}/lv"
+          f" ({' · '.join(f'{k} x{v}' for k, v in TRAIT_MULS.items())})")
     print(f"환생 1회 = 새 토큰 {REBIRTH_EXP:,} (최대 {REBIRTH_CAP}회분 적립)")
     print(f"{'환생':>4} {'스테이지':>8} {'층':>3} {'보유혼':>10} {'특성합':>6} {'필요토큰':>12}")
     prev = None
@@ -761,6 +796,7 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
+                  "tmuls": TRAIT_MULS,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
                   "maxLv": MAX_LV, "lvExp": LV_EXP, "tiers": TIERS,
                   "rbSoul": REBIRTH_SOUL,
@@ -824,7 +860,9 @@ button.big{padding:7px 14px;width:100%}
 button.rb{border-color:var(--soul);color:var(--soul)}
 button.on{border-color:var(--on);color:var(--on);background:#1c2531}
 button.chip{padding:1px 6px;font-size:11px}
-#picks{flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;max-height:76px;overflow-y:auto}
+#picksBox{flex-basis:100%}
+#picksBox summary{font-size:11px;color:var(--dim);cursor:pointer;padding:2px 0}
+#picks{display:flex;flex-wrap:wrap;gap:4px;max-height:34vh;overflow-y:auto;padding-top:4px}
 .pulse{animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.45}}
 .banner{border:1px dashed var(--xp);border-radius:8px;padding:9px;margin-bottom:10px;
@@ -953,15 +991,15 @@ const nf = x => x < 1000 ? x.toFixed(2) : n(x);
 const MULTIPROV = (D.providers || []).length > 1;
 const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력","DEF"],["crit","치명타","CRIT"],
                 ["cdmg","치명타 피해","CDMG"],["spd","속도","SPD"]];
-const TRAITS = [["atk","힘의 유산","ATK x"+K.tmul+"/lv"],["hp","혼의 유산","HP x"+K.tmul+"/lv"],
-                ["dfn","벽의 유산","DEF x"+K.tmul+"/lv"],
-                ["cdmg","파괴의 유산","CDMG x"+K.tmul+"/lv"],
-                ["spd","신속의 유산","SPD x"+K.tmul+"/lv"],["soul","수확","얻는 혼 +"+K.tsoul+"%/lv"],
+const TRAITS = [["atk","힘의 유산","ATK x"+TM("atk")+"/lv"],["hp","혼의 유산","HP x"+TM("hp")+"/lv"],
+                ["dfn","벽의 유산","DEF x"+TM("dfn")+"/lv"],
+                ["cdmg","파괴의 유산","CDMG x"+TM("cdmg")+"/lv"],
+                ["spd","신속의 유산","SPD x"+TM("spd")+"/lv"],["soul","수확","얻는 혼 +"+K.tsoul+"%/lv"],
                 ["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
-            best:0, exped:{since:Date.now(), seenExp:0}, auto:false, claimed:{}, relics:{}, rbExp:null, farm:0,
+            best:0, exped:{since:Date.now(), seenExp:0}, auto:true, claimed:{}, relics:{}, rbExp:null, farm:0,
             trans:0, mini:{day:"", n:0}});
 
 // ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
@@ -1092,12 +1130,13 @@ const left       = () => points() - used();
 // 파괴의 유산은 CDMG 에 배율로 곱한다 — 가산이던 시절엔 혼을 부어도 깊이가 안 늘었다.
 // 영구 특성에서는 CRIT 을 뺐다 — 상한 100%가 있어 되팔 수 없는 함정이었다.
 // CRIT 은 토큰(thinking)·배분 포인트·유물로만 오른다. 넘친 %p 가 CDMG 로 가는 건 그대로다.
+const TM = k => K.tmuls[k] || K.tmul;      // 특성 배율은 스탯마다 다르다 (파이썬 tmul_of)
 const spdNow = () => Math.round(F("spd"));
 const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? (K.cdmgBase + save.alloc.cdmg*G.cdmg + Math.max(0, critRaw() - K.critCap))
-                   * Math.pow(K.tmul, save.traits.cdmg)
-  : (H[k] + save.alloc[k]*G[k]) * Math.pow(K.tmul, save.traits[k])
+                   * Math.pow(TM("cdmg"), save.traits.cdmg)
+  : (H[k] + save.alloc[k]*G[k]) * Math.pow(TM(k), save.traits[k])
     * (1 + relicSum(k)/100);
 
 // 카드 접기 — 접어 둔 카드는 이 브라우저(창)에 기억한다. 저장 파일과는 무관
@@ -1121,7 +1160,17 @@ $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
 
 // 치명타율이 상한이면 배분·특성 줄에 알린다 — 더 올려도 치명타 피해로 간다
 const capNote = k => k === "crit" && critRaw() >= K.critCap
-  ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — 넘친 %p는 치명타 피해로</small>` : "";
+  ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — 넘친 %p는 치명타 피해로</small>`
+  : k === "spd" ? spdNote() : "";
+// 신속은 문턱을 넘기 전까지 아무것도 안 준다 — 49스테이지에서 첫 추가타까지 39레벨이 든다.
+// 그 구간이 화면에 안 보이면 혼을 부어 놓고 왜 그대로인지 알 수 없다. 숫자로 적어 준다.
+function spdNote(){
+  const g = Math.max(1, save.best || 1), b = boss(g), now = 1 + xtra(b);
+  const lv = Math.ceil(Math.log(2 * b.spd / Math.max(1, spdNow())) / Math.log(K.tmulSpd));
+  return `<small style="color:var(--dim);white-space:normal">보스보다 N배 빠르면 한 턴에 N번 친다`
+    + ` · ${g}스테이지에서 지금 ${now.toFixed(1)}회`
+    + (now < 2 ? ` — 2회까지 신속 ${lv}레벨` : "") + `</small>`;
+}
 function drawHero(){
   const lv = lvNow(), e = expNow(), cur = expFor(lv), nxt = expFor(lv + 1), t = tierOf(lv);
   $("face").textContent = t[1]; $("title").textContent = t[2];
@@ -1272,16 +1321,38 @@ $("saveLoad").onclick = () => {
   $("saveMsg").textContent = `가져왔다 — 환생 ${save.rebirths}회, 혼 ${n(save.souls)}`;
 };
 
+// 추가타 확률 — 보스보다 빠른 만큼 한 번 더 친다. 파이썬 spd_extra() 와 같은 식이어야 한다.
+const xtra = b => Math.max(0, spdNow() / Math.max(1, b.spd) - 1);
+// 한 턴에 치는 횟수. 보스보다 N 배 빠르면 N 번, 소수점은 확률로 한 번 더.
+const hitsOf = b => { const x = 1 + xtra(b); return Math.floor(x) + (Math.random() < x % 1 ? 1 : 0); };
+// 한 턴 피해와 치명타 여부. 신속을 깊이 올리면 타격이 수천 번이 되므로 다 굴리지 않는다 —
+// HIT_ROLL 을 넘으면 한 대를 굴려 기댓값에 곱한다. 안 그러면 자동 도전이 화면을 멎게 한다.
+const HIT_ROLL = 50;
+function turnDmg(a, d, hits, critPct){
+  if (hits <= HIT_ROLL) {
+    let sum = 0, crit = false;
+    for (let i = 0; i < hits; i++) {
+      const c = Math.random()*100 < critPct;
+      crit = crit || c; sum += dmgOf(a, d, c);
+    }
+    return [sum, crit];
+  }
+  const one = dmgOf(a, d, false) * (1 + critPct/100 * (a.cdmg/100 - 1));
+  return [Math.round(hits * one), critPct > 0];
+}
+
 // 평균 피해로 따져 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다
 const beatable = b => {
   const eff = F("atk") * (1 + F("crit")/100 * (F("cdmg")/100 - 1));
-  return b.hp / Math.max(1, eff - b.dfn) < F("hp") / Math.max(1, b.atk - F("dfn"));
+  const mit = (atk, dfn) => atk * atk / (atk + dfn);
+  return b.hp / (mit(eff, b.dfn) * (1 + xtra(b))) < F("hp") / mit(b.atk, F("dfn"));
 };
 
 // ── 자동 도전: 첫 환생 후 해금. 1초에 한 판씩 연출 없이 같은 규칙으로 싸운다.
 // 목표(save.farm: 0 = 끝까지, g = g스테이지)까지 한 칸씩 오르고, 더 못 오르면 멈추지 않고
 // 목표(또는 이번 판 가장 깊은 곳)를 반복한다 — 유물 파밍. 환생해도 켜 둔 채면 다시 오른다.
 let autoMsg = "", autoFailSig = "", autoKey = "", farmW = 0, farmL = 0, farmI = 0;
+let picksOpen = false;   // 다시 그려도 펼친 상태는 유지한다 — 고르는 중에 접히면 못 쓴다
 // 능력치가 그대로면 진 스테이지로 다시 오르지 않는다 (치명타 운으로 벽을 넘는 반복 방지)
 const statSig = () => STATS.map(([k]) => F(k)).join();
 const autoReset = () => { autoFailSig = ""; autoMsg = ""; farmW = farmL = farmI = 0; };
@@ -1309,13 +1380,14 @@ function drawAuto(){
         title="${g}. ${SLOTS[(g-1)%N].name}">${SLOTS[(g-1)%N].emoji}${g}</button>`);
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
       <button id="pickAll">${ps.length === best && best ? "전체 해제" : "전체 반복"}</button>
-      <span class="dim" style="font-size:11px">${ps.length
-        ? `고른 ${ps.length}곳을 차례로 반복` : "끝까지 오르고 가장 깊은 곳 반복"}</span>
-      <div id="picks">${chips.join("")}</div>
+      <details id="picksBox" ${picksOpen ? "open" : ""}><summary>${ps.length
+        ? `고른 ${ps.length}곳을 차례로 반복` : "끝까지 오르고 가장 깊은 곳 반복"} — 눌러서 고르기</summary>
+        <div id="picks">${chips.join("")}</div></details>
       <span class="dim" id="autoMsg" style="font-size:11px;flex-basis:100%"></span>`;
     $("autoBtn").onclick = () => { save.auto = !save.auto; autoReset(); put(); drawAuto(); };
     $("pickAll").onclick = () => setPicks(ps.length === best
       ? [] : Array.from({length: best}, (_, i) => i + 1));
+    $("picksBox").ontoggle = e => { picksOpen = e.target.open; };
     $("picks").onclick = e => {                       // 칸 하나하나가 아니라 묶어서 듣는다
       const g = +(e.target.dataset || {}).g;
       if (g) setPicks(on.has(g) ? ps.filter(x => x !== g) : [...ps, g]);
@@ -1379,7 +1451,8 @@ function drawStages(){
       <div class="n"><b class="nm" title="${slot.name}">${done?"✓ ":""}${g}. ${slot.name}</b>
       <small>${
         [seg("HP", b.hp), seg("ATK", b.atk), seg("DEF", b.dfn), seg("SPD", b.spd)].join(" · ")}${
-        spdNow()>=b.spd ? "" : " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"}
+        spdNow() < b.spd ? " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"
+        : xtra(b) ? ` · <span style="color:var(--on);white-space:nowrap">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""}
       <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}</small></div>`;
     const btn = document.createElement("button");
     btn.textContent = open ? (done ? "재도전" : "도전") : "잠김";
@@ -1772,8 +1845,12 @@ function drawRbBonus(){
 const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
-const dmgOf = (a, d, crit) =>
-  Math.max(1, Math.round((a.atk - d.dfn) * (0.85 + Math.random()*0.3) * (crit ? a.cdmg / 100 : 1)));
+// DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라
+// 천 단위 DEF 가 아무 일도 못 했고, 뚫고 못 뚫고의 벼랑만 있었다. 파이썬 mitigate() 와 같은 식.
+const dmgOf = (a, d, crit) => {
+  const p = a.atk * (0.85 + Math.random()*0.3) * (crit ? a.cdmg / 100 : 1);
+  return Math.max(1, Math.round(p * p / (p + d.dfn)));
+};
 const newFighters = b => [{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit"), cdmg:F("cdmg")},
                           {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}];
 // 승리 처리 (수동·자동 공통). 유물이 나오면 그 안내 문구를 돌려준다.
@@ -1792,8 +1869,8 @@ function quickFight(b){
   const [me, foe] = newFighters(b);
   let myTurn = spdNow() >= b.spd;
   for (let turn = 1; turn <= 200; turn++) {
-    const [a, d] = myTurn ? [me, foe] : [foe, me];
-    d.hp -= dmgOf(a, d, myTurn && Math.random()*100 < me.crit);
+    if (myTurn) foe.hp -= turnDmg(me, foe, hitsOf(b), me.crit)[0];
+    else me.hp -= dmgOf(foe, me, false);
     if (foe.hp <= 0) return true;
     if (me.hp <= 0) return false;
     myTurn = !myTurn;
@@ -1809,15 +1886,18 @@ function fightStart(g, slot, b){
   $("log").innerHTML = ""; $("close").disabled = true; $("close").textContent = "전투 중…";
   $("fight").classList.add("on");
   let turn = 0, myTurn = spdNow() >= b.spd;
-  say(`${slot.emoji} ${g}스테이지 — ${slot.name} 등장!`);
+  say(`${slot.emoji} ${g}스테이지 — ${slot.name} 등장!`
+      + (xtra(b) ? ` <span class="dim">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""));
   paint(me, foe);
   timer = setInterval(() => {
     if (++turn > 200) return end(false, me, foe, g, slot, "소모전 — 화력이 부족하다");
     const [a, d, an, tag] = myTurn ? [me, foe, "나", "fb"] : [foe, me, slot.name, "fh"];
-    const crit = myTurn && Math.random()*100 < me.crit;
-    const dmg = dmgOf(a, d, crit);
+    // 내 턴은 타격 수만큼 몰아 친다 — 한 줄에 합쳐 적는다. 스무 번을 스무 줄로 쓰면 못 읽는다.
+    const hits = myTurn ? hitsOf(b) : 1;
+    const [dmg, crit] = turnDmg(a, d, hits, myTurn ? me.crit : 0);
     d.hp -= dmg;
-    say(`T${turn} ${an} → ${n(dmg)} 피해` + (crit ? " <span class='crit'>치명타!</span>" : ""), crit);
+    say(`T${turn} ${an}${hits > 1 ? ` <span class='gold'>x${n(hits)}타</span>` : ""} → ${n(dmg)} 피해`
+        + (crit ? " <span class='crit'>치명타!</span>" : ""), crit);
     const el = $(tag); el.classList.remove("hit"); void el.offsetWidth; el.classList.add("hit");
     paint(me, foe);
     if (foe.hp <= 0) return end(true, me, foe, g, slot);
@@ -2958,14 +3038,50 @@ def _demo():
     # 3-2) 파괴의 유산이 혼을 깊이로 바꾸는가. 가산이던 시절엔 어떤 레벨을 사도 도달이
     #      그대로여서, 사면 손해인 특성이었다. 절대 스테이지는 사용자마다 다르니
     #      (a) 사면 더 깊이 간다 (b) 힘의 유산과 같은 줄에 선다 두 가지만 본다.
+    # 다섯 특성 전부 '사면 더 깊이 가고, 힘의 유산과 세 칸 안에 서되 넘지는 않는다'.
+    # 예전엔 파괴에만 이 기준을 뒀고, 그사이 벽은 60레벨을 사도 도달이 15 에서 멈춰 있었다.
     base_r = reach(h)
     atk20, cdmg20 = reach(h, {"atk": 20}), reach(h, {"cdmg": 20})
-    assert cdmg20 > base_r, \
-        f"파괴의 유산 20레벨이 도달 스테이지를 못 늘린다 ({base_r} -> {cdmg20}) — 혼을 버리는 특성이다"
-    assert cdmg20 >= atk20 - 3, \
-        f"파괴({cdmg20})가 힘({atk20})보다 세 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
-    assert cdmg20 <= atk20, \
-        f"파괴({cdmg20})가 힘({atk20})을 넘어섰다 — 치명타 빌드만 정답이 된다"
+    for k, ko in (("hp", "혼"), ("dfn", "벽"), ("cdmg", "파괴"), ("spd", "신속")):
+        near, far = reach(h, {k: 20}), reach(h, {k: 60})
+        assert near > base_r, \
+            f"{ko}의 유산 20레벨이 도달을 못 늘린다 ({base_r} -> {near}) — 혼을 버리는 특성이다"
+        assert near >= atk20 - 3, \
+            f"{ko}({near})가 힘({atk20})보다 세 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
+        assert near <= atk20 and far <= reach(h, {"atk": 60}), \
+            f"{ko}({near}/{far})가 힘을 넘어섰다 — 그 빌드만 정답이 된다"
+
+    # 3-3) 속도: 보스보다 빠른 만큼 추가타가 붙는다. 예전엔 선공만 정해서, 보스 SPD 를
+    #      넘긴 1점부터 값이 0 이었다 — 아무도 SPD 에 배분하지 않았다.
+    #      (a) 식의 경계 (b) 평균 피해 모델이 실제로 본다 (c) 그래도 층 벽을 밀지 않는다.
+    assert spd_extra(50, 100) == 0 and spd_extra(100, 100) == 0, "느린데 추가타가 붙는다"
+    assert spd_extra(300, 100) == 2 and spd_extra(250, 100) == 1.5, "N배 빠르면 N번이 아니다"
+    # 상한이 있으면 신속은 그 천장에 막혀 배율 특성과 영영 못 겨룬다 — 천장이 없어야 한다
+    assert spd_extra(10 ** 6, 1) > 100, "추가 타격 수에 천장이 있다 — 신속이 들러리가 된다"
+    assert tmul_of("dfn") == STEP, "벽 배율이 보스 곡선과 어긋난다 — 한 레벨이 한 스테이지다"
+    # DEF 는 비율로 깎는다. 같은 자리수면 절반, 아무리 높아도 0 이 되지 않는다.
+    assert abs(mitigate(100, 100) - 50) < 1e-9, mitigate(100, 100)
+    assert mitigate(1000, 0) == 1000 and 0 < mitigate(1000, 10 ** 9) <= 1, "DEF 가 피해를 전부 지운다"
+    assert mitigate(3_359_617, 63_256) < 3_359_617 * 0.99, "백만 단위 ATK 앞에서 DEF 가 아무 일도 못 한다"
+    hh = {"level": 1, "atk": 100, "hp": 1000, "dfn": 0, "crit": 0, "spd": 20}
+    quick = {"hp": 100, "atk": 10, "dfn": 0, "spd": 10}             # 내가 두 배 빠르다
+    assert turns_to_win(hh, quick)[0] < turns_to_win(hh, {**quick, "spd": 10 ** 9})[0], \
+        "추가타가 평균 피해 모델에 안 들어갔다 — reach() 와 자동 도전이 SPD 를 0 으로 본다"
+    _sx = spd_extra
+    try:
+        globals()["spd_extra"] = lambda spd, bspd: 0.0
+        flat = reach(h)                                             # 추가타가 없던 시절의 깊이
+    finally:
+        globals()["spd_extra"] = _sx
+    assert base <= flat + 1, \
+        f"추가타가 벽을 {flat} -> {base} 스테이지로 밀었다 — 환생 없이 너무 깊이 간다"
+    # 신속의 유산은 사면 더 깊이 가야 하지만 힘의 유산을 넘어서는 안 된다 (파괴의 유산과 같은 기준).
+    # 추가타는 피해 두 배가 끝이라 구조적으로 못 넘지만, TRAIT_SPD_MUL 을 올리다 넘길 수 있다.
+    spd20 = reach(h, {"spd": 20})
+    assert spd20 > flat, f"신속의 유산 20레벨이 도달을 못 늘린다 ({flat} -> {spd20}) — 혼을 버리는 특성이다"
+    assert spd20 <= atk20, f"신속({spd20})이 힘({atk20})을 넘어섰다 — 속도 빌드만 정답이 된다"
+    for tag in ("hitsOf", "K.tmuls", "p * p / (p + d.dfn)"):
+        assert tag in TEMPLATE, f"게임 쪽이 {tag} 를 안 읽는다 — 화면과 모델이 어긋난다"
 
     # 4) 특성 비용은 반드시 증가한다 (무한 구매 방지)
     assert trait_cost(0) < trait_cost(5) < trait_cost(20), "특성 비용이 증가하지 않는다"

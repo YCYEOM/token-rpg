@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.4"
+__version__ = "0.14.5"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1168,7 +1168,7 @@ const capNote = k => k === "crit" && critRaw() >= K.critCap
 // 그 구간이 화면에 안 보이면 혼을 부어 놓고 왜 그대로인지 알 수 없다. 숫자로 적어 준다.
 function spdNote(){
   const g = Math.max(1, save.best || 1), b = boss(g), now = 1 + xtra(b);
-  const lv = Math.ceil(Math.log(2 * b.spd / Math.max(1, spdNow())) / Math.log(K.tmulSpd));
+  const lv = Math.ceil(Math.log(2 * b.spd / Math.max(1, spdNow())) / Math.log(TM("spd")));
   return `<small style="color:var(--dim);white-space:normal">보스보다 N배 빠르면 한 턴에 N번 친다`
     + ` · ${g}스테이지에서 지금 ${now.toFixed(1)}회`
     + (now < 2 ? ` — 2회까지 신속 ${lv}레벨` : "") + `</small>`;

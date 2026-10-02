@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.5"
+__version__ = "0.14.6"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -517,26 +517,48 @@ def provider_roots(pid, cfg=None):
     return [p for p in out if os.path.isdir(p)]
 
 
-def collect(root=None, pid="claude-code", roots=None, since=0):
+def ledger_path():
+    return os.path.join(data_dir(), "ledger.json")
+
+
+def collect(root=None, pid="claude-code", roots=None, since=0, ledger=None):
     """한 프로바이더의 로그를 훑어 합계를 낸다.
-    since 이전에 끝난 세션 파일은 건너뛴다 — 세션 단위라 기준을 걸친 파일 하나는 통째로 센다."""
+    since 이전에 끝난 세션 파일은 건너뛴다 — 세션 단위라 기준을 걸친 파일 하나는 통째로 센다.
+    ledger({경로: {mt, sz, r}})를 넘기면 파일별 합계를 거기 적어 두고, 디스크에서 사라진
+    파일도 적힌 값으로 센다 — Claude Code 는 30일 지난 로그를 지워서(cleanupPeriodDays)
+    다시 훑기만 하면 누적이 30일 창으로 줄어든다."""
     spec = PROVIDERS[pid]
     agg = collections.Counter()
     days, projects, models = collections.Counter(), collections.Counter(), collections.Counter()  # days: 날짜 -> 토큰
     files = 0
+    found = {}
     for r in ([root] if root else (roots if roots is not None else provider_roots(pid))):
         for path in glob.glob(os.path.join(r, spec["glob"]), recursive=True):
             try:
-                if since and os.path.getmtime(path) < since:
-                    continue
+                st = os.stat(path)
             except OSError:
                 continue
-            a, proj, d, m = spec["read"](path)
-            if not a:
-                continue
-            files += 1
-            agg.update(a); days.update(d); models.update(m)
-            projects[pid + "\t" + proj] += a["input"] + a["output"]
+            e = (ledger or {}).get(pid + "\t" + path)
+            if not (e and e["mt"] == st.st_mtime and e["sz"] == st.st_size):
+                e = {"mt": st.st_mtime, "sz": st.st_size, "r": spec["read"](path)}
+            found[path] = e
+    if ledger is not None:
+        prefix = pid + "\t"
+        for path, e in ledger.items():          # 지워진 로그 — 마지막으로 본 값을 그대로 센다
+            if path.startswith(prefix):
+                found.setdefault(path[len(prefix):], e)
+        for path, e in found.items():
+            ledger[prefix + path] = e
+    for path, e in found.items():
+        if since and e["mt"] < since:
+            continue
+        a, proj, d, m = e["r"]
+        if not a:
+            continue
+        a = collections.Counter(a)
+        files += 1
+        agg.update(a); days.update(d); models.update(m)
+        projects[pid + "\t" + proj] += a["input"] + a["output"]
     agg["sessions"] = files
     return agg, projects, models, days
 
@@ -546,19 +568,27 @@ def collect_all(cfg=None):
     cfg = cfg if cfg is not None else load_config()
     agg = collections.Counter()
     projects, models, days, per = collections.Counter(), collections.Counter(), {}, {}
+    try:
+        ledger = _load_sealed(ledger_path())
+    except OSError:
+        ledger = {}
+    except ValueError:                          # 깨진 장부는 덮어쓰지 않는다 — 지워진 로그의 유일한 기록이다
+        ledger = None
     for pid in PROVIDERS:
         if not cfg.get("providers", {}).get(pid, {}).get("enabled", True):
             continue
         roots = provider_roots(pid, cfg)
         if not roots:
             continue
-        a, p, m, d = collect(pid=pid, roots=roots, since=since_ts(cfg))
+        a, p, m, d = collect(pid=pid, roots=roots, since=since_ts(cfg), ledger=ledger)
         if not a.get("calls"):
             continue
         agg.update(a); projects.update(p); models.update(m)
         for day, v in d.items():
             days.setdefault(day, {})[pid] = v
         per[pid] = a["input"] + a["output"]
+    if ledger is not None:
+        _dump_sealed(ledger_path(), ledger)
     return agg, projects, models, days, per
 
 
@@ -3114,6 +3144,12 @@ def _demo():
             a_all, _, _, _ = collect(roots=[logs])
             a_cut, _, _, _ = collect(roots=[logs], since=time.time() - 86400)
             assert a_all["calls"] == 2 and a_cut["calls"] == 1, (dict(a_all), dict(a_cut))
+            # Claude Code 가 30일 지난 로그를 지워도 장부에 적힌 값으로 계속 센다
+            led = {}
+            collect(roots=[logs], ledger=led)
+            os.remove(os.path.join(logs, "proj", "old.jsonl"))
+            a_led, _, _, _ = collect(roots=[logs], ledger=json.loads(json.dumps(led)))
+            assert a_led["calls"] == 2, "지워진 로그의 토큰이 누적에서 빠졌다"
         finally:
             os.environ.clear(); os.environ.update(keep_env)
 

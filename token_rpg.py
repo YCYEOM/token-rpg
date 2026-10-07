@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.17.0"
+__version__ = "0.17.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -354,6 +354,9 @@ THEMES = [
 # RAID_MIN_BEST: 2층 첫 보스를 깨야 열린다. 1층에서는 주간 보조 수입이 이미 상한(환생의 2배)에 닿아 있어
 #   레이드 몫을 얹을 자리가 없다. 16스테이지부터는 상한 안이다 (demo() 가 16스테이지부터 전부 본다).
 # RAID_MIN_HP: 갓 깔았거나 쉬던 주에도 보스가 서도록 두는 HP 하한.
+# 격파 보상은 가진 유물 하나를 한 등급 올리는 것이다(v0.17.1). 등급을 새로 굴리던 v0.17.0 은 열에 여섯이
+# 일반이라 유물을 모은 뒤로는 빈손이었다. 천장(신화)은 그대로고, 15칸 전부 신화까지 많아야 60주다.
+# 자동 반복으로도 신화는 나온다(한 보스에 7시간쯤) — 레이드는 켜 두지 않는 사람의 길이다.
 # 보스 HP 는 지난 4주의 주간 사용량 평균이다 (쓴 주만 센다) — 평소대로 쓰면 주말쯤 잡는다.
 RAID_BUDGET   = 8
 RAID_MIN_BEST = len(AFFIXES) + 1
@@ -1830,15 +1833,35 @@ function raidClaim(i){
   save.souls += pay;
   raidNews = `${(i + 1) * 25}% 돌파 — 혼 +${n(pay)}`;
   if (i === 3) {
-    // 격파: 유물을 한 번 굴린다. 탑이 막힌 주에도 유물이 한 번은 굴러간다.
-    // 칸은 주마다 하나씩 돌아가고, 스테이지는 그 칸이 나오는 가장 깊은 곳(역대 최고 안쪽)이다
-    const slot = SLOTS[raidIdx(raidWk()) % N];
-    const g = Math.floor(Math.max(0, save.best - slot.slot) / N) * N + slot.slot;
-    const drop = rollRelic(g, slotOf(g), false, true);
-    if (drop) relicNews = drop;
+    const drop = raidRelic();
+    relicNews = drop;
     raidNews = `${raidBoss()[0]} 격파 — 혼 +${n(pay)} · ${drop}`;
   }
   put(); drawAll();
+}
+// 격파 보상: 가진 유물 하나를 한 등급 올린다. 처음엔 등급을 새로 굴렸는데(v0.17.0), 열에 여섯은 일반이라
+// 유물을 모은 뒤로는 거의 혼으로 바뀌었다 — 한 주를 채워 잡은 보상이 빈손이었다.
+// 올릴 것이 없으면 버려지지 않게 다른 것을 준다: 유물이 하나도 없으면 하나를 주고, 전부 신화면 혼을 준다.
+// 등급의 천장(신화)은 그대로다. 빨라지는 것은 거기까지 가는 길뿐이다 — 15칸 전부 신화까지 많아야 60주.
+function raidRelic(){
+  const rs = save.relics = save.relics || {};
+  const owned = SLOTS.filter(s => relicOk(rs[relicKey(s)]));
+  const up = owned.filter(s => rs[relicKey(s)].r < RARITY.length - 1);
+  if (up.length) {
+    const slot = up[Math.floor(Math.random() * up.length)], k = relicKey(slot), old = rs[k];
+    rs[k] = {...old, r: old.r + 1};
+    const from = Number.isInteger(old.g) && old.g >= 1 && (old.g - 1) % N === slot.slot - 1 ? old.g : slot.slot;
+    return `${slotOf(from).name}의 유물 승급: ${RARITY[old.r][0]} → ${RARITY[old.r + 1][0]} — `
+         + `${AFFIX[old.a][0]} +${relicVal(rs[k])}${AFFIX[old.a][2]}`;
+  }
+  if (!owned.length) {                           // 올릴 유물이 없다 — 이번 주 칸의 유물을 하나 준다
+    const slot = SLOTS[raidIdx(raidWk()) % N];
+    const g = Math.floor(Math.max(0, save.best - slot.slot) / N) * N + slot.slot;
+    return rollRelic(g, slotOf(g), false, true);
+  }
+  const pay = sideSoul(Math.max(1, save.best));  // 전부 신화다 — 최고 스테이지 한 판치 혼
+  save.souls += pay;
+  return `유물이 모두 ${RARITY[RARITY.length - 1][0]}다 — 혼 +${n(pay)}`;
 }
 function drawRaid(){
   if (!raidOpen()) {
@@ -1858,13 +1881,14 @@ function drawRaid(){
     [0, 1, 2, 3].map(i => {
       const need = hp * (i + 1) / 4, done = dealt >= need, had = got.includes(i);
       return `<div class="st"><div class="n"><b>${had ? "✓ " : ""}${(i + 1) * 25}% ${i === 3 ? "격파" : "돌파"}</b>
-        <small style="display:block">토큰 ${n(need)} · 보상 혼 ${n(raidPay())}${i === 3 ? " · 유물 굴림 1회" : ""}</small></div>
+        <small style="display:block">토큰 ${n(need)} · 보상 혼 ${n(raidPay())}${i === 3 ? " · 유물 한 등급 승급" : ""}</small></div>
         <button data-r="${i}" ${done && !had ? "" : "disabled"}>${had ? "받음" : done ? "받기" : "진행 중"}</button></div>`;
     }).join("") +
     `<div class="dim" style="font-size:11px;margin-top:6px">매주 월요일에 새 보스가 선다. HP 는 이번 주에 실제로 쓴 토큰으로만
      깎인다 — 스탯과 전투는 관계없다. HP 는 지난 4주의 주간 사용량 평균이라 평소대로 쓰면 주말쯤 잡는다.
      한 주가 지나면 남은 HP 와 상관없이 다음 보스로 넘어가고, 안 받은 보상은 사라진다.
-     격파 보상의 유물은 등급만 굴린다 — 같거나 낮은 등급이면 혼이 된다.</div>`;
+     격파하면 가진 유물 가운데 하나가 한 등급 오른다 (${RARITY.map(r => r[0]).join(" → ")}).
+     유물이 하나도 없으면 하나를 주고, 전부 ${RARITY[RARITY.length - 1][0]}면 혼을 준다.</div>`;
   $("raid").querySelectorAll("button[data-r]").forEach(b => b.onclick = () => raidClaim(+b.dataset.r));
 }
 

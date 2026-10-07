@@ -229,8 +229,9 @@ SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP (SOUL_LATE_G 까
 SOUL_LATE_G   = 45
 SOUL_LATE_MUL = 1.10
 TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
-# '수확' 1레벨당 혼 획득 +%p. 3 이면 예지를 뺀 만큼(3층 27회)이 원래 속도(23회)로 돌아온다.
-# 더 올리면 층 벽이 무너진다 — 6 에서 19회, 10 에서 17회. simulate() 로 잰 값이다.
+# '수확' 1레벨당 혼 획득 +%p. 더 올리면 깊은 층이 일찍 열린다 — simulate() 로 잰 값(v0.14.11,
+# 개발자 영웅 Lv.31): 3 이면 5층 19회 · 8층 40회, 6 이면 16회 · 31회, 10 이면 14회 · 25회.
+# 3층까지는 어느 값이든 7~8회로 같다. 처음 고를 때의 숫자(3층 23회)는 옛 상수에서 잰 것이다.
 TRAIT_SOUL = 3
 # '신속' 은 TRAIT_MULS["spd"] 를 쓴다(위 참고). SPD 가 타격 수를 늘리고부터는 turns_to_win 이
 # 값을 재므로 reach() 도 SPD 배분을 고른다. 타격 수에 상한은 없다 — 힘의 유산을 넘지 않게
@@ -2641,7 +2642,7 @@ def build_parser():
     sub.add_parser("status", help="현재 스탯을 JSON으로 출력 (메뉴 막대 앱용)")
     sub.add_parser("export", help="이 PC의 스냅샷만 갱신 (다른 기기와 합산용)")
     sub.add_parser("balance", help="난이도·환생 곡선 표 출력")
-    sub.add_parser("selftest", help="집계·병합·밸런스 자체 검증")
+    sub.add_parser("selftest", help="집계·병합·밸런스·게임 화면 자체 검증")
     sub.add_parser("where", help="데이터 위치 출력")
     sub.add_parser("update", help="새 버전 확인 후 업그레이드")
     sn = sub.add_parser("since", help="언제부터의 토큰을 셀지 (기본: 설치 시점)")

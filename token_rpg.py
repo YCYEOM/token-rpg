@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.8"
+__version__ = "0.14.9"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -891,7 +891,8 @@ button.rb{border-color:var(--soul);color:var(--soul)}
 button.on{border-color:var(--on);color:var(--on);background:#1c2531}
 button.chip{padding:1px 2px;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}
 #picksBox{flex-basis:100%}
-#picksBox summary{font-size:11px;color:var(--dim);cursor:pointer;padding:2px 0}
+#picksBox summary{font-size:12px;cursor:pointer;padding:6px 10px;background:#21262d;
+border:1px solid var(--line);border-radius:6px}#picksBox summary:hover{border-color:var(--on)}
 #picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:4px;max-height:34vh;overflow-y:auto;padding-top:4px}
 .pulse{animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.45}}

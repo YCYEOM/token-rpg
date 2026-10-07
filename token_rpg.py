@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.6"
+__version__ = "0.14.7"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -911,6 +911,7 @@ justify-content:center;padding:16px;z-index:9}
 padding:18px;background:#161b22}
 .vs{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:10px}
 .vs>div{width:46%}.vs .e{font-size:44px;text-align:center}
+.vs .row span{white-space:nowrap}.vs .row span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .hit{animation:hit .3s}@keyframes hit{50%{transform:translateX(9px) scale(.92);filter:brightness(2)}}
 .thud{animation:thud .35s ease-out}
 @keyframes thud{0%{transform:scaleY(2.2);filter:brightness(3)}60%{transform:scaleY(1);filter:brightness(1.6)}}

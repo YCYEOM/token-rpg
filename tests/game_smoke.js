@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, weekSum, raidWk, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -424,13 +424,26 @@ async function raid(g) {
   ok(g.$("raidHead").text === "격파", "HP 를 다 깎았는데 격파로 안 뜬다: " + g.$("raidHead").text);
   const pay = t.raidPay();
   ok(pay === Math.round(t.sideSoul(120) * t.K.raidBudget / 4), "레이드 보상이 보조 수입용 혼의 예산 1/4 이 아니다");
+  // 격파 보상: 가진 유물 하나가 한 등급 오른다. 15칸이 전부 신화라 올릴 수 있는 것을 하나 만들어 둔다
+  const all = t.save.relics;
+  t.save.relics = {...all, boss3: {r: 1, a: "dfn", g: 33}};
   for (let i = 0; i < 4; i++) {
     const had = t.save.souls;
     await g.click(g.btn("raid", {r: String(i)}));
-    ok(t.save.raid.got.includes(i) && t.save.souls >= had + pay, `레이드 ${i + 1}단계 보상이 안 들어왔다`);
-    ok(i === 3 || t.save.souls === had + pay, `레이드 ${i + 1}단계가 적힌 것보다 많이 줬다`);
+    ok(t.save.raid.got.includes(i) && t.save.souls === had + pay, `레이드 ${i + 1}단계 보상이 적힌 것과 다르다`);
   }
-  ok(/격파 — 혼/.test(g.$("raid").html) && /유물/.test(g.$("raid").html), "격파 알림에 유물 굴림이 없다");
+  ok(t.save.relics.boss3.r === 2 && t.save.relics.boss3.a === "dfn" && t.save.relics.boss3.g === 33,
+     "격파했는데 유물이 한 등급 안 올랐다: " + JSON.stringify(t.save.relics.boss3));
+  ok(Object.values(t.save.relics).filter(r => r.r === 4).length === 14, "올릴 수 없는 유물(신화)을 건드렸다");
+  ok(/격파 — 혼/.test(g.$("raid").html) && /거절 응답 달팽이의 유물 승급: 희귀 → 영웅 — DEF \+12%/.test(g.$("raid").html), "격파 알림에 승급이 없다: " + g.$("raid").html.slice(0, 200));
+  // 올릴 것이 없을 때도 버려지지 않는다 — 유물이 없으면 하나를 주고, 전부 신화면 혼을 준다
+  t.save.relics = {};
+  ok(/유물/.test(t.raidRelic()) && Object.keys(t.save.relics).length === 1, "유물이 하나도 없을 때 하나를 주지 않는다");
+  t.save.relics = all;
+  const full = t.save.souls;
+  ok(/모두 신화/.test(t.raidRelic()) && t.save.souls === full + t.sideSoul(120), "전부 신화일 때 혼을 주지 않는다");
+  ok(JSON.stringify(t.save.relics) === JSON.stringify(all), "전부 신화인데 유물이 바뀌었다");
+  t.drawAll();
   ok(g.$("raid").querySelectorAll("button[data-r]").every(b => b.disabled), "받은 레이드 보상을 또 받을 수 있다");
   ok(t.save.raid.wk === "2026-01-12" && t.save.raid.got.join() === "0,1,2,3", "받은 단계를 저장하지 않았다");
   const twice = t.save.souls;

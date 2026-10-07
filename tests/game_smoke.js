@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  boss, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  boss, slotOf, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -194,6 +194,11 @@ function parity(g) {
   for (const [n, want] of e.boss)
     ok(JSON.stringify(t.boss(n)) === JSON.stringify(want),
        `보스 ${n}: 화면 ${JSON.stringify(t.boss(n))} · 파이썬 ${JSON.stringify(want)}`);
+  for (const [n, want] of e.slots) {             // 층 테마 — 이름·이모지·테마와 칸 고정값
+    const s = t.slotOf(n);
+    for (const k of Object.keys(want))
+      ok(s[k] === want[k], `${n}스테이지 칸의 ${k}: 화면 ${s[k]} · 파이썬 ${want[k]}`);
+  }
   e.exp.forEach((want, i) => ok(t.expFor(i + 1) === want, `Lv.${i + 1} EXP: 화면 ${t.expFor(i + 1)} · 파이썬 ${want}`));
   for (const [x, want] of e.levels) ok(t.levelOf(x) === want, `EXP ${x}: 화면 Lv.${t.levelOf(x)} · 파이썬 Lv.${want}`);
   e.cost.forEach((want, lv) => ok(t.costOf(lv) === want, `특성 ${lv}레벨 비용: 화면 ${t.costOf(lv)} · 파이썬 ${want}`));
@@ -229,6 +234,7 @@ async function playthrough() {
   await g.click(g.btn("alloc", {k: "spd", d: "1"}));
   ok(t.left() === 0 && t.save.alloc.spd === 1, "−1 · +1 이 한 점씩 안 옮긴다");
 
+  ok(/1층 코드 버그/.test(g.$("floorTitle").text), "층 제목에 테마가 없다: " + g.$("floorTitle").text);
   await g.fight(0);
   ok(t.save.cleared.includes(1) && t.save.best === 1, "1스테이지를 이겼는데 기록이 안 남았다");
 
@@ -283,6 +289,13 @@ async function playthrough() {
   ok(!t.picks().length, "'전체 해제' 가 비우지 않는다");
   await g.advance(3000);
   g.clean("자동 도전");
+  // 이번 판에 나온 유물은 떨어뜨린 스테이지를 적어 둔다 — 도감이 그 보스 이름을 보여 준다
+  const got = Object.entries(t.save.relics);
+  ok(got.length >= 1, "픽스처에서 유물이 하나도 안 나왔다 — 난수 씨앗을 바꿔라");
+  for (const [k, r] of got) {
+    ok(Number.isInteger(r.g) && k === "boss" + t.slotOf(r.g).slot, `유물 ${k} 에 떨어뜨린 스테이지가 없다: ${JSON.stringify(r)}`);
+    ok(g.$("relics").html.includes(t.slotOf(r.g).name), `도감에 ${t.slotOf(r.g).name} 이 없다`);
+  }
 
   t.save.souls += 1e6; t.drawAll();
   for (const k of Object.keys(t.fresh().traits).filter(k => k !== "crit")) {
@@ -331,6 +344,7 @@ async function oldSave() {
   ok(t.save.relics.boss1 && t.save.relics.boss1.a === "atk" && !t.save.relics["claude-code|proj"],
      "옛 유물을 고정 보스 칸으로 옮기지 않았다");
   ok(JSON.stringify(t.picks()) === "[2]", "숫자 하나이던 반복 스테이지를 못 읽는다");
+  ok(g.$("relics").html.includes("버그 벌레"), "스테이지가 안 적힌 옛 유물을 1층 이름으로 못 적는다");
   await g.advance(5000);
   g.clean("자동 도전");
 }
@@ -348,9 +362,14 @@ async function deepSave() {
   const {t} = g;
   const [dmg] = t.turnDmg({atk: t.F("atk"), cdmg: t.F("cdmg")}, {dfn: 5}, 5000, t.F("crit"));
   ok(Number.isFinite(dmg) && dmg > 0, "타격이 많을 때 피해가 숫자가 아니다: " + dmg);
+  ok(/4층 회사/.test(g.$("floorTitle").text), "4층 제목이 테마를 안 따른다: " + g.$("floorTitle").text);
+  ok(g.$("stages").kids[0].html.includes(t.slotOf(46).name) && t.slotOf(46).name === "급한 건 모기",
+     "4층 첫 칸이 테마 보스가 아니다");
+  ok(g.$("auto").html.includes(t.slotOf(17).name), "반복 고르기 칸이 2층 테마 이름을 안 쓴다");
   await g.advance(8000);
   g.clean("자동 도전");
   await g.fight(2);
+  ok(g.$("fbn").text === t.slotOf(48).name, "전투 창의 보스 이름이 테마를 안 따른다: " + g.$("fbn").text);
   await g.click(g.$("slotBtn")); await g.advance(1500);
   ok(t.save.slot.n === 10 && /연습판/.test(g.$("slot").html), "하루 몫을 다 쓴 슬롯이 연습판으로 안 돈다");
   g.clean("연습판");

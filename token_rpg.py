@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.11"
+__version__ = "0.15.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -288,12 +288,57 @@ TIERS = [
 # 층마다 같은 순서로 다시 나오고, 능력치는 boss()가 전역 스테이지 번호로 정한다.
 # 세 번째 칸은 그 보스가 떨어뜨리는 유물의 능력치다. 고정이라 "어디를 먼저 깰까"가 선택이 된다.
 # 5종을 3개씩 나누고 층 앞뒤로 흩어 놔, 어떤 빌드를 노리든 초반에 목표가 하나는 있게 한다.
-BOSSES = [("버그 벌레", "🐛", "atk"), ("무한 루프 뱀", "🐍", "crit"), ("널 포인터 박쥐", "🦇", "dfn"),
-          ("레거시 전갈", "🦂", "hp"), ("좀비 프로세스", "🧟", "soul"), ("메모리 누수 슬라임", "🦠", "hp"),
-          ("머지 충돌 도깨비", "👹", "crit"), ("스파게티 크라켄", "🐙", "atk"), ("데드락 골렘", "🗿", "dfn"),
-          ("레이스 컨디션 유령", "👻", "crit"), ("의존성 지옥 악마", "😈", "soul"),
-          ("스택 오버플로 히드라", "🐉", "atk"), ("기술 부채 리치", "💀", "dfn"),
-          ("프로덕션 장애 드래곤", "🐲", "hp"), ("토큰 한도의 군주", "👑", "soul")]
+#
+# 층 테마 (v0.15.0): 층마다 보스 15종의 이름과 이모지가 다르다. 예전엔 2층부터 같은 15종이
+# 능력치만 커져서 다시 나왔다 — 5층이면 같은 보스를 다섯 번째 보는 셈이었다.
+# 바뀌는 것은 이름과 이모지뿐이다. 능력치(boss)·혼 배수·유물 능력치는 칸 번호를 따르므로
+# 밸런스와 저장 형식은 그대로다. 테마가 끝나면 처음으로 돌아가 이름 앞에 '변종'을 붙인다.
+AFFIXES = ["atk", "crit", "dfn", "hp", "soul", "hp", "crit", "atk", "dfn", "crit", "soul", "atk", "dfn", "hp", "soul"]
+THEMES = [
+    ("코드 버그", [
+        ("버그 벌레", "🐛"), ("무한 루프 뱀", "🐍"), ("널 포인터 박쥐", "🦇"), ("레거시 전갈", "🦂"),
+        ("좀비 프로세스", "🧟"), ("메모리 누수 슬라임", "🦠"), ("머지 충돌 도깨비", "👹"),
+        ("스파게티 크라켄", "🐙"), ("데드락 골렘", "🗿"), ("레이스 컨디션 유령", "👻"),
+        ("의존성 지옥 악마", "😈"), ("스택 오버플로 히드라", "🐉"), ("기술 부채 리치", "💀"),
+        ("프로덕션 장애 드래곤", "🐲"), ("토큰 한도의 군주", "👑")]),
+    ("인프라 장애", [
+        ("타임아웃 거미", "🕷️"), ("재시도 폭풍", "🌪️"), ("DNS 망령", "👻"), ("디스크 포화 두꺼비", "🐸"),
+        ("고아 컨테이너", "📦"), ("로그 홍수 해파리", "🪼"), ("인증서 만료 사신", "☠️"),
+        ("OOM 킬러", "🪓"), ("방화벽 석상", "🧱"), ("캐시 미스 도깨비불", "🔥"),
+        ("요금 폭탄 악마", "😈"), ("롤백 실패 켄타우로스", "🐎"), ("네트워크 분단 거인", "🗿"),
+        ("리전 다운 레비아탄", "🐋"), ("온콜의 군주", "👑")]),
+    ("AI", [
+        ("오타 프롬프트 임프", "👺"), ("무한 재생성 앵무새", "🦜"), ("거절 응답 달팽이", "🐌"),
+        ("컨텍스트 오버플로 거인", "🦣"), ("버려진 에이전트", "🤖"), ("과적합 슬라임", "🦠"),
+        ("환각 키메라", "🦄"), ("도구 호출 폭주 문어", "🐙"), ("가드레일 골렘", "🗿"),
+        ("온도 2.0 광대", "🤡"), ("토큰 흡혈귀", "🧛"), ("프롬프트 인젝션 사기꾼", "🎭"),
+        ("레이트 리밋 문지기", "🚧"), ("모델 붕괴 드래곤", "🐲"), ("정렬 실패의 군주", "👑")]),
+    ("회사", [
+        ("급한 건 모기", "🦟"), ("핑퐁 메일 박쥐", "🦇"), ("문서 없음 안개", "🌫️"), ("야근 좀비", "🧟"),
+        ("퇴사자의 코드", "🪦"), ("범위 팽창 슬라임", "🫧"), ("기획 변경 폭풍", "⛈️"),
+        ("긴급 핫픽스 전갈", "🦂"), ("결재선 미궁", "🏛️"), ("금요일 배포 유령", "👻"),
+        ("예산 삭감 악마", "😈"), ("무한 회의 히드라", "🐉"), ("레거시 수호자 리치", "💀"),
+        ("마감 전야 드래곤", "🐲"), ("분기 실적의 군주", "👑")]),
+    ("보안", [
+        ("피싱 낚시꾼", "🎣"), ("무차별 대입 딱따구리", "🐦"), ("평문 비밀번호 쥐", "🐀"),
+        ("패치 안 된 서버", "🏚️"), ("유출된 키", "🗝️"), ("버퍼 넘침 슬라임", "🦠"),
+        ("SQL 주입 뱀", "🐍"), ("XSS 거미", "🕷️"), ("권한 상승 기사", "♞"),
+        ("사이드 채널 유령", "👻"), ("랜섬웨어 악마", "😈"), ("공급망 오염 히드라", "🐉"),
+        ("봇넷 군단", "🐜"), ("제로데이 드래곤", "🐲"), ("루트 권한의 군주", "👑")]),
+]
+# 1층 보스 (이름, 이모지, 유물 능력치). 칸별 혼 배수·유물 능력치의 기준이라 그대로 둔다.
+BOSSES = [(name, emoji, affix) for (name, emoji), affix in zip(THEMES[0][1], AFFIXES)]
+
+
+def slot_of(g):
+    """전역 스테이지 번호 -> 그 칸의 보스(이름·이모지·테마)와 칸 고정값(유물 능력치). JS 의 slotOf() 와 같은 식."""
+    n = len(AFFIXES)
+    i, fl = (g - 1) % n, (g - 1) // n
+    theme, bosses = THEMES[fl % len(THEMES)]
+    lap = fl // len(THEMES)                     # 테마를 몇 바퀴 돌았나
+    pre = "" if lap == 0 else "변종 " if lap == 1 else f"변종{lap} "
+    return {"slot": i + 1, "name": pre + bosses[i][0], "emoji": bosses[i][1],
+            "affix": AFFIXES[i], "theme": pre + theme}
 
 
 # 레벨 곡선 = LV_EXP * x^3/(x+LV_EASE), x = lv-1. 예전 제곱 곡선(LV_EXP 5만)을 저렙 쪽만
@@ -818,7 +863,7 @@ def balance(h, ds):
     print(f"{'g':>3} {'층':>2} {'보스':20} {'HP':>8} {'ATK':>6} {'DEF':>5} {'격파턴':>7} {'생존턴':>7}  판정")
     pts = h["level"] * PT_PER_LEVEL
     for g in range(1, n * 2 + 1):
-        b, d = boss(g), ds[(g - 1) % n]
+        b, d = boss(g), slot_of(g)
         best = min(_splits(pts), key=lambda a: turns_to_win(h, b, a)[0] - turns_to_win(h, b, a)[1])
         kill, die = turns_to_win(h, b, best)
         print(f"{g:>3} {(g-1)//n+1:>2} {d['name'][:20]:20} {b['hp']:>8} {b['atk']:>6} {b['dfn']:>5}"
@@ -840,7 +885,7 @@ def balance(h, ds):
 def game_data(agg, hosts=(), providers=(), models=(), daily=None):
     """게임 화면에 심는 데이터. build() 와 selftest 의 화면 검증이 같은 길로 만든다 —
     따로 만들면 검증이 보는 화면과 실제 화면이 갈라진다."""
-    return {"hero": hero(agg), "dungeons": dungeons(), "hosts": list(hosts),
+    return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
@@ -1046,6 +1091,12 @@ margin-top:10px;padding-top:8px}
 <script>
 const $ = id => document.getElementById(id);   // id 암시적 전역은 window.close 등과 충돌한다
 const D = __DATA__, H = D.hero, G = H.gain, K = D.k, SLOTS = D.dungeons, N = SLOTS.length;
+// 층 테마: 층마다 보스의 이름과 이모지가 다르다. 능력치·혼 배수·유물 능력치는 칸(SLOTS)을 따른다.
+// 테마가 끝나면 처음으로 돌아가 '변종'을 붙인다. 파이썬 slot_of() 와 같은 식이어야 한다.
+const THEMES = D.themes;
+const slotOf = g => { const i = (g-1)%N, fl = Math.floor((g-1)/N), t = THEMES[fl % THEMES.length];
+  const lap = Math.floor(fl / THEMES.length), pre = !lap ? "" : lap === 1 ? "변종 " : `변종${lap} `;
+  return {...SLOTS[i], name: pre + t[1][i][0], emoji: t[1][i][1], theme: pre + t[0]}; };
 // 특성 배율은 스탯마다 다르다 (파이썬 tmul_of). TRAITS 가 로드 시점에 부르므로 여기 있어야 한다 —
 // 아래에 두면 TDZ 로 스크립트 전체가 죽는다. node --check 는 문법만 보므로 이걸 못 잡는다.
 const TM = k => K.tmuls[k] || K.tmul;
@@ -1446,7 +1497,7 @@ function drawAuto(){
     const chips = [];
     for (let g = 1; g <= best; g++)
       chips.push(`<button class="chip${on.has(g) ? " on" : ""}" data-g="${g}"
-        title="${g}. ${SLOTS[(g-1)%N].name}">${SLOTS[(g-1)%N].emoji}${g}</button>`);
+        title="${g}. ${slotOf(g).name}">${slotOf(g).emoji}${g}</button>`);
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
       <button id="pickAll">${ps.length === best && best ? "전체 해제" : "전체 반복"}</button>
       <details id="picksBox" ${picksOpen ? "open" : ""}><summary>${ps.length
@@ -1473,7 +1524,7 @@ function autoStep(){
   // 1) 목표까지 한 칸씩 오른다
   if (next <= tgt && beatable(boss(next)) && autoFailSig !== statSig() + "@" + next) {
     if (quickFight(boss(next))) {
-      winStage(next); autoMsg = `${next}. ${SLOTS[(next-1)%N].name} 격파`; drawAll();
+      winStage(next); autoMsg = `${next}. ${slotOf(next).name} 격파`; drawAll();
     } else {
       autoFailSig = statSig() + "@" + next;
       autoSay(`${next}스테이지 패배 — 능력치가 바뀌면 다시 오른다`);
@@ -1495,7 +1546,7 @@ function autoStep(){
   if (g < 1) return autoSay(`${next}스테이지 앞에서 대기 — 능력치를 올려라`);
   if (quickFight(boss(g))) {
     farmW++;
-    const drop = rollRelic(g, SLOTS[(g-1)%N], false);
+    const drop = rollRelic(g, slotOf(g), false);
     if (drop) { relicNews = drop; put(); drawAll(); }
   } else farmL++;
   autoSay(`${g}스테이지 반복 중${ps.length > 1 ? ` (고른 ${ps.length}곳 순회)` : ""}`
@@ -1504,12 +1555,12 @@ function autoStep(){
 
 function drawStages(){
   const fl = floorNow(), base = (fl - 1) * N;
-  $("floorTitle").textContent = `던전 — ${fl}층 (전역 ${base+1}~${base+N} 스테이지)`;
+  $("floorTitle").textContent = `던전 — ${fl}층 ${slotOf(base+1).theme} (전역 ${base+1}~${base+N} 스테이지)`;
   drawAuto();
   $("stages").innerHTML = "";
   let blocked = null;
-  SLOTS.forEach((slot, i) => {
-    const g = base + i + 1, b = boss(g);
+  SLOTS.forEach((_, i) => {
+    const g = base + i + 1, b = boss(g), slot = slotOf(g);
     const done = save.cleared.includes(g);
     const open = i === 0 || save.cleared.includes(g - 1);
     const el = document.createElement("div");
@@ -1857,7 +1908,7 @@ function rollRelic(g, slot, first){
     // 획득 메시지처럼 보스 이름을 밝힌다 — 능력치가 보스마다 고정이라 어디서 나왔는지가 정보다
     return `${slot.name} — ${RARITY[r][0]} 유물 중복, 혼 ${n(s)}로 바꿨다`;
   }
-  save.relics[k] = {r, a};
+  save.relics[k] = {r, a, g};                     // g = 떨어뜨린 스테이지. 도감이 그 보스 이름을 보여 준다
   return `${RARITY[r][0]} 유물 획득! ${slot.name} — ${AFFIX[a][0]} +${relicVal({r, a})}${AFFIX[a][2]}`;
 }
 function drawRelics(){
@@ -1869,8 +1920,14 @@ function drawRelics(){
     (relicNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${relicNews}</div>` : "") +
     `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 그 보스의 유물이 나온다
      (역대 첫 격파 ${RELIC_FIRST*100}%, 재격파 ${RELIC_AGAIN*100}%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}</div>`;
-  $("relics").innerHTML = SLOTS.map(s => {
-    const r = rs[relicKey(s)];
+  $("relics").innerHTML = SLOTS.map(slot => {
+    const r = rs[relicKey(slot)];
+    // 유물은 칸마다 하나인데 보스 이름은 층마다 다르다. 가진 유물은 떨어뜨린 보스 이름으로,
+    // 없는 칸은 지금 층에서 그 칸을 지키는 보스 이름으로 적는다 — 어디를 깨면 나오는지가 정보다.
+    // 예전 저장의 유물에는 스테이지(g)가 없다 — 1층 이름으로 적는다.
+    const from = relicOk(r) ? (Number.isInteger(r.g) && r.g >= 1 && (r.g - 1) % N === slot.slot - 1 ? r.g : slot.slot)
+                            : (floorNow() - 1) * N + slot.slot;
+    const s = slotOf(from);
     // 긴 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게
     return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
         text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${s.name}</span>${relicOk(r)
@@ -1927,7 +1984,7 @@ const winStage = g => {
   const first = g > (save.best || 0);             // 역대 처음 깬 스테이지
   if (!save.cleared.includes(g)) save.cleared.push(g);
   markBest(g);
-  const drop = rollRelic(g, SLOTS[(g-1)%N], first);
+  const drop = rollRelic(g, slotOf(g), first);
   if (drop) relicNews = drop;
   put();
   return drop;
@@ -1991,7 +2048,7 @@ function end(won, me, foe, g, slot, why){
     say(`<span class="win">승리! ${slot.name} 정복. 혼 ${n(soulOf(g))} 예약.</span>`);
     const drop = winStage(g);
     if (drop) say(`<span class="gold">${drop}</span>`);
-    if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층이 열렸다.</span>`);
+    if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층 ${slotOf(g+1).theme} 이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);
   } else {
     say(`<span class="lose">패배.</span> <span class="dim">${why}</span>`);
@@ -2806,6 +2863,28 @@ def _check_cli_flags():
     assert "build --quiet" in hook_command() or os.name != "nt"
 
 
+def _check_themes():
+    """층 테마: 이름과 이모지만 바뀐다. 칸 수가 어긋나면 어느 층에서 화면이 죽고, 이름이 겹치면
+    유물 도감과 전투 로그에서 어느 층 보스인지 알 수 없다."""
+    n = len(AFFIXES)
+    assert n == 15 and all(AFFIXES.count(a) == 3 for a in set(AFFIXES)), "유물 능력치 5종이 3칸씩이 아니다"
+    names = [b[0] for _, bosses in THEMES for b in bosses]
+    for theme, bosses in THEMES:
+        assert len(bosses) == n, f"테마 '{theme}' 의 보스가 {len(bosses)}종이다 — {n}종이어야 한다"
+        assert all(name.strip() and emoji.strip() for name, emoji in bosses), f"테마 '{theme}' 에 빈 이름·이모지가 있다"
+    assert len(set(names)) == len(names), f"보스 이름이 겹친다: {sorted(x for x in set(names) if names.count(x) > 1)}"
+    assert len({t for t, _ in THEMES}) == len(THEMES), "테마 이름이 겹친다"
+    assert [(b["name"], b["emoji"], b["affix"]) for b in dungeons()] == BOSSES, "1층이 THEMES[0] 과 다르다"
+    # 테마가 바뀌어도 칸 고정값은 그대로다 — 유물 능력치가 층마다 달라지면 저장의 유물 키가 틀어진다
+    for g in range(1, n * (2 * len(THEMES) + 1) + 1):
+        s = slot_of(g)
+        assert s["slot"] == (g - 1) % n + 1 and s["affix"] == AFFIXES[(g - 1) % n], (g, s)
+    assert slot_of(1)["name"] == "버그 벌레" and slot_of(n + 1)["theme"] == THEMES[1][0]
+    lap = n * len(THEMES)
+    assert slot_of(lap + 1)["name"] == "변종 버그 벌레" and slot_of(2 * lap + 1)["name"] == "변종2 버그 벌레"
+    assert set(boss(1)) == {"hp", "atk", "dfn", "spd"}, "보스 능력치에 테마가 섞였다 — 밸런스는 스테이지 번호만 본다"
+
+
 def _check_js():
     """화면 쪽(JS)을 node 로 실제로 돌린다 — tests/game_smoke.js 가 가짜 DOM 위에서 버튼을 눌러 한 바퀴 돈다.
 
@@ -2864,6 +2943,7 @@ def _check_js():
             "levels": [[e, level_of(e)] for e in (0, 5_459, 5_460, 268_800, 2_211_300, 26_000_000,
                                                   TRANS_EXP - 1, TRANS_EXP, TRANS_EXP * 3)],
             "cost": [trait_cost(lv) for lv in range(0, 121)],
+            "slots": [[g, slot_of(g)] for g in list(range(1, 77)) + [90, 150, 151, 165, 226, 300]],
             "soul": [[g, round(soul_base(g) * dungeons()[(g - 1) % len(BOSSES)]["soul"])]
                      for g in list(range(1, 91)) + [120, 150, 200]],
             "hero": {"level": h["level"], "points": h["points"]},
@@ -2900,6 +2980,7 @@ def _demo():
     _check_trans()
     _check_update_app()
     _check_cli_flags()
+    _check_themes()
     _check_js()
     assert level_of(0) == 1 and level_of(exp_for(2)) == 2 and level_of(exp_for(2) - 1) == 1
     assert [level_of(e) for e in (5_460, 268_800, 2_211_300)] == [2, 5, 10]   # 저렙 완만 구간

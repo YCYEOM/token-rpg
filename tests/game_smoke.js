@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  boss, slotOf, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -100,7 +100,8 @@ async function boot(name, {page = "base", served = true, save, rev = 0, local = 
   doc.querySelectorAll = sel => doc.root.querySelectorAll(sel);
   doc.createElement = tag => new El(doc, tag);
 
-  let now = NOON, seq = 0;
+  let now = NOON, seq = 0, rand = rng(seed);
+  const dice = rand;
   const timers = new Map();
   const later = (fn, ms, every) => { timers.set(++seq, {fn, at: now + ms, every}); return seq; };
   const server = {rev, save, puts: 0};
@@ -130,7 +131,7 @@ async function boot(name, {page = "base", served = true, save, rev = 0, local = 
     setInterval: (fn, ms) => later(fn, ms, ms), setTimeout: (fn, ms = 0) => later(fn, ms, 0),
     clearInterval: id => timers.delete(id), clearTimeout: id => timers.delete(id),
     requestAnimationFrame: fn => later(fn, 16, 0),
-    btoa, atob, __now: () => now, __rand: rng(seed),
+    btoa, atob, __now: () => now, __rand: () => rand(),
   };
   vm.createContext(box);
   vm.runInContext(PRELUDE, box);
@@ -141,6 +142,7 @@ async function boot(name, {page = "base", served = true, save, rev = 0, local = 
   const g = {name, doc, server, win, store, t: box.__t, $: id => {
     const e = doc.getElementById(id); ok(e, `[${name}] #${id} 가 화면에 없다`); return e; }};
   g.has = id => !!doc.getElementById(id);
+  g.rand = fn => { rand = fn || dice; };          // 난수를 잠깐 바꿔 끼운다 (황금 개체를 부를 때)
   g.advance = async ms => {                      // 시간을 흘려 그사이 타이머를 차례로 돌린다
     const stop = now + ms;
     for (;;) {
@@ -204,6 +206,7 @@ function parity(g) {
   e.cost.forEach((want, lv) => ok(t.costOf(lv) === want, `특성 ${lv}레벨 비용: 화면 ${t.costOf(lv)} · 파이썬 ${want}`));
   // 혼은 환생·유물·수확 배수가 없는 새 저장에서 잰다
   for (const [n, want] of e.soul) ok(t.soulOf(n) === want, `혼 ${n}스테이지: 화면 ${t.soulOf(n)} · 파이썬 ${want}`);
+  for (const [n, want] of e.side) ok(t.sideSoul(n) === want, `보조 수입 혼 ${n}스테이지: 화면 ${t.sideSoul(n)} · 파이썬 ${want}`);
   ok(t.lvNow() === e.hero.level && t.points() === e.hero.points,
      `레벨·배분: 화면 Lv.${t.lvNow()} ${t.points()}pt · 파이썬 Lv.${e.hero.level} ${e.hero.points}pt`);
   const keep = t.save;
@@ -237,6 +240,28 @@ async function playthrough() {
   ok(/1층 코드 버그/.test(g.$("floorTitle").text), "층 제목에 테마가 없다: " + g.$("floorTitle").text);
   await g.fight(0);
   ok(t.save.cleared.includes(1) && t.save.best === 1, "1스테이지를 이겼는데 기록이 안 남았다");
+
+  // 도감: 이긴 보스는 윗줄에 찍힌다
+  ok(t.save.dex["0:1"] === 1 && /^1\/75 · 황금 0\/75$/.test(g.$("dexCount").text), "이긴 보스가 도감에 안 찍혔다: " + g.$("dexCount").text);
+  // 황금 개체: 난수를 0 으로 눌러 부른다. 이름과 이모지만 다르고, 이기면 아랫줄에 찍히고 혼을 준다
+  g.rand(() => 0);
+  let had = t.save.souls;
+  const pay = t.sideSoul(2) * t.K.rareMul;
+  await g.fight(1);
+  g.rand();
+  ok(g.$("fbn").text === "황금 무한 루프 뱀" && g.$("fb").text.endsWith("✨"), "황금 개체가 이름·이모지를 안 바꿨다: " + g.$("fbn").text);
+  ok(t.save.dex["0:2"] === 2 && t.save.souls === had + pay, `황금 포획이 도감·혼에 안 들어갔다 (${had} + ${pay} -> ${t.save.souls})`);
+  ok(/황금 무한 루프 뱀 포획/.test(g.$("dexNews").html) && /도감 \+0\.5%/.test(g.$("rbBonus").html), "포획 알림이나 혼 배수 표시가 없다");
+  had = t.save.souls;
+  ok(/이미 도감에/.test(t.catchRare(2)) && t.save.souls === had, "이미 잡은 황금이 혼을 또 준다 — 켜 두기만 해도 혼이 쌓인다");
+  // 한 층의 황금 15종을 다 채우면 배분 포인트가 는다
+  const pts = t.points(), keep = t.save.dex;
+  t.save.dex = {...keep, ...Object.fromEntries(Array.from({length: 15}, (_, i) => ["0:" + (i + 1), 2]))};
+  ok(t.points() === pts + t.K.dexPt, "한 층 완성이 배분 포인트를 안 준다");
+  t.drawAll(); g.clean("도감 한 층 완성");
+  ok(/배분 \+4pt/.test(g.$("dex").html), "완성한 층에 보상 표시가 없다");
+  t.save.dex = keep; t.drawAll();
+  ok(t.points() === pts, "도감을 되돌렸는데 포인트가 남았다");
 
   await g.click(g.$("slotBtn"));
   await g.advance(100);                           // 버튼은 첫 틱에 잠긴다
@@ -312,6 +337,7 @@ async function playthrough() {
   const code = g.$("saveBox").value;
   ok(t.validSave(t.decodeSave(code)), "방금 뽑은 저장 코드를 스스로 거부한다");
   ok(t.decodeSave(code.replace(/\.\w+$/, ".zzzz")) === null, "체크섬이 틀린 저장 코드를 받는다");
+  ok(!t.validSave({...t.decodeSave(code), dex: {"0:1": 3}}), "도감에 없는 값(3)이 든 저장을 받는다");
   await g.click(g.$("saveLoad")); await g.click(g.$("saveLoad"));
   ok(/^가져왔다/.test(g.$("saveMsg").text), "저장 코드 가져오기가 안 끝났다: " + g.$("saveMsg").text);
 
@@ -362,6 +388,17 @@ async function deepSave() {
   const {t} = g;
   const [dmg] = t.turnDmg({atk: t.F("atk"), cdmg: t.F("cdmg")}, {dfn: 5}, 5000, t.F("crit"));
   ok(Number.isFinite(dmg) && dmg > 0, "타격이 많을 때 피해가 숫자가 아니다: " + dmg);
+  // 도감이 없던 저장: 이미 깬 스테이지(최고 120)의 보스 75종은 본 것으로 찍는다
+  ok(Object.keys(t.save.dex).length === 75 && /^75\/75 · 황금 0\/75$/.test(g.$("dexCount").text),
+     "옛 저장의 도감을 채우지 않았다: " + g.$("dexCount").text);
+  // 후반 배율은 환생 정산에만 붙는다. 최고 120스테이지면 정산용 혼이 보조 수입용의 천 배가 넘는다 —
+  // 보조 수입이 정산용 혼을 쓰면 원정·미션·슬롯이 환생보다 많이 번다 (v0.14.11 이 그랬다)
+  const side = t.sideSoul(120);
+  ok(t.soulOf(120) > side * 2 && side > Math.pow(120, t.K.soulExp) * 20,
+     "보조 수입용 혼이 환생만큼 못 자랐거나(후반에 죽는다) 정산용만큼 자랐다(환생을 넘어선다)");
+  ok(t.idleRate() > 0 && t.idleRate() <= side / t.K.idleDiv * (1 + t.K.idleTokenMax) * 1.0001, "원정이 보조 수입용 혼을 안 쓴다");
+  ok(t.slotPay(1) === Math.round(side * t.K.slotBudget / (t.K.slotTries * t.K.slotAvg)), "슬롯이 보조 수입용 혼을 안 쓴다");
+  ok(t.missions().every(m => m.souls > 0 && m.souls <= side * t.K.weekBudget * 2), "미션이 보조 수입용 혼을 안 쓴다");
   ok(/4층 회사/.test(g.$("floorTitle").text), "4층 제목이 테마를 안 따른다: " + g.$("floorTitle").text);
   ok(g.$("stages").kids[0].html.includes(t.slotOf(46).name) && t.slotOf(46).name === "급한 건 모기",
      "4층 첫 칸이 테마 보스가 아니다");

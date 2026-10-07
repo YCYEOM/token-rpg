@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.16.0"
+__version__ = "0.17.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -346,6 +346,20 @@ THEMES = [
         ("사이드 채널 유령", "👻"), ("랜섬웨어 악마", "😈"), ("공급망 오염 히드라", "🐉"),
         ("봇넷 군단", "🐜"), ("제로데이 드래곤", "🐲"), ("루트 권한의 군주", "👑")]),
 ]
+# 주간 레이드 (v0.17.0): 탑과 별개로 매주 월요일에 보스 하나가 선다. HP 는 이번 주에 실제로 쓴 토큰으로만
+# 깎인다 — 스탯과 전투는 관계없다. 탑이 막힌 주에도 할 일이 남는다. 25·50·75·100% 를 깎을 때마다 보상을 준다.
+#
+# RAID_BUDGET: 네 단계가 나눠 갖는 한 주 예산(단위는 미션과 같다 — 최고 스테이지 보스 몇 판치, 보조 수입용 혼).
+#   연속 사용 배율(streakMul)은 안 붙인다 — 레이드가 이미 한 주의 사용량을 잰다.
+# RAID_MIN_BEST: 2층 첫 보스를 깨야 열린다. 1층에서는 주간 보조 수입이 이미 상한(환생의 2배)에 닿아 있어
+#   레이드 몫을 얹을 자리가 없다. 16스테이지부터는 상한 안이다 (demo() 가 16스테이지부터 전부 본다).
+# RAID_MIN_HP: 갓 깔았거나 쉬던 주에도 보스가 서도록 두는 HP 하한.
+# 보스 HP 는 지난 4주의 주간 사용량 평균이다 (쓴 주만 센다) — 평소대로 쓰면 주말쯤 잡는다.
+RAID_BUDGET   = 8
+RAID_MIN_BEST = len(AFFIXES) + 1
+RAID_MIN_HP   = 1_000_000
+RAID_BOSSES = [("월요일의 거신", "🗿"), ("분기 마감의 용", "🐲"), ("전사 장애의 크라켄", "🦑"),
+               ("대이동의 골렘", "🏗️"), ("감사 시즌의 스핑크스", "🦁"), ("연말 정산의 불사조", "🦅")]
 # 1층 보스 (이름, 이모지, 유물 능력치). 칸별 혼 배수·유물 능력치의 기준이라 그대로 둔다.
 BOSSES = [(name, emoji, affix) for (name, emoji), affix in zip(THEMES[0][1], AFFIXES)]
 
@@ -938,7 +952,7 @@ def balance(h, ds):
 def game_data(agg, hosts=(), providers=(), models=(), daily=None):
     """게임 화면에 심는 데이터. build() 와 selftest 의 화면 검증이 같은 길로 만든다 —
     따로 만들면 검증이 보는 화면과 실제 화면이 갈라진다."""
-    return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "hosts": list(hosts),
+    return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "raid": RAID_BOSSES, "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
@@ -955,6 +969,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
                   "miniTries": MINI_TRIES, "miniBudget": MINI_BUDGET, "miniBest": MINI_BEST,
                   "miniShots": MINI_SHOTS,
                   "rareRate": RARE_RATE, "rareMul": RARE_MUL, "dexSoul": DEX_SOUL, "dexPt": DEX_PT,
+                  "raidBudget": RAID_BUDGET, "raidMinBest": RAID_MIN_BEST, "raidMinHp": RAID_MIN_HP,
                   "slotTries": SLOT_TRIES, "slotBudget": SLOT_BUDGET, "slotAvg": SLOT_AVG}}
 
 
@@ -1095,6 +1110,11 @@ margin-top:10px;padding-top:8px}
   <div id="missions"></div>
 </details>
 
+<details class="card" data-k="raid" open>
+  <summary><h2>주간 레이드 <span class="gold" id="raidHead"></span></h2></summary>
+  <div id="raid"></div>
+</details>
+
 <details class="card" data-k="mini" open>
   <summary><h2>혼 사냥 <span class="soul" id="miniLeft"></span></h2></summary>
   <div id="mini"></div>
@@ -1190,7 +1210,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+TM("atk")+"/lv"],["hp","혼의 �
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:true, claimed:{}, relics:{}, rbExp:null, farm:0,
-            trans:0, mini:{day:"", n:0}, dex:{}});
+            trans:0, mini:{day:"", n:0}, dex:{}, raid:{wk:"", got:[]}});
 
 // ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
 // EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
@@ -1510,6 +1530,7 @@ const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.allo
       ...Object.values(s.traits), ...Object.values(s.alloc)]
        .every(v => Number.isInteger(v) && v >= 0)
   && Object.values(s.dex || {}).every(v => v === 1 || v === 2)
+  && ((s.raid || {}).got || []).every(v => [0, 1, 2, 3].includes(v))
   && (s.trans ?? 0) * TRANS_EXP <= H.exp                 // 쓴 토큰보다 많이 초월할 수는 없다
   && STATS.reduce((t, [k]) => t + (s.alloc[k] || 0), 0) <= pointsOf(s);
 
@@ -1781,6 +1802,72 @@ function drawMissions(){
   });
 }
 
+// ── 주간 레이드: 탑과 별개로 매주 월요일에 보스 하나가 선다. HP 는 이번 주에 실제로 쓴 토큰으로만 깎인다.
+// 스탯과 전투는 관계없다 — 탑이 막힌 주에도 할 일이 남는다. 진행도는 로그에서 온 값이라 저장을 고쳐도 못 바꾼다.
+// 저장하는 것은 이번 주에 받은 단계뿐이다 (save.raid = {wk: 월요일 날짜, got: [0..3]}).
+const RAID = D.raid;
+const raidDow = () => (new Date().getDay() + 6) % 7;                       // 월요일 = 0
+const raidWk = () => daysBack(raidDow());                                  // 이번 주 월요일 날짜
+const raidIdx = wk => Math.floor(Date.parse(wk + "T00:00:00Z") / 6048e5);  // 주 번호 — 주마다 1 씩 는다
+// k 주 전(0 = 이번 주)의 월~일에 쓴 토큰. 이번 주는 오늘까지다
+const weekSum = k => { let s = 0;
+  for (let i = 0; i < 7; i++) { const back = raidDow() + 7 * k - i; if (back >= 0) s += dayTok(daysBack(back)); }
+  return s; };
+// 보스 HP = 지난 4주의 주간 사용량 평균(쓴 주만). 평소대로 쓰면 주말쯤 잡는다. 이번 주는 넣지 않으니 주중에 안 변한다
+const raidHp = () => { const ws = [1, 2, 3, 4].map(weekSum).filter(Boolean);
+  return Math.max(K.raidMinHp, ws.length ? nice(ws.reduce((a, b) => a + b) / ws.length) : 0); };
+const raidBoss = () => RAID[raidIdx(raidWk()) % RAID.length];
+const raidOpen = () => (save.best || 0) >= K.raidMinBest;
+const raidGot = () => { const r = save.raid || {}; return r.wk === raidWk() && Array.isArray(r.got) ? r.got : []; };
+// 네 단계가 한 주 예산(K.raidBudget)을 똑같이 나눈다. 연속 사용 배율은 없다 — 레이드가 이미 한 주의 사용량을 잰다
+const raidPay = () => Math.round(Math.max(50, sideSoul(Math.max(1, save.best))) * K.raidBudget / 4);
+let raidNews = "";
+function raidClaim(i){
+  const got = raidGot();
+  if (!raidOpen() || got.includes(i) || weekSum(0) < raidHp() * (i + 1) / 4) return;
+  save.raid = {wk: raidWk(), got: [...got, i].sort()};
+  const pay = raidPay();
+  save.souls += pay;
+  raidNews = `${(i + 1) * 25}% 돌파 — 혼 +${n(pay)}`;
+  if (i === 3) {
+    // 격파: 유물을 한 번 굴린다. 탑이 막힌 주에도 유물이 한 번은 굴러간다.
+    // 칸은 주마다 하나씩 돌아가고, 스테이지는 그 칸이 나오는 가장 깊은 곳(역대 최고 안쪽)이다
+    const slot = SLOTS[raidIdx(raidWk()) % N];
+    const g = Math.floor(Math.max(0, save.best - slot.slot) / N) * N + slot.slot;
+    const drop = rollRelic(g, slotOf(g), false, true);
+    if (drop) relicNews = drop;
+    raidNews = `${raidBoss()[0]} 격파 — 혼 +${n(pay)} · ${drop}`;
+  }
+  put(); drawAll();
+}
+function drawRaid(){
+  if (!raidOpen()) {
+    $("raidHead").textContent = "";
+    $("raid").innerHTML = `<div class="dim">${K.raidMinBest}스테이지(2층 첫 보스)를 깨면 레이드가 열린다.</div>`;
+    return;
+  }
+  const [name, emoji] = raidBoss(), hp = raidHp(), dealt = weekSum(0), got = raidGot();
+  const left = Math.max(0, hp - dealt);
+  $("raidHead").textContent = left ? `${Math.floor(100 * dealt / hp)}%` : "격파";
+  $("raid").innerHTML =
+    (raidNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${raidNews}</div>` : "") +
+    `<div class="st" style="border-top:0"><div class="e">${emoji}</div>
+       <div class="n"><b class="nm" title="${name}">${left ? "" : "✓ "}${name}</b>
+       <div class="bar hpb"><i style="width:${100 * left / hp}%"></i></div>
+       <small>남은 HP ${n(left)} / ${n(hp)} · 이번 주 쓴 토큰 ${n(dealt)}</small></div></div>` +
+    [0, 1, 2, 3].map(i => {
+      const need = hp * (i + 1) / 4, done = dealt >= need, had = got.includes(i);
+      return `<div class="st"><div class="n"><b>${had ? "✓ " : ""}${(i + 1) * 25}% ${i === 3 ? "격파" : "돌파"}</b>
+        <small style="display:block">토큰 ${n(need)} · 보상 혼 ${n(raidPay())}${i === 3 ? " · 유물 굴림 1회" : ""}</small></div>
+        <button data-r="${i}" ${done && !had ? "" : "disabled"}>${had ? "받음" : done ? "받기" : "진행 중"}</button></div>`;
+    }).join("") +
+    `<div class="dim" style="font-size:11px;margin-top:6px">매주 월요일에 새 보스가 선다. HP 는 이번 주에 실제로 쓴 토큰으로만
+     깎인다 — 스탯과 전투는 관계없다. HP 는 지난 4주의 주간 사용량 평균이라 평소대로 쓰면 주말쯤 잡는다.
+     한 주가 지나면 남은 HP 와 상관없이 다음 보스로 넘어가고, 안 받은 보상은 사라진다.
+     격파 보상의 유물은 등급만 굴린다 — 같거나 낮은 등급이면 혼이 된다.</div>`;
+  $("raid").querySelectorAll("button[data-r]").forEach(b => b.onclick = () => raidClaim(+b.dataset.r));
+}
+
 // ── 혼 사냥: 하루 K.miniTries 판, 한 판은 K.miniShots 발. 왕복하는 표식을 과녁에서 멈춘다.
 // 게임 안의 행동으로 혼을 버는 유일한 칸이라 예산을 미션과 같은 단위로 묶어 뒀다 —
 // 아무리 잘해도 하루 K.miniBudget x K.miniBest 격파분이 끝이다. 실력은 수입의 상한이 아니라
@@ -1989,8 +2076,8 @@ const RELIC_FIRST = 0.3, RELIC_AGAIN = 0.01;
 // 도감만 두 배로 빨리 차고, 켜 두기만 해서 버는 혼(= 환생 기운 우회)은 그대로다.
 // demo() 가 RELIC_AGAIN / RELIC_DUP 를 붙들고 있다.
 const RELIC_DUP = 20;
-function rollRelic(g, slot, first){
-  if (Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN)) return "";
+function rollRelic(g, slot, first, sure){       // sure = 확률 문을 건너뛴다 (레이드 격파 보상)
+  if (!sure && Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN)) return "";
   let x = Math.random() * 100, r = 0;
   while (r < RARITY.length - 1 && x >= RARITY[r][1]) { x -= RARITY[r][1]; r++; }
   const a = slot.affix;                           // 능력치는 보스가 정한다 — 무작위는 등급뿐
@@ -2100,7 +2187,7 @@ function drawRbBonus(){
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); };
+const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 // DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라
@@ -3052,7 +3139,7 @@ def _check_js():
     day0 = datetime(2026, 1, 15)
     daily = {(day0 - timedelta(days=k)).strftime("%Y-%m-%d"): {"claude-code": 1_500_000, "codex": 500_000}
              for k in range(1, 10)}
-    daily[today] = {"claude-code": 5_000_000, "codex": 1_000_000}
+    daily[today] = {"claude-code": 7_000_000, "codex": 1_000_000}    # 이번 주 합이 지난주와 달라야 레이드 HP 검증이 선다
     agg = {"input": 20_000_000, "output": 6_000_000, "cache_read": 900_000_000,
            "thinking": 1_200_000, "calls": 8_000}
     top = {**agg, "input": 2 * TRANS_EXP + 5_000_000}  # 두 번 초월하고도 남는다
@@ -3362,6 +3449,17 @@ def _demo():
         assert wk_mission < wk_rebirth * 2, (
             f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
             f"— DAY_BUDGET·WEEK_BUDGET 하향 필요")
+    # 3-0) 레이드가 열린 뒤(RAID_MIN_BEST~)에는 레이드 몫까지 얹어도 주간 보조 수입이 상한 안이어야 한다.
+    #       위 검사는 층 끝만 본다. 여기는 스테이지를 하나도 건너뛰지 않는다 — 문턱을 한 칸 잘못 잡으면
+    #       그 칸에서만 상한을 넘는다 (15스테이지에서는 레이드를 얹으면 넘는다).
+    week = (DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7 + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7 + RAID_BUDGET
+    paid = sum(soul_of(g) for g in range(1, RAID_MIN_BEST))
+    for g in range(RAID_MIN_BEST, 12 * n + 1):
+        paid += soul_of(g)
+        assert week * side_of(g) < 14 * paid * 2, \
+            f"{g}스테이지: 레이드까지 얹은 주간 보조 수입이 환생의 2배를 넘는다 — RAID_BUDGET 을 낮추거나 RAID_MIN_BEST 를 올려라"
+    assert len(RAID_BOSSES) >= 4 and len({b[0] for b in RAID_BOSSES}) == len(RAID_BOSSES), "레이드 보스가 모자라거나 겹친다"
+    assert not {b[0] for b in RAID_BOSSES} & {b[0] for _, bs in THEMES for b in bs}, "레이드 보스 이름이 탑 보스와 겹친다"
     _demo_rest(rec)
 
 
@@ -3392,7 +3490,7 @@ BALANCE_HEROES = [
 # 환생 한 번 사이(반나절 — 하루 2회 환생)에 들어오는 보조 수입의 최대치. 단위는 역대 최고 스테이지 보스 한 판의 혼.
 # 원정 12시간 x 최대 배율, 미션 연속 7일(x1.7), 혼 사냥 전부 한가운데, 슬롯 평균.
 SIDE_MAX = (12 * 3600 / IDLE_DIV * (1 + IDLE_TOKEN_MAX) + (DAY_BUDGET / 2 + WEEK_BUDGET / 14) * 1.7
-            + MINI_BUDGET * MINI_BEST / 2 + SLOT_BUDGET / 2)
+            + MINI_BUDGET * MINI_BEST / 2 + SLOT_BUDGET / 2 + RAID_BUDGET / 14)
 
 
 def _full_floors(h, n, side=SIDE_MAX, fights=43_200, rebirths=80):

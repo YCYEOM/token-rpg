@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, weekSum, raidWk, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -238,6 +238,7 @@ async function playthrough() {
   ok(t.left() === 0 && t.save.alloc.spd === 1, "−1 · +1 이 한 점씩 안 옮긴다");
 
   ok(/1층 코드 버그/.test(g.$("floorTitle").text), "층 제목에 테마가 없다: " + g.$("floorTitle").text);
+  ok(/2층 첫 보스/.test(g.$("raid").html) && !g.$("raid").querySelectorAll("button").length, "레이드가 2층 전에 열려 있다");
   await g.fight(0);
   ok(t.save.cleared.includes(1) && t.save.best === 1, "1스테이지를 이겼는데 기록이 안 남았다");
 
@@ -403,6 +404,7 @@ async function deepSave() {
   ok(g.$("stages").kids[0].html.includes(t.slotOf(46).name) && t.slotOf(46).name === "급한 건 모기",
      "4층 첫 칸이 테마 보스가 아니다");
   ok(g.$("auto").html.includes(t.slotOf(17).name), "반복 고르기 칸이 2층 테마 이름을 안 쓴다");
+  await raid(g);
   await g.advance(8000);
   g.clean("자동 도전");
   await g.fight(2);
@@ -410,6 +412,41 @@ async function deepSave() {
   await g.click(g.$("slotBtn")); await g.advance(1500);
   ok(t.save.slot.n === 10 && /연습판/.test(g.$("slot").html), "하루 몫을 다 쓴 슬롯이 연습판으로 안 돈다");
   g.clean("연습판");
+}
+
+// ── 주간 레이드: 이번 주에 쓴 토큰이 보스 HP 를 깎는다. 픽스처는 목요일이고, 지난주(월~토 6일 x 200만)가
+// 유일하게 쓴 주라 HP 가 1,200만이다. 이번 주는 월~수 200만씩 + 오늘 800만 = 1,400만 — 격파다.
+// 이번 주와 지난주의 합이 다르다. 같으면 HP 에 이번 주가 섞여도 값이 같아 못 잡는다.
+async function raid(g) {
+  const {t} = g;
+  ok(t.raidWk() === "2026-01-12" && t.raidHp() === 12e6 && t.weekSum(0) === 14e6 && t.weekSum(1) === 12e6,
+     `레이드 계산이 어긋났다: ${t.raidWk()} HP ${t.raidHp()} 이번 주 ${t.weekSum(0)} 지난주 ${t.weekSum(1)}`);
+  ok(g.$("raidHead").text === "격파", "HP 를 다 깎았는데 격파로 안 뜬다: " + g.$("raidHead").text);
+  const pay = t.raidPay();
+  ok(pay === Math.round(t.sideSoul(120) * t.K.raidBudget / 4), "레이드 보상이 보조 수입용 혼의 예산 1/4 이 아니다");
+  for (let i = 0; i < 4; i++) {
+    const had = t.save.souls;
+    await g.click(g.btn("raid", {r: String(i)}));
+    ok(t.save.raid.got.includes(i) && t.save.souls >= had + pay, `레이드 ${i + 1}단계 보상이 안 들어왔다`);
+    ok(i === 3 || t.save.souls === had + pay, `레이드 ${i + 1}단계가 적힌 것보다 많이 줬다`);
+  }
+  ok(/격파 — 혼/.test(g.$("raid").html) && /유물/.test(g.$("raid").html), "격파 알림에 유물 굴림이 없다");
+  ok(g.$("raid").querySelectorAll("button[data-r]").every(b => b.disabled), "받은 레이드 보상을 또 받을 수 있다");
+  ok(t.save.raid.wk === "2026-01-12" && t.save.raid.got.join() === "0,1,2,3", "받은 단계를 저장하지 않았다");
+  const twice = t.save.souls;
+  t.raidClaim(0); t.raidClaim(3);
+  ok(t.save.souls === twice && t.save.raid.got.length === 4, "받은 레이드 단계를 다시 받을 수 있다");
+  // 주가 바뀌면 다음 보스로 넘어간다 — 지난주에 받은 단계는 이번 주와 무관하다
+  const boss = g.$("raid").kids[1] ? g.$("raid").html : "";
+  g.jump(7 * 86400 * 1000); t.drawAll();
+  ok(t.raidWk() === "2026-01-19" && g.$("raid").querySelectorAll("button[data-r]").every(b => b.dataset.r === "0" || b.disabled),
+     "주가 바뀌었는데 레이드가 안 넘어갔다");
+  ok(g.$("raid").html !== boss && g.$("raidHead").text !== "격파", "새 주의 보스가 이미 잡혀 있다");
+  ok(!/받음/.test(g.$("raid").html) && !/✓/.test(g.$("raid").html), "지난주에 받은 단계가 새 주에도 받은 것으로 뜬다");
+  g.clean("레이드 다음 주");
+  g.jump(-7 * 86400 * 1000); t.drawAll();
+  ok(!t.validSave({...t.save, raid: {wk: "x", got: [7]}}), "레이드에 없는 단계(7)가 든 저장을 받는다");
+  g.clean("레이드");
 }
 
 // ── 초월: Lv.99 에서 레벨만 되돌린다. 식이 파이썬 hero() 와 같아야 메뉴 막대 배지가 안 어긋난다

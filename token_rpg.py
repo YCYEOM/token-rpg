@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.10"
+__version__ = "0.14.11"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -218,7 +218,16 @@ TRAIT_MULS = {"dfn": STEP, "spd": 1.20, "hp": 1.16}
 tmul_of = lambda k: TRAIT_MULS.get(k, TRAIT_MUL)
 COST_MUL   = 1.13    # 특성 1레벨당 비용 증가율
 COST_K     = 80      # 특성 1레벨 기본 비용
-SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP
+SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP (SOUL_LATE_G 까지)
+# 후반 혼 배율: SOUL_LATE_G 를 넘은 스테이지마다 혼이 SOUL_LATE_MUL 배씩 는다 (4층부터).
+# 특성 비용은 스테이지마다 약 x1.3 씩 지수로 오르는데 혼은 번호의 2.4제곱(다항식)이라,
+# 5층부터 층마다 환생이 두 배씩 들었다 — 층당 7 · 16 · 37 · 75회 (하루 2회면 8층에 37일).
+# 혼도 지수로 따라가게 하면 10층까지 층당 5~8회로 고르게 가고 그 뒤로 천천히 느려진다.
+# 1.10 은 잰 값이다: 1.08 이면 10층이 22회로 벽이 일찍 다시 서고, 1.12 부터는 뒤로 갈수록
+# 빨라져 100회 안에 끝없이 오른다(폭주). demo() 가 '느려지지도 폭주하지도 않는다' 를 붙든다.
+# 1~3층(45스테이지까지)은 그대로다 — 거기는 이미 조율해 둔 구간이다.
+SOUL_LATE_G   = 45
+SOUL_LATE_MUL = 1.10
 TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
 # '수확' 1레벨당 혼 획득 +%p. 3 이면 예지를 뺀 만큼(3층 27회)이 원래 속도(23회)로 돌아온다.
 # 더 올리면 층 벽이 무너진다 — 6 에서 19회, 10 에서 17회. simulate() 로 잰 값이다.
@@ -706,6 +715,12 @@ def spd_extra(spd, bspd):
     return max(0.0, spd / max(1, bspd) - 1)
 
 
+def soul_base(g):
+    """g 스테이지 보스가 주는 혼의 기준값 (보스 칸 배수·환생·유물·수확 배수를 곱하기 전).
+    JS 의 soulOf() 와 같은 식이어야 한다."""
+    return g ** SOUL_EXP * SOUL_LATE_MUL ** max(0, g - SOUL_LATE_G)
+
+
 def trait_cost(lv):
     return round(COST_K * COST_MUL ** lv)
 
@@ -782,7 +797,7 @@ def simulate(h, n_slots, rebirths=40, order=None):
     for r in range(rebirths + 1):
         g = reach(h, tr)
         rows.append((r, g, (g - 1) // n_slots + 1, souls, sum(tr.values())))
-        souls += round(sum(round(i ** SOUL_EXP * (1 + REBIRTH_SOUL * r)) for i in range(1, g + 1))
+        souls += round(sum(round(soul_base(i) * (1 + REBIRTH_SOUL * r)) for i in range(1, g + 1))
                        * (1 + TRAIT_SOUL / 100 * tr.get("soul", 0)))
         for _ in range(5000):
             k = next(cyc)
@@ -829,7 +844,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
-                  "soulExp": SOUL_EXP, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
+                  "soulExp": SOUL_EXP, "soulLateG": SOUL_LATE_G, "soulLateMul": SOUL_LATE_MUL, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
                   "tmuls": TRAIT_MULS,
                   "ptPerLevel": PT_PER_LEVEL, "rbExp": REBIRTH_EXP, "rbCap": REBIRTH_CAP,
@@ -1131,7 +1146,9 @@ const boss = g => { let p = Math.pow(K.step, g-1);
   return {
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
   dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9) }; };
-const soulOf = g => Math.round(Math.pow(g, K.soulExp) * SLOTS[(g-1)%N].soul
+// K.soulLateG 를 넘은 스테이지마다 K.soulLateMul 배 — 파이썬 soul_base() 와 같은 식이어야 한다
+const soulOf = g => Math.round(Math.pow(g, K.soulExp) * Math.pow(K.soulLateMul, Math.max(0, g - K.soulLateG))
+                                * SLOTS[(g-1)%N].soul
                                 * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths)
                                 * (1 + K.tsoul/100 * save.traits.soul));
 const costOf = lv => Math.round(K.ck * Math.pow(K.cmul, lv));
@@ -2846,6 +2863,8 @@ def _check_js():
             "levels": [[e, level_of(e)] for e in (0, 5_459, 5_460, 268_800, 2_211_300, 26_000_000,
                                                   TRANS_EXP - 1, TRANS_EXP, TRANS_EXP * 3)],
             "cost": [trait_cost(lv) for lv in range(0, 121)],
+            "soul": [[g, round(soul_base(g) * dungeons()[(g - 1) % len(BOSSES)]["soul"])]
+                     for g in list(range(1, 91)) + [120, 150, 200]],
             "hero": {"level": h["level"], "points": h["points"]},
             "builds": builds,
             "trans": [{"trans": n, "level": hero(top, n)["level"], "points": hero(top, n)["points"]}
@@ -3099,8 +3118,8 @@ def _demo():
                                  f"CRIT {h['crit']} SPD {h['spd']}] {e}") from None
 
     # 3) 원정(방치)은 보조 수입이어야 한다 — 최대 배율 8시간으로도 환생을 대체 못 함
-    soul_of = lambda g: round(g ** SOUL_EXP * ds[(g - 1) % n]["soul"])
-    for last in (n, 2 * n, 3 * n):
+    soul_of = lambda g: round(soul_base(g) * ds[(g - 1) % n]["soul"])
+    for last in (n, 2 * n, 3 * n, 5 * n, 8 * n, 12 * n):      # 후반 혼 배율 구간까지 본다
         idle8 = soul_of(last) / IDLE_DIV * IDLE_CAP_H * 3600 * (1 + IDLE_TOKEN_MAX)
         rebirth = sum(soul_of(g) for g in range(1, last + 1))
         assert idle8 < rebirth * 4, \
@@ -3177,6 +3196,20 @@ def _check_balance(h, ds, strict=True):
     seq = [floors[f] for f in sorted(floors) if f >= base_floor]
     assert seq == sorted(seq), f"깊은 층이 얕은 층보다 먼저 열린다: {floors}"
     assert not strict or rows[-1][1] > base, "환생을 거듭해도 도달 스테이지가 늘지 않는다"
+    # 2-1) 후반 속도: 5층부터 층마다 드는 환생 횟수가 고르게 가야 한다 (SOUL_LATE_MUL).
+    #      혼 배율이 없던 시절엔 층마다 두 배씩 들었다(5층 9회 · 6층 21회 · 7층 52회).
+    #      너무 올리면 반대로 뒤로 갈수록 빨라진다 — 1.12 에서 층당 3회까지 떨어지고 끝없이 오른다.
+    #      지금 값(1.10)에서 엄격한 영웅 셋이 5~9층에 층당 5~10회다. 그 밖으로 나가면 실패한다.
+    if strict:
+        late = {}
+        for r, g, fl, _, _ in simulate(h, n, rebirths=80):
+            late.setdefault(fl, r)
+        assert max(late) >= 9, f"환생 80회에 {max(late)}층 — 후반이 다시 막혔다 (SOUL_LATE_MUL 이 낮다)"
+        for fl in range(5, 10):
+            need = late[fl] - late[fl - 1]
+            assert need <= 12, f"{fl}층에 환생 {need}회가 든다 — 후반이 다시 느려졌다 (SOUL_LATE_MUL 이 낮다)"
+            assert need >= 4, f"{fl}층이 환생 {need}회에 열린다 — 후반이 폭주한다 (SOUL_LATE_MUL 이 높다)"
+
     # 위 회차는 신속을 안 사는 순서(SIM_ORDER)로 잰 값이다. 신속을 섞어도 그 회차가 흔들리지 않아야
     # 표를 믿을 수 있다 — 흔들리면 신속이 섞어 사도 값을 하게 됐다는 뜻이고, 순서를 다시 봐야 한다.
     mixed = {}

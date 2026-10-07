@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  boss, F, expFor, levelOf, lvNow, costOf, pointsOf, beatable, turnDmg, drawAll,
+  boss, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -197,6 +197,8 @@ function parity(g) {
   e.exp.forEach((want, i) => ok(t.expFor(i + 1) === want, `Lv.${i + 1} EXP: 화면 ${t.expFor(i + 1)} · 파이썬 ${want}`));
   for (const [x, want] of e.levels) ok(t.levelOf(x) === want, `EXP ${x}: 화면 Lv.${t.levelOf(x)} · 파이썬 Lv.${want}`);
   e.cost.forEach((want, lv) => ok(t.costOf(lv) === want, `특성 ${lv}레벨 비용: 화면 ${t.costOf(lv)} · 파이썬 ${want}`));
+  // 혼은 환생·유물·수확 배수가 없는 새 저장에서 잰다
+  for (const [n, want] of e.soul) ok(t.soulOf(n) === want, `혼 ${n}스테이지: 화면 ${t.soulOf(n)} · 파이썬 ${want}`);
   ok(t.lvNow() === e.hero.level && t.points() === e.hero.points,
      `레벨·배분: 화면 Lv.${t.lvNow()} ${t.points()}pt · 파이썬 Lv.${e.hero.level} ${e.hero.points}pt`);
   const keep = t.save;

@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.14.9"
+__version__ = "0.14.10"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -176,7 +176,7 @@ def write_save(base, save, snaps=None):
         _dump_sealed(save_path(snaps), new)
         return True, new
 
-# --- 밸런스 조절 손잡이 (python3 build.py --balance 로 확인) ---
+# --- 밸런스 조절 손잡이 (token-rpg balance 로 확인) ---
 # 보스 능력치는 '전역 스테이지 번호'의 지수 곡선이다. 층 경계에서 난이도가
 # 끊기지 않고, 한 층(=고정 보스 15종)을 돌 때마다 STEP^N 배씩 벽이 높아진다.
 STEP = 1.28                              # 스테이지 1칸당 보스 배율
@@ -223,9 +223,9 @@ TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
 # '수확' 1레벨당 혼 획득 +%p. 3 이면 예지를 뺀 만큼(3층 27회)이 원래 속도(23회)로 돌아온다.
 # 더 올리면 층 벽이 무너진다 — 6 에서 19회, 10 에서 17회. simulate() 로 잰 값이다.
 TRAIT_SOUL = 3
-# '신속' 은 TRAIT_SPD_MUL 을 쓴다(위 참고). SPD 가 추가타를 주고부터는 turns_to_win 이
-# 값을 재므로 reach() 도 SPD 배분을 고른다. 그래도 추가타는 피해 두 배가 끝이라
-# 힘의 유산(ATK x9.65 @20lv)을 넘지는 못한다 — 세 번째 화력원이지 주력이 아니다.
+# '신속' 은 TRAIT_MULS["spd"] 를 쓴다(위 참고). SPD 가 타격 수를 늘리고부터는 turns_to_win 이
+# 값을 재므로 reach() 도 SPD 배분을 고른다. 타격 수에 상한은 없다 — 힘의 유산을 넘지 않게
+# 붙드는 것은 배율 1.20 이고, demo() 가 '신속 도달 <= 힘 도달' 을 검사한다.
 # TRAIT_CRIT 은 없앴다 — CRIT 은 상한 100%가 있어 영구 특성으로 두면 되팔 수 없는 함정이 된다.
 # 치명타는 토큰(thinking)·배분 포인트·유물로만 오른다.
 
@@ -751,25 +751,34 @@ def reach(h, tr=None, cap=400):
     """이 특성으로 최적 배분을 했을 때 도달 가능한 최고 전역 스테이지."""
     tr = tr or {}
     pts = h["level"] * PT_PER_LEVEL + tr.get("pt", 0) * TRAIT_PT
+    # 보스는 스테이지마다 단조로 강해진다. 그래서 best+1 을 못 넘는 배분은 best 를 못 늘린다 —
+    # 배분마다 1스테이지부터 다시 오르지 않고 지금 최고 다음 칸만 본다. 값은 같고 14배 빠르다.
+    # 이게 느리면 selftest 가 고정 영웅 여럿으로 밸런스를 볼 수 없다.
     best = 0
     for alloc in _splits(pts):
-        g = 1
-        while g <= cap:
-            kill, die = turns_to_win(h, boss(g), alloc, tr)
+        while best < cap:
+            kill, die = turns_to_win(h, boss(best + 1), alloc, tr)
             if kill >= die:
                 break
-            g += 1
-        best = max(best, g - 1)
+            best += 1
     return best
 
 
-def simulate(h, n_slots, rebirths=40):
-    """환생을 거듭했을 때 몇 회차에 몇 층에 닿는지. 상수 튜닝의 근거."""
+# 환생 시뮬레이션이 특성을 사는 순서. 신속은 없다 — 넣어서 재 봤고(v0.14.10) 층 진입 회차가
+# 사실상 그대로였다. 고정 영웅 여섯과 개발자 영웅에서 한 바퀴에 신속을 한 번 섞으면 어느 층이든
+# 진입이 많아야 1회 밀리거나 당겨지고, 두 번 섞으면 1~4회 늦어진다. 신속은 보스 SPD 의 두 배를
+# 넘기 전까지 아무것도 안 주고, 배율(1.20)이 보스 계단(1.28)보다 낮아 섞어 사는 몫으로는 그 문턱을
+# 못 따라간다 — 몰아 사는 빌드에서만 값을 한다. 그래서 표는 신속 없이 그린다.
+# selftest 가 '신속을 섞어도 층 진입이 2회 넘게 달라지지 않는다' 를 붙든다. 깨지면 이 순서를 다시 본다.
+SIM_ORDER = ["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt", "soul"]
+
+
+def simulate(h, n_slots, rebirths=40, order=None):
+    """환생을 거듭했을 때 몇 회차에 몇 층에 닿는지. 상수 튜닝의 근거.
+    영웅은 그대로 둔다 — 환생에 드는 토큰만큼 자라는 것은 세지 않으므로 실제보다 느리게 나온다."""
     import itertools
     souls, tr, rows = 0, {}, []
-    # 신속은 빼 둔다 — 추가타로 값을 재긴 하지만 상한이 있어 힘·혼·벽보다 뒤에 선다.
-    # 안 사는 쪽이 층 벽 높이로는 안전한 가정이다.
-    cyc = itertools.cycle(["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt", "soul"])
+    cyc = itertools.cycle(order or SIM_ORDER)
     for r in range(rebirths + 1):
         g = reach(h, tr)
         rows.append((r, g, (g - 1) // n_slots + 1, souls, sum(tr.values())))
@@ -812,15 +821,11 @@ def balance(h, ds):
         prev = fl
 
 
-def build(root=None, out=None):    # root 는 테스트용 단일 경로
-    save_snapshot(root)
-    agg, projects, models, hosts = merge()
-    h = hero(agg)
-    data = {"hero": h, "dungeons": dungeons(), "hosts": hosts,
-            "providers": sorted(getattr(merge, "providers", {}).items(),
-                                key=lambda kv: -kv[1]),
-            "models": models.most_common(),
-            "daily": getattr(merge, "daily", {}),
+def game_data(agg, hosts=(), providers=(), models=(), daily=None):
+    """게임 화면에 심는 데이터. build() 와 selftest 의 화면 검증이 같은 길로 만든다 —
+    따로 만들면 검증이 보는 화면과 실제 화면이 갈라진다."""
+    return {"hero": hero(agg), "dungeons": dungeons(), "hosts": list(hosts),
+            "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
@@ -836,8 +841,20 @@ def build(root=None, out=None):    # root 는 테스트용 단일 경로
                   "miniTries": MINI_TRIES, "miniBudget": MINI_BUDGET, "miniBest": MINI_BEST,
                   "miniShots": MINI_SHOTS,
                   "slotTries": SLOT_TRIES, "slotBudget": SLOT_BUDGET, "slotAvg": SLOT_AVG}}
+
+
+def render(data):
+    return TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False))
+
+
+def build(root=None, out=None):    # root 는 테스트용 단일 경로
+    save_snapshot(root)
+    agg, projects, models, hosts = merge()
+    data = game_data(agg, hosts,
+                     sorted(getattr(merge, "providers", {}).items(), key=lambda kv: -kv[1]),
+                     models.most_common(), getattr(merge, "daily", {}))
     out = out or game_path()
-    html = TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False))
+    html = render(data)
     try:                                        # 내용이 같으면 건드리지 않는다 — mtime 이 바뀌면
         with open(out, encoding="utf-8") as f:  # 메뉴 막대 앱이 페이지를 다시 읽어 화면 상태가 날아간다
             if f.read() == html:
@@ -1701,7 +1718,7 @@ function drawMini(){
   if (b) b.onclick = () => miniRun ? miniStop() : miniStart();
 }
 
-// ── 슬롯: 3x3, 가로 셋 + 대각 둘 = 다섯 줄. 하루 K.slotTries 판을 그냥 준다.
+// ── 슬롯: 3x3, 가로 셋 + 세로 셋 + 대각 둘 = 여덟 줄. 하루 K.slotTries 판을 그냥 준다.
 // 혼 사냥이 실력으로 버는 칸이라면 여기는 운으로 버는 칸이다 — 잘 하고 못 하고가 없으니
 // 하루 기대 수입을 K.slotBudget 격파분에 못박고(slotPay 가 평균 배당으로 나눈다) 변동성만 남긴다.
 // 스테이지 클리어마다 한 장씩 주는 안은 접었다 — 원정 자동반복이 1초에 한 판이라 티켓이 무한이 되고,
@@ -1817,7 +1834,7 @@ function rollRelic(g, slot, first){
   save.relics = save.relics || {};
   const k = relicKey(slot), old = save.relics[k];
   if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
-    // 반복 파밍 중복은 1/10 — 켜 두기만 해도 혼이 쏟아져 환생 기운(토큰) 제한을 우회하지 않게
+    // 반복 파밍 중복은 1/RELIC_DUP — 켜 두기만 해도 혼이 쏟아져 환생 기운(토큰) 제한을 우회하지 않게
     const s = first ? soulOf(g) : Math.round(soulOf(g) / RELIC_DUP); save.souls += s;
     // 획득 메시지처럼 보스 이름을 밝힌다 — 능력치가 보스마다 고정이라 어디서 나왔는지가 정보다
     return `${slot.name} — ${RARITY[r][0]} 유물 중복, 혼 ${n(s)}로 바꿨다`;
@@ -1989,7 +2006,7 @@ $("close").onclick = () => $("fight").classList.remove("on");
   }
 })();
 
-// 새 버전 알림. 확인은 서버(파이썬)가 하고 결과를 6시간 재사용한다 — 페이지가 직접 바깥으로 나가지 않는다.
+// 새 버전 알림. 확인은 서버(파이썬)가 하고 결과를 UPDATE_TTL(60초) 동안 재사용한다 — 페이지가 직접 바깥으로 나가지 않는다.
 if (SERVED) fetch("update", {cache: "no-store"}).then(r => r.json()).then(u => {
   if (!u || !u.newer) return;
   // 어느 설치 방식이든 서버가 알아서 올린다 — 앱은 DMG 를 직접 받아 번들을 갈아끼운다.
@@ -2110,7 +2127,7 @@ def uninstall_hook():
 
 REPO = "YCYEOM/token-rpg"
 PKG = "token-rpg"              # PyPI 배포판 이름
-UPDATE_TTL = 60              # 확인 결과를 이만큼만 재사용한다. 0 으로 두면 팝오버를 여닫을 때마다
+UPDATE_TTL = 60              # 초. 확인 결과를 이만큼만 재사용한다. 0 으로 두면 팝오버를 여닫을 때마다
                              # GitHub 을 두드리는데, 인증 없이는 시간당 60번이 상한이다.
 
 
@@ -2380,7 +2397,7 @@ def cmd_toggle(args, on):
 
 
 def cmd_build(args):
-    # 갱신 버튼은 "지금 것으로 맞춰라"는 뜻이다 — 6시간 캐시가 남아 새 릴리스가 안 보이면
+    # 갱신 버튼은 "지금 것으로 맞춰라"는 뜻이다 — 확인 캐시(UPDATE_TTL)가 남아 새 릴리스가 안 보이면
     # 눌러도 아무 일이 없다. 결과는 config 에 떨어져 서버의 GET /update 가 곧바로 읽는다.
     if getattr(args, "check_update", False):
         update_check(force=True)
@@ -2771,6 +2788,79 @@ def _check_cli_flags():
     assert "build --quiet" in hook_command() or os.name != "nt"
 
 
+def _check_js():
+    """화면 쪽(JS)을 node 로 실제로 돌린다 — tests/game_smoke.js 가 가짜 DOM 위에서 버튼을 눌러 한 바퀴 돈다.
+
+    예전 selftest 는 파이썬 식만 계산하고 화면은 문자열이 있는지만 봤다. 그 틈으로 v0.14.4(선언
+    순서, 화면 전체 공백)와 v0.14.5(없는 상수, NaN 레벨)가 나갔다. 여기서 보는 것은 셋이다 —
+    예외가 안 난다, 그린 글자에 NaN 이 없다, 파이썬과 두 벌인 식이 같은 값을 낸다.
+
+    깔린 사본에는 tests/ 가 없으니 조용히 넘어간다. 저장소에서 돌리는데 node 가 없으면
+    알리고 넘어가되, CI 에서는 실패시킨다 — 거기서 빠지면 아무도 모른다."""
+    import shutil, subprocess, tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    harness = os.path.join(here, "tests", "game_smoke.js")
+    if not os.path.exists(harness):
+        return
+    node = shutil.which("node")
+    if not node:
+        assert not os.environ.get("CI"), "node 가 없어 화면 검증을 못 돌린다"
+        print("node 가 없어 화면(JS) 검증을 건너뛴다", file=sys.stderr)
+        return
+
+    today = "2026-01-15"                               # 목요일. 주간 '5일 사용' 은 아직 못 채운 날이다
+    day0 = datetime(2026, 1, 15)
+    daily = {(day0 - timedelta(days=k)).strftime("%Y-%m-%d"): {"claude-code": 1_500_000, "codex": 500_000}
+             for k in range(1, 10)}
+    daily[today] = {"claude-code": 5_000_000, "codex": 1_000_000}
+    agg = {"input": 20_000_000, "output": 6_000_000, "cache_read": 900_000_000,
+           "thinking": 1_200_000, "calls": 8_000}
+    top = {**agg, "input": 2 * TRANS_EXP + 5_000_000}  # 두 번 초월하고도 남는다
+    zero = dict.fromkeys(agg, 0)
+    hosts = [["test-pc", "2026-01-15T00:00:00+00:00", 26_000_000]]
+    provs = [["claude-code", 20_000_000], ["codex", 6_000_000]]
+    page = lambda a, d=None: render(game_data(a, hosts, provs, [], d))
+
+    h = hero(agg)
+    builds = []
+    for alloc, tr in (({}, {}), ({"atk": 40, "crit": 20}, {}),
+                      ({"atk": 20, "hp": 10, "dfn": 10, "spd": 20},
+                       {"atk": 10, "hp": 8, "dfn": 6, "cdmg": 5, "spd": 12}),
+                      ({"crit": 250, "cdmg": 30}, {"cdmg": 20, "atk": 30, "hp": 30, "dfn": 30}),
+                      ({"spd": 60}, {"spd": 40, "hp": 20})):
+        g = 1
+        while g < 400:
+            kill, die = turns_to_win(h, boss(g), alloc, tr)
+            if kill >= die:
+                break
+            g += 1
+        builds.append({"alloc": alloc, "traits": tr, "stats": final_stats(h, alloc, tr), "wall": g})
+    with open(os.path.abspath(__file__), encoding="utf-8") as f:
+        script_line = f.read().split("\n<script>\n")[0].count("\n") + 2
+    fixture = {
+        "today": today, "scriptLine": script_line, "affix": [b[2] for b in BOSSES],
+        "pages": {"base": page(agg, daily), "maxed": page(top), "zero": page(zero)},
+        "expect": {
+            "boss": [[g, boss(g)] for g in list(range(1, 61)) + [100, 150, 250]],
+            "exp": [exp_for(lv) for lv in range(1, MAX_LV + 2)],
+            "levels": [[e, level_of(e)] for e in (0, 5_459, 5_460, 268_800, 2_211_300, 26_000_000,
+                                                  TRANS_EXP - 1, TRANS_EXP, TRANS_EXP * 3)],
+            "cost": [trait_cost(lv) for lv in range(0, 121)],
+            "hero": {"level": h["level"], "points": h["points"]},
+            "builds": builds,
+            "trans": [{"trans": n, "level": hero(top, n)["level"], "points": hero(top, n)["points"]}
+                      for n in range(3)],
+        },
+    }
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "fixture.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(fixture, f, ensure_ascii=False)
+        r = subprocess.run([node, harness, path], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=300)
+    assert r.returncode == 0, "화면(JS) 검증 실패\n" + (r.stderr or r.stdout)
+
+
 def demo():
     """진짜 설치를 건드리지 않게 임시 데이터 폴더에서 돈다 — 봉인 플래그가 사용자 config 로
     새면 다음 실행에서 옛 평문 파일을 못 받는다."""
@@ -2790,6 +2880,7 @@ def _demo():
     _check_trans()
     _check_update_app()
     _check_cli_flags()
+    _check_js()
     assert level_of(0) == 1 and level_of(exp_for(2)) == 2 and level_of(exp_for(2) - 1) == 1
     assert [level_of(e) for e in (5_460, 268_800, 2_211_300)] == [2, 5, 10]   # 저렙 완만 구간
     assert exp_for(MAX_LV) == TRANS_EXP and abs(TRANS_EXP / 480_200_000 - 1) < 0.01, \
@@ -2987,15 +3078,74 @@ def _demo():
         a3, _, _, _, per = collect_all(off)
         assert not a3.get("calls") and per == {}, (dict(a3), per)
 
-    # 밸런스: 환생 설계가 성립하는지 검증한다. 임시 폴더에는 스냅샷이 없어 진짜 폴더 것을 쓴다.
-    agg, projects, _, _ = _demo.real
-    if not projects:
-        print("ok (로컬 데이터 없음 — 밸런스 검증 생략)"); return
-    h, ds = hero(agg), dungeons()
+    # 밸런스: 환생 설계가 성립하는지 검증한다. 고정 영웅 여럿으로 늘 돌리고, 이 PC 에 기록이
+    # 있으면 그 영웅으로도 한 번 더 본다 (임시 폴더에는 스냅샷이 없어 진짜 폴더 것을 쓴다).
+    # 예전엔 이 PC 의 영웅 하나로만 봤다. CI 에는 기록이 없어 통째로 건너뛰었고, 그 뒤에 있던
+    # 검사(확률표·설치 시점·game.html 재작성·윈도우 분기)까지 같이 빠졌다.
+    ds = dungeons()
     n = len(ds)
+    for g in range(1, 3 * n):
+        b0, b1 = boss(g), boss(g + 1)
+        assert all(b0[k] <= b1[k] for k in b0), \
+            f"보스 난이도가 단조 증가하지 않는다 ({g} -> {g + 1}스테이지) — reach() 가 이 성질에 기댄다"
+    agg, projects, _, _ = _demo.real
+    who = ([(name, hero(a), strict) for name, a, strict in BALANCE_HEROES]
+           + ([("이 PC", hero(agg), True)] if projects else []))      # 내 영웅은 예전처럼 엄격하게
+    for name, h, strict in who:
+        try:
+            _check_balance(h, ds, strict)
+        except AssertionError as e:
+            raise AssertionError(f"[{name} · Lv.{h['level']} ATK {h['atk']} HP {h['hp']} DEF {h['dfn']} "
+                                 f"CRIT {h['crit']} SPD {h['spd']}] {e}") from None
 
-    assert [boss(g)["hp"] for g in range(1, 30)] == sorted(boss(g)["hp"] for g in range(1, 30)), \
-        "보스 난이도가 단조 증가하지 않는다 (층 경계 급락)"
+    # 3) 원정(방치)은 보조 수입이어야 한다 — 최대 배율 8시간으로도 환생을 대체 못 함
+    soul_of = lambda g: round(g ** SOUL_EXP * ds[(g - 1) % n]["soul"])
+    for last in (n, 2 * n, 3 * n):
+        idle8 = soul_of(last) / IDLE_DIV * IDLE_CAP_H * 3600 * (1 + IDLE_TOKEN_MAX)
+        rebirth = sum(soul_of(g) for g in range(1, last + 1))
+        assert idle8 < rebirth * 4, \
+            f"{last//n}층 방치 수입 {idle8:.0f}이 환생 {rebirth}의 4배 이상 — IDLE_DIV 상향 필요"
+        # 미션도 보조 수입이어야 한다. 한 주치 미션 vs 한 주치 환생(하루 2회 = 토큰 200만/일).
+        # 1.7 = 연속 7일 최대 배율(streakMul). 미션을 쪼개도 예산이 고정이라 여기가 안 움직인다.
+        # 혼 사냥은 연속 배율(streakMul)을 안 받고, 대신 정확도 최대 MINI_BEST 배까지 간다
+        # 슬롯은 운이라 평균으로 센다 — 지급을 평균 배당으로 나눠 둬서 하루 기대값이 SLOT_BUDGET 이다
+        wk_mission = ((DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7
+                      + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7) * soul_of(last)
+        wk_rebirth = 14 * rebirth
+        assert wk_mission < wk_rebirth * 2, (
+            f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
+            f"— DAY_BUDGET·WEEK_BUDGET 하향 필요")
+    _demo_rest(rec)
+
+
+# 밸런스 검증에 쓰는 고정 영웅. 사용 패턴이 곧 빌드라서 양만이 아니라 모양도 흩어 놨다 —
+# 한 사람의 로그로만 보면 그 사람 빌드에서만 성립하는 균형을 놓친다.
+#
+# 세 번째 칸은 '엄격' 이다. 엄격한 기준(특성은 힘을 넘지 않는다 · 20레벨이면 도달이 는다 ·
+# 다음다음 층은 환생이 두 배 든다)은 개발자 영웅 하나에 맞춰 조율한 값이라, 재 보니 아래 넷에서는
+# 성립하지 않는다. 그 넷은 느슨한 기준(_check_balance 의 strict=False)으로만 본다 —
+# 느슨한 기준은 지금 값을 잰 것이지 목표가 아니다. 더 벌어지면 실패한다.
+#   첫 주      환생만으로는 4스테이지에서 안 움직인다(32회, 특성 20레벨). 파괴 20레벨이 도달 +0
+#   많이 씀    4층이 5회, 3층이 3회 (두 배 미만). 벽 60레벨 31 > 힘 30
+#   초월 직전  4층이 3회, 3층이 2회. 혼 20레벨 25 > 힘 24
+#   캐시만     3층이 11회, 2층이 6회. 벽 20레벨 13 > 힘 12. 파괴 20레벨이 도달 +0.
+#              호출 수가 준 SPD 만으로 무환생 벽이 7 에서 9 로 밀린다 (기준은 한 칸)
+# 고치면(상수를 조율하면) 여기 True 로 바꿔 엄격한 쪽으로 올린다.
+_agg = lambda i, o, c, t, n: {"input": i, "output": o, "cache_read": c, "thinking": t, "calls": n}
+BALANCE_HEROES = [
+    ("첫 주",     _agg(1_500_000, 400_000, 40_000_000, 100_000, 600), False),
+    ("보통",      _agg(20_000_000, 6_000_000, 900_000_000, 1_200_000, 8_000), True),
+    ("많이 씀",   _agg(150_000_000, 40_000_000, 6_000_000_000, 6_000_000, 60_000), False),
+    ("초월 직전", _agg(400_000_000, 80_000_000, 15_000_000_000, 20_000_000, 150_000), False),
+    ("출력만",    _agg(5_000_000, 30_000_000, 0, 0, 2_000), True),
+    ("캐시만",    _agg(30_000_000, 500_000, 20_000_000_000, 0, 90_000), False),
+]
+
+
+def _check_balance(h, ds, strict=True):
+    """영웅 하나에 대해 환생 설계가 성립하는가. 절대 스테이지는 영웅마다 다르니 상대적 성질만 본다.
+    strict 가 아니면 느슨한 기준만 본다 (BALANCE_HEROES 주석 참고)."""
+    n = len(ds)
 
     # 1) 환생 없이는 얕은 곳에서 막혀야 한다.
     #    토큰이 늘면 캐릭터도 강해지므로 정확한 스테이지 수를 못박으면 안 된다
@@ -3021,30 +3171,61 @@ def _demo():
     assert nxt >= 1, f"{base_floor + 1}층을 환생 없이 간다 — 층 벽(STEP)이 너무 낮다"
     deeper = floors.get(base_floor + 2)
     if deeper is not None:
-        assert deeper >= 2 * nxt, \
+        assert deeper > nxt, f"{base_floor+2}층({deeper}회)이 {base_floor+1}층({nxt}회)과 같이 열린다"
+        assert not strict or deeper >= 2 * nxt, \
             f"{base_floor+2}층({deeper}회)이 {base_floor+1}층({nxt}회) 대비 가파르지 않다"
     seq = [floors[f] for f in sorted(floors) if f >= base_floor]
     assert seq == sorted(seq), f"깊은 층이 얕은 층보다 먼저 열린다: {floors}"
-    assert rows[-1][1] > base, "환생을 거듭해도 도달 스테이지가 늘지 않는다"
+    assert not strict or rows[-1][1] > base, "환생을 거듭해도 도달 스테이지가 늘지 않는다"
+    # 위 회차는 신속을 안 사는 순서(SIM_ORDER)로 잰 값이다. 신속을 섞어도 그 회차가 흔들리지 않아야
+    # 표를 믿을 수 있다 — 흔들리면 신속이 섞어 사도 값을 하게 됐다는 뜻이고, 순서를 다시 봐야 한다.
+    mixed = {}
+    for r, g, fl, _, _ in simulate(h, n, rebirths=32, order=SIM_ORDER + ["spd"]):
+        mixed.setdefault(fl, r)
+    for fl in set(floors) | set(mixed):
+        a, b = floors.get(fl, 33), mixed.get(fl, 33)        # 33 = 32회 안에 못 닿았다
+        assert abs(a - b) <= 2, \
+            f"신속을 섞어 사면 {fl}층 진입이 {a}회에서 {b}회로 바뀐다 — 환생 표(SIM_ORDER)가 낡았다"
 
-    # 3) 원정(방치)은 보조 수입이어야 한다 — 최대 배율 8시간으로도 환생을 대체 못 함
-    soul_of = lambda g: round(g ** SOUL_EXP * ds[(g - 1) % n]["soul"])
-    for last in (n, 2 * n, 3 * n):
-        idle8 = soul_of(last) / IDLE_DIV * IDLE_CAP_H * 3600 * (1 + IDLE_TOKEN_MAX)
-        rebirth = sum(soul_of(g) for g in range(1, last + 1))
-        assert idle8 < rebirth * 4, \
-            f"{last//n}층 방치 수입 {idle8:.0f}이 환생 {rebirth}의 4배 이상 — IDLE_DIV 상향 필요"
-        # 미션도 보조 수입이어야 한다. 한 주치 미션 vs 한 주치 환생(하루 2회 = 토큰 200만/일).
-        # 1.7 = 연속 7일 최대 배율(streakMul). 미션을 쪼개도 예산이 고정이라 여기가 안 움직인다.
-        # 혼 사냥은 연속 배율(streakMul)을 안 받고, 대신 정확도 최대 MINI_BEST 배까지 간다
-        # 슬롯은 운이라 평균으로 센다 — 지급을 평균 배당으로 나눠 둬서 하루 기대값이 SLOT_BUDGET 이다
-        wk_mission = ((DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7
-                      + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7) * soul_of(last)
-        wk_rebirth = 14 * rebirth
-        assert wk_mission < wk_rebirth * 2, (
-            f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
-            f"— DAY_BUDGET·WEEK_BUDGET 하향 필요")
+    # 3-2) 파괴의 유산이 혼을 깊이로 바꾸는가. 가산이던 시절엔 어떤 레벨을 사도 도달이
+    #      그대로여서, 사면 손해인 특성이었다. 절대 스테이지는 사용자마다 다르니
+    #      (a) 사면 더 깊이 간다 (b) 힘의 유산과 같은 줄에 선다 두 가지만 본다.
+    # 다섯 특성 전부 '사면 더 깊이 가고, 힘의 유산과 세 칸 안에 서되 넘지는 않는다'.
+    # 예전엔 파괴에만 이 기준을 뒀고, 그사이 벽은 60레벨을 사도 도달이 15 에서 멈춰 있었다.
+    # 느슨한 기준(strict 가 아닐 때): 60레벨이면 도달이 늘고, 힘을 넘더라도 한 칸까지다.
+    base_r = base
+    atk20, atk60 = reach(h, {"atk": 20}), reach(h, {"atk": 60})
+    assert atk20 > base_r, f"힘의 유산 20레벨이 도달을 못 늘린다 ({base_r} -> {atk20})"
+    slack = 0 if strict else 1
+    for k, ko in (("hp", "혼"), ("dfn", "벽"), ("cdmg", "파괴"), ("spd", "신속")):
+        near, far = reach(h, {k: 20}), reach(h, {k: 60})
+        assert (near if strict else far) > base_r, \
+            f"{ko}의 유산 {20 if strict else 60}레벨이 도달을 못 늘린다 ({base_r} -> {near if strict else far})" \
+            f" — 혼을 버리는 특성이다"
+        assert near >= atk20 - 3, \
+            f"{ko}({near})가 힘({atk20})보다 세 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
+        assert near <= atk20 + slack and far <= atk60 + slack, \
+            f"{ko}({near}/{far})가 힘({atk20}/{atk60})을 넘어섰다 — 그 빌드만 정답이 된다"
 
+    _sx = spd_extra
+    try:
+        globals()["spd_extra"] = lambda spd, bspd: 0.0
+        flat = reach(h)                                             # 추가타가 없던 시절의 깊이
+    finally:
+        globals()["spd_extra"] = _sx
+    assert base <= flat + 1 + slack, \
+        f"추가타가 벽을 {flat} -> {base} 스테이지로 밀었다 — 환생 없이 너무 깊이 간다"
+    # 신속의 유산은 사면 더 깊이 가야 하지만 힘의 유산을 넘어서는 안 된다 (파괴의 유산과 같은 기준).
+    # 타격 수에 상한이 없으니 TRAIT_MULS["spd"] 를 올리면 넘길 수 있다 — 그래서 여기서 붙든다.
+    spd20 = reach(h, {"spd": 20})
+    assert spd20 > flat, f"신속의 유산 20레벨이 도달을 못 늘린다 ({flat} -> {spd20}) — 혼을 버리는 특성이다"
+    assert spd20 <= atk20 + slack, f"신속({spd20})이 힘({atk20})을 넘어섰다 — 속도 빌드만 정답이 된다"
+
+
+def _demo_rest(rec):
+    """영웅과 무관한 나머지 검사. 예전엔 밸런스 검증 뒤에 붙어 있어서, 이 PC 에 기록이 없으면
+    (= CI) 같이 건너뛰었다."""
+    import tempfile
     # 3-1) 유물 등급표는 합이 100% 여야 한다 — 어긋나면 마지막 등급이 나머지를 통째로 먹는다
     import re
     odds = [float(x) for x in re.findall(r'"[^"]+", ([\d.]+),', 
@@ -3069,22 +3250,6 @@ def _demo():
     assert again / dup <= 0.005 / 10 + 1e-12, \
         f"재격파 파밍 혼 수입이 늘었다 ({again}/{dup}) — RELIC_DUP 를 같이 올려라"
 
-    # 3-2) 파괴의 유산이 혼을 깊이로 바꾸는가. 가산이던 시절엔 어떤 레벨을 사도 도달이
-    #      그대로여서, 사면 손해인 특성이었다. 절대 스테이지는 사용자마다 다르니
-    #      (a) 사면 더 깊이 간다 (b) 힘의 유산과 같은 줄에 선다 두 가지만 본다.
-    # 다섯 특성 전부 '사면 더 깊이 가고, 힘의 유산과 세 칸 안에 서되 넘지는 않는다'.
-    # 예전엔 파괴에만 이 기준을 뒀고, 그사이 벽은 60레벨을 사도 도달이 15 에서 멈춰 있었다.
-    base_r = reach(h)
-    atk20, cdmg20 = reach(h, {"atk": 20}), reach(h, {"cdmg": 20})
-    for k, ko in (("hp", "혼"), ("dfn", "벽"), ("cdmg", "파괴"), ("spd", "신속")):
-        near, far = reach(h, {k: 20}), reach(h, {k: 60})
-        assert near > base_r, \
-            f"{ko}의 유산 20레벨이 도달을 못 늘린다 ({base_r} -> {near}) — 혼을 버리는 특성이다"
-        assert near >= atk20 - 3, \
-            f"{ko}({near})가 힘({atk20})보다 세 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
-        assert near <= atk20 and far <= reach(h, {"atk": 60}), \
-            f"{ko}({near}/{far})가 힘을 넘어섰다 — 그 빌드만 정답이 된다"
-
     # 3-3) 속도: 보스보다 빠른 만큼 추가타가 붙는다. 예전엔 선공만 정해서, 보스 SPD 를
     #      넘긴 1점부터 값이 0 이었다 — 아무도 SPD 에 배분하지 않았다.
     #      (a) 식의 경계 (b) 평균 피해 모델이 실제로 본다 (c) 그래도 층 벽을 밀지 않는다.
@@ -3101,19 +3266,6 @@ def _demo():
     quick = {"hp": 100, "atk": 10, "dfn": 0, "spd": 10}             # 내가 두 배 빠르다
     assert turns_to_win(hh, quick)[0] < turns_to_win(hh, {**quick, "spd": 10 ** 9})[0], \
         "추가타가 평균 피해 모델에 안 들어갔다 — reach() 와 자동 도전이 SPD 를 0 으로 본다"
-    _sx = spd_extra
-    try:
-        globals()["spd_extra"] = lambda spd, bspd: 0.0
-        flat = reach(h)                                             # 추가타가 없던 시절의 깊이
-    finally:
-        globals()["spd_extra"] = _sx
-    assert base <= flat + 1, \
-        f"추가타가 벽을 {flat} -> {base} 스테이지로 밀었다 — 환생 없이 너무 깊이 간다"
-    # 신속의 유산은 사면 더 깊이 가야 하지만 힘의 유산을 넘어서는 안 된다 (파괴의 유산과 같은 기준).
-    # 추가타는 피해 두 배가 끝이라 구조적으로 못 넘지만, TRAIT_SPD_MUL 을 올리다 넘길 수 있다.
-    spd20 = reach(h, {"spd": 20})
-    assert spd20 > flat, f"신속의 유산 20레벨이 도달을 못 늘린다 ({flat} -> {spd20}) — 혼을 버리는 특성이다"
-    assert spd20 <= atk20, f"신속({spd20})이 힘({atk20})을 넘어섰다 — 속도 빌드만 정답이 된다"
     for tag in ("hitsOf", "K.tmuls", "p * p / (p + d.dfn)"):
         assert tag in TEMPLATE, f"게임 쪽이 {tag} 를 안 읽는다 — 화면과 모델이 어긋난다"
     # 로드 시점에 불리는 헬퍼는 선언이 먼저 와야 한다. 뒤에 있으면 TDZ 로 스크립트가 통째로

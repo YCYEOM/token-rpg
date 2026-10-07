@@ -17,8 +17,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      # 집계·병합 로직과 난이도/환생 곡선을 검증한다.
-      # CI에는 Claude Code 기록이 없으므로 밸런스 검증은 자동으로 생략된다.
+      # selftest 가 게임 화면(JS)을 node 로 실제로 돌린다 (tests/game_smoke.js).
+      # CI 에서 node 가 없으면 selftest 가 실패한다 — 조용히 건너뛰지 않는다.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # 집계·병합 로직과 난이도/환생 곡선, 게임 화면을 검증한다.
+      # CI에는 Claude Code 기록이 없다. 밸런스는 고정 영웅(BALANCE_HEROES)으로 본다.
       - run: python token_rpg.py selftest
       # 트레이는 윈도우 전용이지만 순수 로직(툴팁·단위)은 어디서나 검증한다
       - run: python token_rpg_tray.py --selftest

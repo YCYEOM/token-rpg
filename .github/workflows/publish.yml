@@ -15,6 +15,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+      - uses: actions/setup-node@v4     # selftest 가 게임 화면(JS)을 node 로 돌린다
+        with:
+          node-version: "20"
       - name: 자체 검증
         run: python token_rpg.py selftest
       - name: 빌드

@@ -3377,7 +3377,9 @@ def _demo_rest(rec):
     finally:
         os.name = real_name
         os.environ.clear(); os.environ.update(env)
-    assert "/dev/null" in hook_command()      # 원래 플랫폼 분기로 되돌아왔다
+    # 원래 플랫폼 분기로 되돌아왔다. 진짜 윈도우에서는 되돌아온 곳도 윈도우 분기다 —
+    # 이 검사는 예전에 CI 에서 한 번도 돌지 않아(밸런스 검증 뒤라 같이 빠졌다) 그걸 몰랐다.
+    assert ("/dev/null" in hook_command()) == (os.name != "nt"), hook_command()
 
     print("ok")
 

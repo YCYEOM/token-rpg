@@ -9,9 +9,22 @@ jobs:
   selftest:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false        # 한 칸이 실패해도 나머지를 끝까지 본다 — 어느 OS 문제인지 알아야 한다
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.13"]
+        # ubuntu-latest 는 2026-10-19 부터 Ubuntu 26.04 로 넘어간다. setup-python 에는 26.04 용
+        # Python 3.9 빌드가 없다(3.10 부터 있다) — 그대로 두면 이 칸이 설치 단계에서 실패한다.
+        # 3.9 는 지원 하한이라 계속 봐야 하므로 24.04 에 묶어 둔다.
+        # 26.04 칸은 넘어가기 전에 미리 보려고 둔다. ubuntu-latest 가 26.04 가 되면 지워도 된다.
+        exclude:
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python: "3.9"
+          - os: ubuntu-26.04
+            python: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

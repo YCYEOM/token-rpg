@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -266,6 +266,26 @@ MINI_SHOTS = 5       # 한 판에 쏘는 횟수. 발마다 표식이 빨라진�
 SLOT_TRIES, SLOT_BUDGET, SLOT_AVG = 10, 1, 2.42
 # 하루 몫을 다 쓴 뒤에도 돌리는 것 자체는 막지 않는다(연습판). 혼만 안 들어간다 —
 # 못 누르게 막아 두면 하루 열 판이 끝인 칸이 되고, 돌리는 재미가 예산과 묶일 이유는 없다.
+
+# 희귀 개체와 보스 도감 (v0.16.0): 싸울 때마다 RARE_RATE 확률로 그 보스의 '황금' 개체가 대신 나온다.
+# 능력치는 같다. 잡으면 도감에 찍히고, 처음 잡을 때만 그 스테이지 혼의 RARE_MUL 배를 준다.
+#
+# 확률이 0.1% 인 이유: 자동 반복은 1초에 한 판이다. 계획 초안의 2% 면 50초에 한 번이라 한 층의
+# 15종이 십여 분에 다 찬다 — 희귀가 아니다. 0.1% 면 켜 둔 채 17분에 한 번이다. 한 층 15종은
+# 한 칸씩 골라 가며 잡으면 네 시간쯤, 15칸을 한꺼번에 돌리면 열네 시간쯤 든다.
+# 다시 잡은 황금은 혼을 주지 않는다. 주면 켜 두기만 해도 혼이 쌓여 환생 기운(토큰) 제한을 돈다 —
+# 유물 중복 환산(RELIC_AGAIN / RELIC_DUP)을 묶어 둔 것과 같은 이유다. 혼 보상은 칸마다 한 번이다.
+#
+# 배수가 1 인 이유: 처음엔 계획 초안대로 5 를 넣었다. 재 보니 처음 한 번만 줘도 5층·6층이 환생
+# 2~3회에 열렸다(기준은 4~12회). 한 층에 황금이 15칸이라 환생 한 번 사이에 환생 다섯 번치 혼이
+# 들어왔다. 1 이면 5~9층이 층당 5~7회로 기준 안이고, 환생 사이에 들어오는 황금 혼이 환생 한 번치를
+# 넘지 않는다. demo() 의 _check_dex_pace 가 '하루 종일 켜 두고 값이 큰 칸부터 잡는' 경우로 붙든다.
+RARE_RATE = 0.001
+RARE_MUL  = 1
+# 도감 보너스(영구): 황금 한 칸마다 얻는 혼 +DEX_SOUL %, 한 층의 황금 15종을 다 채우면 배분 +DEX_PT pt.
+# 다 모으면 혼 +37.5% · 배분 +20pt. 수확 12레벨, 각성 5레벨어치다 — 혼이 아니라 시간으로 사는 성장이다.
+DEX_SOUL = 0.5
+DEX_PT   = 4
 
 # 원정(방치 수입): 클리어한 가장 깊은 스테이지를 자동 반복해 혼을 캔다.
 # 초당 수확 = soulOf(최고 클리어) / IDLE_DIV. 8시간이면 환생 1회분 언저리 =
@@ -767,6 +787,39 @@ def soul_base(g):
     return g ** SOUL_EXP * SOUL_LATE_MUL ** max(0, g - SOUL_LATE_G)
 
 
+_SIDE = ([0.0], [0.0])       # 환생 정산 혼의 누적합(배율 포함) · 배율 없는 혼의 누적합
+
+
+def side_scale(g):
+    """g 스테이지까지 깼을 때 환생 한 번이 버는 혼이 후반 배율 덕에 몇 배가 됐는가. SOUL_LATE_G 까지는 1 이다."""
+    late, flat = _SIDE
+    if len(late) <= g:
+        ds = dungeons()
+        for i in range(len(late), g + 1):
+            m = ds[(i - 1) % len(ds)]["soul"]
+            late.append(late[-1] + soul_base(i) * m)
+            flat.append(flat[-1] + i ** SOUL_EXP * m)
+    return late[g] / flat[g]
+
+
+def side_base(g):
+    """보조 수입(원정·미션·혼 사냥·슬롯·유물 중복·황금 개체)이 쓰는 혼의 기준값.
+    JS 의 sideSoul() 과 같은 식이어야 한다.
+
+    보조 수입은 '최고 스테이지 보스 몇 판치' 로 정해져 있다(원정 하루 26판치, 미션 13판치…).
+    그 한 판의 값을 무엇으로 잡느냐가 후반을 가른다. 세 가지를 재 봤다 (v0.16.0, 들어오는 혼을 전부 넣은 모델).
+
+      후반 배율을 그대로 붙인다 (v0.14.11)  환생이 버는 혼은 1스테이지부터의 합이라, 배율이 붙으면 최고 스테이지
+                                           22판치에서 8판치로 줄어든다. 보조 수입은 판수가 그대로라 환생의
+                                           0.48배에서 1.4~2.0배가 됐고 5~9층이 층당 3~4회에 열렸다.
+      배율을 안 붙인다                     속도는 맞지만 보조 수입이 죽는다 — 6층에서 환생의 10%, 8층부터 1% 아래.
+      환생이 커진 만큼만 키운다 (이 식)     side_scale 이 그 배수다. 보조 수입이 환생 대비 예전 비율을 그대로 지킨다 —
+                                           깊은 층에서도 환생 사이 수입의 20~40% 로 남는다.
+
+    놀 거리가 후반에 버려지면 안 된다는 것이 기준이다. 대신 6~9층이 층당 3~5회로 조금 빨라진다."""
+    return g ** SOUL_EXP * side_scale(g)
+
+
 def trait_cost(lv):
     return round(COST_K * COST_MUL ** lv)
 
@@ -901,6 +954,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX,
                   "miniTries": MINI_TRIES, "miniBudget": MINI_BUDGET, "miniBest": MINI_BEST,
                   "miniShots": MINI_SHOTS,
+                  "rareRate": RARE_RATE, "rareMul": RARE_MUL, "dexSoul": DEX_SOUL, "dexPt": DEX_PT,
                   "slotTries": SLOT_TRIES, "slotBudget": SLOT_BUDGET, "slotAvg": SLOT_AVG}}
 
 
@@ -996,6 +1050,10 @@ padding:18px;background:#161b22}
 @keyframes thud{0%{transform:scaleY(2.2);filter:brightness(3)}60%{transform:scaleY(1);filter:brightness(1.6)}}
 .miss{animation:miss .35s ease-out}
 @keyframes miss{0%,60%{opacity:.25}30%{opacity:1}}
+.dex{display:grid;grid-template-columns:repeat(15,1fr);gap:2px;margin-top:2px}
+.dx{text-align:center;font-size:14px;line-height:22px;height:24px;border:1px solid var(--line);border-radius:4px;
+background:#0d1117;overflow:hidden}.dx.no{color:var(--dim);font-size:11px;opacity:.45}
+.dx.r{border-color:var(--gold);box-shadow:inset 0 0 7px #ffd16666}
 .reels{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:2px 0 10px}
 .reels .cell{height:64px;display:flex;align-items:center;justify-content:center;font-size:34px;
 border:1px solid var(--line);border-radius:8px;background:#0d1117}
@@ -1062,6 +1120,9 @@ margin-top:10px;padding-top:8px}
 <details class="card" data-k="relics" open><summary><h2>유물 도감 <span class="gold" id="relicCount"></span></h2></summary>
   <div id="relicNews"></div><div id="relicOdds"></div><div id="relics"></div></details>
 
+<details class="card" data-k="dex" open><summary><h2>보스 도감 <span class="gold" id="dexCount"></span></h2></summary>
+  <div id="dexNews"></div><div id="dex"></div></details>
+
 <details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
   <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
   <div id="stages"></div><div id="wall"></div></details>
@@ -1096,7 +1157,17 @@ const D = __DATA__, H = D.hero, G = H.gain, K = D.k, SLOTS = D.dungeons, N = SLO
 const THEMES = D.themes;
 const slotOf = g => { const i = (g-1)%N, fl = Math.floor((g-1)/N), t = THEMES[fl % THEMES.length];
   const lap = Math.floor(fl / THEMES.length), pre = !lap ? "" : lap === 1 ? "변종 " : `변종${lap} `;
-  return {...SLOTS[i], name: pre + t[1][i][0], emoji: t[1][i][1], theme: pre + t[0]}; };
+  return {...SLOTS[i], name: pre + t[1][i][0], emoji: t[1][i][1], theme: pre + t[0], ti: fl % THEMES.length}; };
+// ── 보스 도감: 칸 = "테마번호:칸번호", 값 1 = 이겨 봤다 · 2 = 황금 개체를 잡았다.
+// 변종(테마 두 바퀴째)은 같은 칸을 쓴다 — 도감은 보스 75종이 끝이다.
+const dexKey = g => { const s = slotOf(g); return s.ti + ":" + s.slot; };
+const dexOf = s => (s && s.dex && typeof s.dex === "object") ? s.dex : {};
+const dexRare = (s, ti) => SLOTS.filter(x => dexOf(s)[ti + ":" + x.slot] === 2).length;
+const dexRareAll = s => Object.values(dexOf(s)).filter(v => v === 2).length;
+const dexSoul = () => K.dexSoul * dexRareAll(save);                       // 얻는 혼 +%
+const dexPts = s => THEMES.filter((_, ti) => dexRare(s, ti) === N).length * K.dexPt;
+const rollRare = () => Math.random() < K.rareRate;
+const rareOf = slot => ({...slot, name: "황금 " + slot.name, emoji: slot.emoji + "✨"});
 // 특성 배율은 스탯마다 다르다 (파이썬 tmul_of). TRAITS 가 로드 시점에 부르므로 여기 있어야 한다 —
 // 아래에 두면 TDZ 로 스크립트 전체가 죽는다. node --check 는 문법만 보므로 이걸 못 잡는다.
 const TM = k => K.tmuls[k] || K.tmul;
@@ -1119,7 +1190,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+TM("atk")+"/lv"],["hp","혼의 �
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:true, claimed:{}, relics:{}, rbExp:null, farm:0,
-            trans:0, mini:{day:"", n:0}});
+            trans:0, mini:{day:"", n:0}, dex:{}});
 
 // ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
 // EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
@@ -1138,7 +1209,7 @@ const lvNow   = () => levelOf(expNow());
 const canTrans = () => lvNow() >= K.maxLv;
 // 레벨이 준 배분 포인트 — 초월로 되돌린 몫은 적립분으로 남는다
 const pointsOf = s => (transOf(s) * K.maxLv + levelOf(Math.max(0, H.exp - transOf(s) * TRANS_EXP)))
-                      * K.ptPerLevel + (s.traits.pt|0) * K.tpt;
+                      * K.ptPerLevel + (s.traits.pt|0) * K.tpt + dexPts(s);
 let save = fresh();
 // 저장: token-rpg 서버(http)로 열면 서버의 파일 하나를 브라우저·메뉴 막대 앱·다른 기기가 같이 쓴다.
 // file:// 로 열면(서버 없음) 예전처럼 이 브라우저의 localStorage 에 둔다.
@@ -1149,6 +1220,10 @@ const adopt = d => { rev = d.rev; save = Object.assign(fresh(), d.save || {}); f
 // 옛 저장에는 새로 생긴 스탯 칸(cdmg 등)이 없다 — 비어 있으면 계산이 전부 NaN 이 된다
 function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; save.traits = {...f.traits, ...save.traits};
                  delete save.bless; delete save.blessOffer;     // 없어진 축복 칸은 저장에서 치운다
+  // 도감이 없던 저장: 이미 깬 스테이지의 보스는 본 것으로 찍어 준다 (황금은 지금부터 잡는다)
+  save.dex = {...dexOf(save)};
+  const seen = Math.min(Math.max(save.best || 0, ...(save.cleared || [])), N * THEMES.length);
+  for (let g = 1; g <= seen; g++) if (!save.dex[dexKey(g)]) save.dex[dexKey(g)] = 1;
   // 예전 유물(프로바이더|프로젝트 키)은 빈 고정 보스 칸에 차례로 옮긴다 — 모은 유물을 잃지 않게
   const rs = save.relics || {};
   for (const k of Object.keys(rs).filter(k => k.includes("|"))) {
@@ -1199,10 +1274,22 @@ const boss = g => { let p = Math.pow(K.step, g-1);
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
   dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9) }; };
 // K.soulLateG 를 넘은 스테이지마다 K.soulLateMul 배 — 파이썬 soul_base() 와 같은 식이어야 한다
-const soulOf = g => Math.round(Math.pow(g, K.soulExp) * Math.pow(K.soulLateMul, Math.max(0, g - K.soulLateG))
+const lateMul = g => Math.pow(K.soulLateMul, Math.max(0, g - K.soulLateG));
+// 환생 한 번이 버는 혼이 후반 배율 덕에 몇 배가 됐는가 (K.soulLateG 까지는 1). 파이썬 side_scale() 과 같은 식.
+const sideScale = (() => { const late = [0], flat = [0];
+  return g => { for (let i = late.length; i <= g; i++) { const m = SLOTS[(i-1)%N].soul, p = Math.pow(i, K.soulExp);
+                  late.push(late[i-1] + p * lateMul(i) * m); flat.push(flat[i-1] + p * m); }
+                return late[g] / flat[g]; }; })();
+const soulRaw = (g, late) => Math.round(Math.pow(g, K.soulExp) * (late ? lateMul(g) : sideScale(g))
                                 * SLOTS[(g-1)%N].soul
                                 * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths)
-                                * (1 + K.tsoul/100 * save.traits.soul));
+                                * (1 + K.tsoul/100 * save.traits.soul) * (1 + dexSoul()/100));
+// 환생할 때 정산되는 혼. 후반 배율은 여기에만 붙는다.
+const soulOf = g => soulRaw(g, true);
+// 보조 수입(원정·미션·혼 사냥·슬롯·유물 중복·황금 개체)이 쓰는 혼. 파이썬 side_base().
+// 후반 배율을 그대로 붙이면(v0.14.11) 보조 수입이 환생보다 많이 벌고, 안 붙이면 깊은 층에서 죽는다.
+// 환생이 커진 만큼만(sideScale) 키운다 — 깊은 층에서도 환생 대비 예전 비율로 남는다.
+const sideSoul = g => soulRaw(g, false);
 const costOf = lv => Math.round(K.ck * Math.pow(K.cmul, lv));
 // 환생 기운 = 마지막 환생 이후 새로 쓴 토큰 / K.rbExp. 상한(K.rbCap회분)을 넘은 몫은 버린다
 const rbBase = () => Math.max(save.rbExp ?? H.exp, H.exp - K.rbCap * K.rbExp);
@@ -1234,7 +1321,7 @@ const tokenMul = () => 1 + Math.min(K.idleTokenMax,
   Math.max(0, H.exp - save.exped.seenExp) / K.idleTokenDiv);
 const idleRate = () => {                      // 초당 혼
   const g = save.best;          // 역대 최고 — 환생해도 원정은 여기서 계속 캔다
-  return g ? soulOf(g) / K.idleDiv * tokenMul() : 0;
+  return g ? sideSoul(g) / K.idleDiv * tokenMul() : 0;
 };
 const idleSecs = () => Math.min(CAP_S, Math.max(0, (Date.now() - save.exped.since) / 1000));
 const pending  = () => idleRate() * idleSecs();
@@ -1422,6 +1509,7 @@ const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.allo
   && [s.souls, s.rebirths, s.best, s.trans ?? 0, (s.mini || {}).n || 0, ...s.cleared,
       ...Object.values(s.traits), ...Object.values(s.alloc)]
        .every(v => Number.isInteger(v) && v >= 0)
+  && Object.values(s.dex || {}).every(v => v === 1 || v === 2)
   && (s.trans ?? 0) * TRANS_EXP <= H.exp                 // 쓴 토큰보다 많이 초월할 수는 없다
   && STATS.reduce((t, [k]) => t + (s.alloc[k] || 0), 0) <= pointsOf(s);
 
@@ -1523,8 +1611,11 @@ function autoStep(){
   const top = maxCleared(), next = top + 1;
   // 1) 목표까지 한 칸씩 오른다
   if (next <= tgt && beatable(boss(next)) && autoFailSig !== statSig() + "@" + next) {
+    const rare = rollRare();
     if (quickFight(boss(next))) {
-      winStage(next); autoMsg = `${next}. ${slotOf(next).name} 격파`; drawAll();
+      winStage(next); autoMsg = `${next}. ${slotOf(next).name} 격파`;
+      if (rare) { dexNews = catchRare(next); put(); }
+      drawAll();
     } else {
       autoFailSig = statSig() + "@" + next;
       autoSay(`${next}스테이지 패배 — 능력치가 바뀌면 다시 오른다`);
@@ -1544,10 +1635,13 @@ function autoStep(){
     while (g > 1 && !beatable(boss(g))) g--;
   }
   if (g < 1) return autoSay(`${next}스테이지 앞에서 대기 — 능력치를 올려라`);
+  const rare = rollRare();                       // 황금 개체 — 이겨야 잡는다
   if (quickFight(boss(g))) {
     farmW++;
     const drop = rollRelic(g, slotOf(g), false);
-    if (drop) { relicNews = drop; put(); drawAll(); }
+    if (drop) relicNews = drop;
+    if (rare) dexNews = catchRare(g);
+    if (drop || rare) { put(); drawAll(); }
   } else farmL++;
   autoSay(`${g}스테이지 반복 중${ps.length > 1 ? ` (고른 ${ps.length}곳 순회)` : ""}`
     + ` · 승 ${farmW} 패 ${farmL}${next <= tgt ? ` · ${next}스테이지는 아직 무리` : ""}`);
@@ -1634,7 +1728,7 @@ function missions(){
   const today = daysBack(0), dow = (new Date().getDay() + 6) % 7;          // 월요일 = 0
   const week = Array.from({length: dow + 1}, (_, i) => daysBack(dow - i)), wk = daysBack(dow);
   const weekTok = week.reduce((s, d) => s + dayTok(d), 0);
-  const reward = m => Math.round(Math.max(50, soulOf(Math.max(1, save.best))) * m * streakMul());
+  const reward = m => Math.round(Math.max(50, sideSoul(Math.max(1, save.best))) * m * streakMul());
   const tools = Object.keys((D.daily || {})[today] || {}).length;
   // 예산을 가중치로 나눠 갖는다 — 미션을 늘려도 하루 수입 총합은 K.dayBudget 그대로다
   const share = (budget, list) => {
@@ -1724,7 +1818,7 @@ function miniStop(){
   if (!miniRun || miniHold) return;
   const at = miniPos(), acc = miniAcc(Math.abs(at - miniZone));
   // 혼은 발마다 바로 들어온다 — 스테이지 격파와 달리 환생 정산을 기다리지 않는다
-  const pay = Math.round(soulOf(Math.max(1, save.best))
+  const pay = Math.round(sideSoul(Math.max(1, save.best))
                          * K.miniBudget / (K.miniTries * K.miniShots) * acc);
   save.souls += pay; miniEarned += pay;
   // 멈춘 자리를 그대로 남겨 둔다 — 과녁과 얼마나 어긋났는지 눈으로 봐야 다음 발이 는다
@@ -1756,7 +1850,7 @@ function drawMini(){
     $("mini").innerHTML = '<div class="dim">스테이지를 하나 클리어하면 사냥터가 열린다.</div>';
     return;
   }
-  const full = Math.round(soulOf(save.best) * K.miniBudget / K.miniTries * K.miniBest);
+  const full = Math.round(sideSoul(save.best) * K.miniBudget / K.miniTries * K.miniBest);
   const m = miniMark;
   // 멈춘 표식: 한가운데 금색 · 명중 초록 · 빗나감 빨강. 흐르는 표식은 늘 금색 실선
   const mc = !m ? "" : m.acc >= K.miniBest ? "var(--gold)" : m.acc ? "var(--xp)" : "var(--hp)";
@@ -1813,7 +1907,7 @@ const slotLit = (c, r) => slotWin.some(L => L.some(x => x[0] === c && x[1] === r
 const slotDay = () => { const t = save.slot || {}; return t.day === daysBack(0) ? t : {day: daysBack(0), n: 0}; };
 const slotLeft = () => Math.max(0, K.slotTries - (slotDay().n | 0));
 // 한 판 지급 = 하루 예산 / (판수 x 평균 배당) x 이번 배당. 운이 나빠도 좋아도 하루 기대값은 그대로다
-const slotPay = mul => Math.round(soulOf(Math.max(1, save.best)) * K.slotBudget
+const slotPay = mul => Math.round(sideSoul(Math.max(1, save.best)) * K.slotBudget
                                   / (K.slotTries * K.slotAvg) * mul);
 
 function slotScore(){
@@ -1904,7 +1998,7 @@ function rollRelic(g, slot, first){
   const k = relicKey(slot), old = save.relics[k];
   if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
     // 반복 파밍 중복은 1/RELIC_DUP — 켜 두기만 해도 혼이 쏟아져 환생 기운(토큰) 제한을 우회하지 않게
-    const s = first ? soulOf(g) : Math.round(soulOf(g) / RELIC_DUP); save.souls += s;
+    const s = first ? sideSoul(g) : Math.round(sideSoul(g) / RELIC_DUP); save.souls += s;
     // 획득 메시지처럼 보스 이름을 밝힌다 — 능력치가 보스마다 고정이라 어디서 나왔는지가 정보다
     return `${slot.name} — ${RARITY[r][0]} 유물 중복, 혼 ${n(s)}로 바꿨다`;
   }
@@ -1954,6 +2048,43 @@ function drawRelics(){
       보스마다 유물은 하나 — 더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.</div></details>`;
 }
 
+// ── 황금 개체를 잡았다. 처음이면 도감에 찍고 혼을 준다. 이미 잡은 칸은 혼을 주지 않는다 —
+// 자동 반복이 1초에 한 판이라, 주면 켜 두기만 해도 혼이 쌓여 환생 기운(토큰) 제한을 돈다.
+let dexNews = "", fightRare = false;
+function catchRare(g){
+  const k = dexKey(g), s = rareOf(slotOf(g));
+  if (dexOf(save)[k] === 2) return `${s.emoji} ${s.name} — 이미 도감에 있다`;
+  const pay = sideSoul(g) * K.rareMul;           // 찍기 전 배수로 센다 — 자기 보너스를 자기가 받지 않는다
+  save.dex = {...dexOf(save), [k]: 2};
+  save.souls += pay;
+  return `${s.emoji} ${s.name} 포획! 도감에 올렸다 — 혼 +${n(pay)} · 얻는 혼 +${K.dexSoul}%`
+    + (dexRare(save, slotOf(g).ti) === N ? ` · ${THEMES[slotOf(g).ti][0]} 황금 ${N}종 완성, 배분 +${K.dexPt}pt` : "");
+}
+function drawDex(){
+  const d = dexOf(save), all = N * THEMES.length;
+  const seen = Object.values(d).filter(v => v === 1 || v === 2).length, rare = dexRareAll(save);
+  $("dexCount").textContent = `${seen}/${all} · 황금 ${rare}/${all}`;
+  $("dexNews").innerHTML = dexNews
+    ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${dexNews}</div>` : "";
+  $("dex").innerHTML = THEMES.map((t, ti) => {
+    const got = dexRare(save, ti);
+    // 윗줄 = 이겨 본 보스, 아랫줄 = 잡은 황금 개체. 못 본 칸은 물음표로 가린다
+    const line = want => SLOTS.map(s => {
+      const has = (d[ti + ":" + s.slot] || 0) >= want, b = t[1][s.slot - 1];
+      return `<span class="dx${has ? (want === 2 ? " r" : "") : " no"}" title="${
+        has ? (want === 2 ? "황금 " : "") + b[0] : "아직 못 봤다"}">${has ? b[1] : "?"}</span>`;
+    }).join("");
+    return `<div class="row" style="margin-top:10px;font-size:12px"><span>${ti + 1}층 ${t[0]}</span>
+        <span class="${got === N ? "gold" : "dim"}">황금 ${got}/${N}${got === N ? ` · 배분 +${K.dexPt}pt` : ""}</span></div>
+      <div class="dex">${line(1)}</div><div class="dex">${line(2)}</div>`;
+  }).join("") + `<div class="dim" style="font-size:11px;margin-top:10px">
+    보스를 처음 이기면 윗줄에 찍힌다. 싸울 때마다 ${+(K.rareRate * 100).toFixed(2)}% 확률로 <span class="gold">황금 개체</span>가
+    대신 나온다 — 능력치는 같다. 이기면 아랫줄에 찍히고, 처음 잡을 때 그 스테이지 혼의 ${K.rareMul}배를 준다.
+    황금 한 칸마다 얻는 혼 +${K.dexSoul}% (지금 +${+dexSoul().toFixed(1)}%),
+    한 층의 황금 ${N}종을 다 채우면 배분 +${K.dexPt}pt (지금 +${dexPts(save)}pt). 환생해도 남는다.
+    이미 잡은 황금은 다시 잡아도 혼을 주지 않는다 — 켜 두기만 해서 혼이 쌓이지 않게.</div>`;
+}
+
 // ── 환생 보너스: 환생할 때마다 얻는 혼(환생·원정·미션·유물 중복)이 K.rbSoul 씩 영구히 는다
 function drawRbBonus(){
   // 혼 배수는 셋(환생·유물·수확)이 곱해진다. 따로 두면 산 특성이 얼마나 일하는지 볼 데가 없다.
@@ -1963,12 +2094,13 @@ function drawRbBonus(){
   add("환생", K.rbSoul * save.rebirths * 100);
   add("유물", relicSum("soul"));
   add("수확", K.tsoul * save.traits.soul);
+  add("도감", dexSoul());
   $("rbBonus").innerHTML = parts.length
     ? `<span class="dim">얻는 혼</span> <span class="soul">x${mul.toFixed(2)}</span>
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); };
+const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 // DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라
@@ -1984,6 +2116,7 @@ const winStage = g => {
   const first = g > (save.best || 0);             // 역대 처음 깬 스테이지
   if (!save.cleared.includes(g)) save.cleared.push(g);
   markBest(g);
+  if (!dexOf(save)[dexKey(g)]) save.dex = {...dexOf(save), [dexKey(g)]: 1};     // 도감 윗줄
   const drop = rollRelic(g, slotOf(g), first);
   if (drop) relicNews = drop;
   put();
@@ -2007,6 +2140,8 @@ function quickFight(b){
 let timer = null;
 function fightStart(g, slot, b){
   clearInterval(timer);
+  fightRare = rollRare();                        // 황금 개체가 대신 나왔다 — 이름과 이모지만 다르다
+  if (fightRare) slot = rareOf(slot);
   const [me, foe] = newFighters(b);
   $("fh").textContent = tierOf(lvNow())[1]; $("fb").textContent = slot.emoji; $("fbn").textContent = slot.name;
   $("log").innerHTML = ""; $("close").disabled = true; $("close").textContent = "전투 중…";
@@ -2014,6 +2149,7 @@ function fightStart(g, slot, b){
   let turn = 0, myTurn = spdNow() >= b.spd;
   say(`${slot.emoji} ${g}스테이지 — ${slot.name} 등장!`
       + (xtra(b) ? ` <span class="dim">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""));
+  if (fightRare) say(`<span class="gold">황금 개체다 — 이기면 도감에 오른다.</span>`);
   paint(me, foe);
   timer = setInterval(() => {
     if (++turn > 200) return end(false, me, foe, g, slot, "소모전 — 화력이 부족하다");
@@ -2048,6 +2184,7 @@ function end(won, me, foe, g, slot, why){
     say(`<span class="win">승리! ${slot.name} 정복. 혼 ${n(soulOf(g))} 예약.</span>`);
     const drop = winStage(g);
     if (drop) say(`<span class="gold">${drop}</span>`);
+    if (fightRare) { dexNews = catchRare(g); put(); say(`<span class="gold">${dexNews}</span>`); }
     if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층 ${slotOf(g+1).theme} 이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);
   } else {
@@ -2882,6 +3019,12 @@ def _check_themes():
     assert slot_of(1)["name"] == "버그 벌레" and slot_of(n + 1)["theme"] == THEMES[1][0]
     lap = n * len(THEMES)
     assert slot_of(lap + 1)["name"] == "변종 버그 벌레" and slot_of(2 * lap + 1)["name"] == "변종2 버그 벌레"
+    # 도감: 다시 잡은 황금이 혼을 주면 켜 두기만 해도 혼이 쌓인다 (유물 중복을 묶어 둔 것과 같은 이유).
+    # 화면 검증이 '두 번째 포획은 혼 0' 을 실제로 돌려 본다. 여기서는 숫자의 테두리만 본다.
+    assert 0 < RARE_RATE <= 0.002, f"황금 확률 {RARE_RATE} — 자동 반복이 1초에 한 판이라 0.2% 를 넘으면 한 층이 두 시간 안에 찬다"
+    assert DEX_SOUL * n * len(THEMES) <= 50, "도감을 다 채운 혼 보너스가 +50% 를 넘는다 — 수확 특성을 밀어낸다"
+    assert DEX_PT <= TRAIT_PT, "한 층 완성 보상이 각성 1레벨보다 크다"
+    assert RARE_MUL <= 1, "황금 한 마리가 보스 한 판보다 많이 준다 — 한 층 15칸이라 환생 사이 수입이 환생을 넘는다"
     assert set(boss(1)) == {"hp", "atk", "dfn", "spd"}, "보스 능력치에 테마가 섞였다 — 밸런스는 스테이지 번호만 본다"
 
 
@@ -2944,6 +3087,8 @@ def _check_js():
                                                   TRANS_EXP - 1, TRANS_EXP, TRANS_EXP * 3)],
             "cost": [trait_cost(lv) for lv in range(0, 121)],
             "slots": [[g, slot_of(g)] for g in list(range(1, 77)) + [90, 150, 151, 165, 226, 300]],
+            "side": [[g, round(side_base(g) * dungeons()[(g - 1) % len(BOSSES)]["soul"])]
+                     for g in list(range(1, 91)) + [120, 150, 200]],
             "soul": [[g, round(soul_base(g) * dungeons()[(g - 1) % len(BOSSES)]["soul"])]
                      for g in list(range(1, 91)) + [120, 150, 200]],
             "hero": {"level": h["level"], "points": h["points"]},
@@ -3200,9 +3345,10 @@ def _demo():
                                  f"CRIT {h['crit']} SPD {h['spd']}] {e}") from None
 
     # 3) 원정(방치)은 보조 수입이어야 한다 — 최대 배율 8시간으로도 환생을 대체 못 함
-    soul_of = lambda g: round(soul_base(g) * ds[(g - 1) % n]["soul"])
+    soul_of = lambda g: round(soul_base(g) * ds[(g - 1) % n]["soul"])      # 환생 정산
+    side_of = lambda g: round(side_base(g) * ds[(g - 1) % n]["soul"])      # 보조 수입 (후반 배율 없음)
     for last in (n, 2 * n, 3 * n, 5 * n, 8 * n, 12 * n):      # 후반 혼 배율 구간까지 본다
-        idle8 = soul_of(last) / IDLE_DIV * IDLE_CAP_H * 3600 * (1 + IDLE_TOKEN_MAX)
+        idle8 = side_of(last) / IDLE_DIV * IDLE_CAP_H * 3600 * (1 + IDLE_TOKEN_MAX)
         rebirth = sum(soul_of(g) for g in range(1, last + 1))
         assert idle8 < rebirth * 4, \
             f"{last//n}층 방치 수입 {idle8:.0f}이 환생 {rebirth}의 4배 이상 — IDLE_DIV 상향 필요"
@@ -3211,7 +3357,7 @@ def _demo():
         # 혼 사냥은 연속 배율(streakMul)을 안 받고, 대신 정확도 최대 MINI_BEST 배까지 간다
         # 슬롯은 운이라 평균으로 센다 — 지급을 평균 배당으로 나눠 둬서 하루 기대값이 SLOT_BUDGET 이다
         wk_mission = ((DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7
-                      + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7) * soul_of(last)
+                      + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7) * side_of(last)
         wk_rebirth = 14 * rebirth
         assert wk_mission < wk_rebirth * 2, (
             f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
@@ -3241,6 +3387,81 @@ BALANCE_HEROES = [
     ("출력만",    _agg(5_000_000, 30_000_000, 0, 0, 2_000), True),
     ("캐시만",    _agg(30_000_000, 500_000, 20_000_000_000, 0, 90_000), False),
 ]
+
+
+# 환생 한 번 사이(반나절 — 하루 2회 환생)에 들어오는 보조 수입의 최대치. 단위는 역대 최고 스테이지 보스 한 판의 혼.
+# 원정 12시간 x 최대 배율, 미션 연속 7일(x1.7), 혼 사냥 전부 한가운데, 슬롯 평균.
+SIDE_MAX = (12 * 3600 / IDLE_DIV * (1 + IDLE_TOKEN_MAX) + (DAY_BUDGET / 2 + WEEK_BUDGET / 14) * 1.7
+            + MINI_BUDGET * MINI_BEST / 2 + SLOT_BUDGET / 2)
+
+
+def _full_floors(h, n, side=SIDE_MAX, fights=43_200, rebirths=80):
+    """들어오는 혼을 전부 넣은 속도 모델 -> (층 진입 회차, 층마다 보조 수입 / 환생 수입의 최댓값).
+
+    simulate() 는 환생 혼만 센다. v0.14.11 의 후반 배율을 그 모델로만 봤다가, 보조 수입이 환생을
+    넘어서는 것을 놓쳤다. 여기서는 환생 + 보조 수입(side) + 황금 개체를 다 넣는다.
+    보조 수입과 황금 개체는 가장 유리한 쪽으로 잡는다 — 수입은 최대치, 황금은 하루 종일 켜 두고
+    혼이 큰 칸부터 한 칸씩(평균 1/RARE_RATE 판) 잡으며 늘 이긴다.
+    화면(JS)의 soulOf · sideSoul · catchRare · dexSoul · dexPts 와 같은 규칙이어야 한다."""
+    import itertools
+    ds, nt = dungeons(), len(THEMES)
+    soul = lambda s: soul_base(s) * ds[(s - 1) % n]["soul"]          # 환생 정산
+    sside = lambda s: side_base(s) * ds[(s - 1) % n]["soul"]         # 보조 수입
+    souls, tr, caught, floors, best, share = 0.0, {}, set(), {}, 0, {}
+    cyc = itertools.cycle(SIM_ORDER)
+    for r in range(rebirths + 1):
+        done = sum(all((t, s) in caught for s in range(1, n + 1)) for t in range(nt))
+        # 한 층 완성 보상(DEX_PT)은 각성과 같은 배분 포인트다 — reach 에는 포인트로 넣는다
+        g = reach(h, {**tr, "pt": tr.get("pt", 0) + done * DEX_PT / TRAIT_PT})
+        best = max(best, g)
+        floors.setdefault((g - 1) // n + 1, r)
+        mult = ((1 + REBIRTH_SOUL * r) * (1 + TRAIT_SOUL / 100 * tr.get("soul", 0))
+                * (1 + DEX_SOUL / 100 * len(caught)))
+        reb = sum(soul(i) for i in range(1, g + 1)) * mult
+        extra = side * sside(best) * mult
+        cand = []
+        for t in range(nt):
+            for s in range(1, n + 1):
+                base = t * n + s
+                if (t, s) not in caught and base <= g:
+                    deep = base + (g - base) // (n * nt) * (n * nt)     # 같은 칸의 가장 깊은 스테이지에서 잡는다
+                    cand.append((sside(deep), t, s))
+        for val, t, s in sorted(cand, reverse=True)[:int(fights * RARE_RATE)]:
+            extra += val * RARE_MUL * mult
+            caught.add((t, s))
+        souls += reb + extra
+        fl = (g - 1) // n + 1
+        share[fl] = max(share.get(fl, 0), extra / reb)
+        for _ in range(5000):
+            k = next(cyc)
+            c = trait_cost(tr.get(k, 0))
+            if c > souls:
+                break
+            souls -= c
+            tr[k] = tr.get(k, 0) + 1
+    return floors, share
+
+
+def _check_full_pace(h, n):
+    """들어오는 혼을 전부 넣어도 속도와 수입 구조가 무너지지 않는다 (가장 유리한 플레이어 기준).
+
+    보조 수입은 최대치, 황금 개체는 하루 종일 켜 두고 몰아 잡는 경우다. 환생 혼만 세는 위 검사보다
+    당연히 빠르다 — 그래서 바닥을 4회가 아니라 3회로 둔다. 지금 값에서 엄격한 영웅 셋의 6~9층은
+    층당 3~5회다(출력만 쓰는 영웅의 6·7층이 3회로 바닥)."""
+    fl, share = _full_floors(h, n)
+    assert max(fl) >= 10, f"전부 넣은 모델이 환생 80회에 {max(fl)}층이다"
+    for f in range(6, 10):
+        need = fl[f] - fl[f - 1]
+        assert 3 <= need <= 12, \
+            f"보조 수입과 황금 개체를 다 챙기면 {f}층이 환생 {need}회에 열린다 — 보조 수입이 과하다"
+    # 깊은 층(7~10층)에서 보조 수입은 환생보다 작되 죽지 않아야 한다.
+    #   1 을 넘으면 환생이 주 수입이 아니다 — v0.14.11 은 후반 배율을 그대로 붙여 2.0 까지 갔다.
+    #   0.3 아래면 놀 거리가 버려진다 — 배율을 아예 안 붙이면 7층에서 0.02 였다.
+    # 1~6층은 원래 보조 수입이 환생과 맞먹거나 더 크다(초반 디딤돌) — 여기서 보지 않는다.
+    for f in range(7, 11):
+        assert share[f] < 1, f"{f}층에서 환생 사이의 보조 수입이 환생 수입의 {share[f]:.2f}배다 — 환생이 주 수입이 아니다"
+        assert share[f] >= 0.3, \
+            f"{f}층에서 보조 수입을 다 챙겨도 환생의 {share[f]:.0%}다 — 원정·미션·혼 사냥·슬롯이 후반에 버려진다"
 
 
 def _check_balance(h, ds, strict=True):
@@ -3291,6 +3512,8 @@ def _check_balance(h, ds, strict=True):
             need = late[fl] - late[fl - 1]
             assert need <= 12, f"{fl}층에 환생 {need}회가 든다 — 후반이 다시 느려졌다 (SOUL_LATE_MUL 이 낮다)"
             assert need >= 4, f"{fl}층이 환생 {need}회에 열린다 — 후반이 폭주한다 (SOUL_LATE_MUL 이 높다)"
+
+        _check_full_pace(h, n)
 
     # 위 회차는 신속을 안 사는 순서(SIM_ORDER)로 잰 값이다. 신속을 섞어도 그 회차가 흔들리지 않아야
     # 표를 믿을 수 있다 — 흔들리면 신속이 섞어 사도 값을 하게 됐다는 뜻이고, 순서를 다시 봐야 한다.
@@ -3381,6 +3604,20 @@ def _demo_rest(rec):
     quick = {"hp": 100, "atk": 10, "dfn": 0, "spd": 10}             # 내가 두 배 빠르다
     assert turns_to_win(hh, quick)[0] < turns_to_win(hh, {**quick, "spd": 10 ** 9})[0], \
         "추가타가 평균 피해 모델에 안 들어갔다 — reach() 와 자동 도전이 SPD 를 0 으로 본다"
+    # 보조 수입은 환생이 커진 만큼만 커진다: 환생 한 번이 '보조 수입용 혼' 몇 판치인지가 배율 없던 시절과 같다.
+    # 이 식이 어긋나면 후반에 보조 수입이 환생을 넘어서거나(v0.14.11) 죽는다.
+    ds = dungeons()
+    n = len(ds)
+    for g in (10, 45, 46, 60, 90, 150, 240):
+        m = lambda i: ds[(i - 1) % n]["soul"]
+        now = sum(soul_base(i) * m(i) for i in range(1, g + 1)) / (side_base(g) * m(g))
+        old = sum(i ** SOUL_EXP * m(i) for i in range(1, g + 1)) / (g ** SOUL_EXP * m(g))
+        assert abs(now / old - 1) < 1e-9, f"{g}스테이지: 환생 한 번이 보조 수입 {now:.2f}판치다 — 배율 없던 시절은 {old:.2f}판치"
+    assert side_scale(SOUL_LATE_G) == 1 and side_scale(SOUL_LATE_G + 30) > 2, "보조 수입이 후반에 환생을 따라 자라지 않는다"
+    # 보조 수입은 sideSoul 을 쓴다. soulOf(후반 배율 포함)를 쓰면 보조 수입이 환생을 넘어선다 (v0.14.11)
+    for pat in ("soulOf(Math.max(1, save.best))", "soulOf(save.best)", "soulOf(g) / K.idleDiv", "soulOf(g) / RELIC_DUP",
+                "soulOf(g) * K.rareMul"):
+        assert pat not in TEMPLATE, f"보조 수입이 환생 정산용 혼({pat})을 쓴다 — sideSoul 이어야 한다"
     for tag in ("hitsOf", "K.tmuls", "p * p / (p + d.dfn)"):
         assert tag in TEMPLATE, f"게임 쪽이 {tag} 를 안 읽는다 — 화면과 모델이 어긋난다"
     # 로드 시점에 불리는 헬퍼는 선언이 먼저 와야 한다. 뒤에 있으면 TDZ 로 스크립트가 통째로

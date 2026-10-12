@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.17.3"
+__version__ = "0.17.4"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -2208,10 +2208,16 @@ function drawDex(){
       return `<span class="dx${has ? (want === 2 ? " r" : "") : " no"}" title="${
         has ? (want === 2 ? "황금 " : "") + b[0] : "아직 못 봤다"}">${has ? b[1] : "?"}</span>`;
     }).join("");
-    return `<div class="row" style="margin-top:10px;font-size:12px"><span>${ti + 1}층 ${t[0]}</span>
+    // 지금 있는 층이 어느 줄에 찍히는지 적는다. 6층부터는 변종이라 1~5층 줄을 같이 쓴다 —
+    // 이걸 안 적어 두니 도감이 5층에서 끝나는 것도, 6층 보스가 어디 찍히는지도 알 길이 없었다.
+    const here = (floorNow() - 1) % THEMES.length === ti
+      ? ` <span class="gold">← 지금 ${floorNow()}층${floorNow() > THEMES.length ? " (변종)" : ""}</span>` : "";
+    return `<div class="row" style="margin-top:10px;font-size:12px"><span>${ti + 1}층 ${t[0]}${here}</span>
         <span class="${got === N ? "gold" : "dim"}">황금 ${got}/${N}${got === N ? ` · 배분 +${K.dexPt}pt` : ""}</span></div>
       <div class="dex">${line(1)}</div><div class="dex">${line(2)}</div>`;
   }).join("") + `<div class="dim" style="font-size:11px;margin-top:10px">
+    <b>도감은 ${THEMES.length}층까지, 보스 ${all}종이 끝이다.</b> ${THEMES.length + 1}층부터 나오는 '변종'은 같은 보스의 강한 판이라
+    같은 칸을 쓴다 — ${THEMES.length + 1}층은 1층 줄, ${THEMES.length + 2}층은 2층 줄에 찍힌다. 못 잡은 황금은 변종 층에서도 잡힌다.<br>
     보스를 처음 이기면 윗줄에 찍힌다. 싸울 때마다 ${+(K.rareRate * 100).toFixed(2)}% 확률로 <span class="gold">황금 개체</span>가
     대신 나온다 — 능력치는 같다. 이기면 아랫줄에 찍히고, 처음 잡을 때 그 스테이지 혼의 ${K.rareMul}배를 준다.
     황금 한 칸마다 얻는 혼 +${K.dexSoul}% (지금 +${+dexSoul().toFixed(1)}%),

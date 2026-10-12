@@ -419,6 +419,15 @@ async function deepSave() {
   ok(t.picks().join() === "3,46", "2층을 뺐는데 다른 층의 선택이 바뀌었다: " + t.picks());
   await g.click(g.$("picks"), {target: g.$("auto").all().find(e => e.dataset.g === "17")});
   ok(t.picks().join() === "3,17,46", "칸 하나 고르기가 안 된다");
+  // 도감은 5층에서 끝나고 변종은 같은 칸을 쓴다 — 화면에 적혀 있어야 하고, 지금 층이 어느 줄인지 보여야 한다
+  ok(/도감은 5층까지, 보스 75종이 끝이다/.test(g.$("dex").html) && /6층은 1층 줄/.test(g.$("dex").html), "도감이 어디서 끝나는지 적혀 있지 않다");
+  ok(/4층 회사 <span class="gold">← 지금 4층<\/span>/.test(g.$("dex").html), "지금 층이 도감의 어느 줄인지 안 보인다");
+  const run = t.save.cleared;
+  t.save.cleared = Array.from({length: 80}, (_, i) => i + 1); t.drawAll();       // 6층 = 변종 코드 버그
+  ok(/1층 코드 버그 <span class="gold">← 지금 6층 \(변종\)<\/span>/.test(g.$("dex").html) && /6층 변종 코드 버그/.test(g.$("floorTitle").text),
+     "6층(변종)이 도감의 1층 줄을 쓴다는 표시가 없다");
+  g.clean("6층");
+  t.save.cleared = run; t.drawAll();
   ok(/4층 회사/.test(g.$("floorTitle").text), "4층 제목이 테마를 안 따른다: " + g.$("floorTitle").text);
   ok(g.$("stages").kids[0].html.includes(t.slotOf(46).name) && t.slotOf(46).name === "급한 건 모기",
      "4층 첫 칸이 테마 보스가 아니다");

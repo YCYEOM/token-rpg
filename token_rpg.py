@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.0"
+__version__ = "0.18.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -227,7 +227,12 @@ SOUL_EXP   = 2.4     # 혼 획득 = 스테이지번호^SOUL_EXP (SOUL_LATE_G 까
 # 빨라져 100회 안에 끝없이 오른다(폭주). demo() 가 '느려지지도 폭주하지도 않는다' 를 붙든다.
 # 1~3층(45스테이지까지)은 그대로다 — 거기는 이미 조율해 둔 구간이다.
 SOUL_LATE_G   = 45
-SOUL_LATE_MUL = 1.10
+# v0.18.1 에서 1.10 을 1.09 로 낮췄다. 보조 수입을 후반에도 살린 뒤로(v0.16.0) 실제 속도가 환생 한 번에
+# 3~5스테이지였다 — 처음 고른 목표(2~3)보다 빨랐다. 실제 저장(환생 26회, 90스테이지)에서 앞으로 10회를
+# 재면 1.10 이 환생당 4.2, 1.095 가 3.5, 1.09 가 3.0, 1.08 이 2.3 이다. 사용자가 1.09 를 골랐다.
+# 대가는 뒤쪽 층이다 — 환생 혼만 센 모델에서 9층이 14~15회가 된다(1.10 은 10회). 그래서 속도 검사의
+# 층당 상한을 12회에서 16회로 올렸다. 1.08 은 8층이 16~17회이고 80회 안에 9층에 못 닿는다 — 벽이 다시 선다.
+SOUL_LATE_MUL = 1.09
 TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
 # '수확' 1레벨당 혼 획득 +%p. 더 올리면 깊은 층이 일찍 열린다 — simulate() 로 잰 값(v0.14.11,
 # 개발자 영웅 Lv.31): 3 이면 5층 19회 · 8층 40회, 6 이면 16회 · 31회, 10 이면 14회 · 25회.
@@ -3852,7 +3857,8 @@ def _check_balance(h, ds, strict=True):
     # 2-1) 후반 속도: 5층부터 층마다 드는 환생 횟수가 고르게 가야 한다 (SOUL_LATE_MUL).
     #      혼 배율이 없던 시절엔 층마다 두 배씩 들었다(5층 9회 · 6층 21회 · 7층 52회).
     #      너무 올리면 반대로 뒤로 갈수록 빨라진다 — 1.12 에서 층당 3회까지 떨어지고 끝없이 오른다.
-    #      지금 값(1.10)에서 엄격한 영웅 셋이 5~9층에 층당 5~10회다. 그 밖으로 나가면 실패한다.
+    #      지금 값(1.09)에서 엄격한 영웅 셋이 5~9층에 층당 5~15회다(변이 포함, 내성 0). 그 밖으로 나가면 실패한다.
+    #      상한 16 은 v0.18.1 에서 12 를 올린 것이다 — 사용자가 지금 구간의 속도를 줄이려고 뒤쪽 층을 내줬다.
     if strict:
         late = {}
         for r, g, fl, _, _ in simulate(h, n, rebirths=80):
@@ -3860,7 +3866,7 @@ def _check_balance(h, ds, strict=True):
         assert max(late) >= 9, f"환생 80회에 {max(late)}층 — 후반이 다시 막혔다 (SOUL_LATE_MUL 이 낮다)"
         for fl in range(5, 10):
             need = late[fl] - late[fl - 1]
-            assert need <= 12, f"{fl}층에 환생 {need}회가 든다 — 후반이 다시 느려졌다 (SOUL_LATE_MUL 이 낮다)"
+            assert need <= 16, f"{fl}층에 환생 {need}회가 든다 — 후반이 다시 느려졌다 (SOUL_LATE_MUL 이 낮다)"
             assert need >= 4, f"{fl}층이 환생 {need}회에 열린다 — 후반이 폭주한다 (SOUL_LATE_MUL 이 높다)"
 
         _check_full_pace(h, n)

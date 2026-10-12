@@ -400,6 +400,10 @@ async function deepSave() {
   ok(t.idleRate() > 0 && t.idleRate() <= side / t.K.idleDiv * (1 + t.K.idleTokenMax) * 1.0001, "원정이 보조 수입용 혼을 안 쓴다");
   ok(t.slotPay(1) === Math.round(side * t.K.slotBudget / (t.K.slotTries * t.K.slotAvg)), "슬롯이 보조 수입용 혼을 안 쓴다");
   ok(t.missions().every(m => m.souls > 0 && m.souls <= side * t.K.weekBudget * 2), "미션이 보조 수입용 혼을 안 쓴다");
+  // 유물 도감은 지금 층(4층)의 보스 이름과 번호로 적는다 — 던전 목록과 짝이 맞아야 한다
+  for (let i = 1; i <= 15; i++)
+    ok(g.$("relics").html.includes(`${45 + i}. ${t.slotOf(45 + i).name}`), `유물 도감에 ${45 + i}. ${t.slotOf(45 + i).name} 이 없다`);
+  ok(!g.$("relics").html.includes("버그 벌레") && /지금 4층/.test(g.$("relicNews").html), "4층인데 유물 도감이 1층 이름을 쓴다");
   ok(/4층 회사/.test(g.$("floorTitle").text), "4층 제목이 테마를 안 따른다: " + g.$("floorTitle").text);
   ok(g.$("stages").kids[0].html.includes(t.slotOf(46).name) && t.slotOf(46).name === "급한 건 모기",
      "4층 첫 칸이 테마 보스가 아니다");
@@ -435,7 +439,7 @@ async function raid(g) {
   ok(t.save.relics.boss3.r === 2 && t.save.relics.boss3.a === "dfn" && t.save.relics.boss3.g === 33,
      "격파했는데 유물이 한 등급 안 올랐다: " + JSON.stringify(t.save.relics.boss3));
   ok(Object.values(t.save.relics).filter(r => r.r === 4).length === 14, "올릴 수 없는 유물(신화)을 건드렸다");
-  ok(/격파 — 혼/.test(g.$("raid").html) && /거절 응답 달팽이의 유물 승급: 희귀 → 영웅 — DEF \+12%/.test(g.$("raid").html), "격파 알림에 승급이 없다: " + g.$("raid").html.slice(0, 200));
+  ok(/격파 — 혼/.test(g.$("raid").html) && /48\. 문서 없음 안개의 유물 승급: 희귀 → 영웅 — DEF \+12%/.test(g.$("raid").html), "격파 알림에 승급이 없다: " + g.$("raid").html.slice(0, 200));
   // 올릴 것이 없을 때도 버려지지 않는다 — 유물이 없으면 하나를 주고, 전부 신화면 혼을 준다
   t.save.relics = {};
   ok(/유물/.test(t.raidRelic()) && Object.keys(t.save.relics).length === 1, "유물이 하나도 없을 때 하나를 주지 않는다");

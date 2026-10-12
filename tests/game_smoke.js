@@ -313,6 +313,12 @@ async function playthrough() {
   ok(!t.picks().includes(1), "고른 칸을 다시 눌러도 안 빠진다");
   await g.click(g.$("pickAll")); await g.click(g.$("pickAll"));
   ok(!t.picks().length, "'전체 해제' 가 비우지 않는다");
+  // 층 머리줄: 누르면 그 층에서 깬 스테이지를 통째로 고른다. 1층은 깬 데까지만이다
+  const head = f => g.$("auto").all().find(e => e.dataset.f === String(f));
+  await g.click(g.$("picks"), {target: head(1)});
+  ok(t.picks().length === t.save.best && t.save.best < 15 && /전부 고름/.test(g.$("auto").html), "층 머리줄이 깬 스테이지를 다 고르지 않는다: " + t.picks());
+  await g.click(g.$("picks"), {target: head(1)});
+  ok(!t.picks().length, "층 머리줄을 다시 눌러도 안 빠진다");
   await g.advance(3000);
   g.clean("자동 도전");
   // 이번 판에 나온 유물은 떨어뜨린 스테이지를 적어 둔다 — 도감이 그 보스 이름을 보여 준다
@@ -404,6 +410,15 @@ async function deepSave() {
   for (let i = 1; i <= 15; i++)
     ok(g.$("relics").html.includes(`${45 + i}. ${t.slotOf(45 + i).name}`), `유물 도감에 ${45 + i}. ${t.slotOf(45 + i).name} 이 없다`);
   ok(!g.$("relics").html.includes("버그 벌레") && /지금 4층/.test(g.$("relicNews").html), "4층인데 유물 도감이 1층 이름을 쓴다");
+  // 층별 반복: 고른 것이 [3, 17, 46] 인 저장에서 2층 머리줄을 누르면 16~30 이 다 들어가고 다른 층은 그대로다
+  const head = f => g.$("auto").all().find(e => e.dataset.f === String(f));
+  ok(g.$("auto").all().filter(e => e.dataset.f).length === 8 && /2층 인프라 장애/.test(g.$("auto").html), "층 머리줄이 여덟 층에 하나씩이 아니다");
+  await g.click(g.$("picks"), {target: head(2)});
+  ok(t.picks().join() === [3, ...Array.from({length: 15}, (_, i) => 16 + i), 46].join(), "2층 머리줄이 16~30 을 고르지 않았다: " + t.picks());
+  await g.click(g.$("picks"), {target: head(2)});
+  ok(t.picks().join() === "3,46", "2층을 뺐는데 다른 층의 선택이 바뀌었다: " + t.picks());
+  await g.click(g.$("picks"), {target: g.$("auto").all().find(e => e.dataset.g === "17")});
+  ok(t.picks().join() === "3,17,46", "칸 하나 고르기가 안 된다");
   ok(/4층 회사/.test(g.$("floorTitle").text), "4층 제목이 테마를 안 따른다: " + g.$("floorTitle").text);
   ok(g.$("stages").kids[0].html.includes(t.slotOf(46).name) && t.slotOf(46).name === "급한 건 모기",
      "4층 첫 칸이 테마 보스가 아니다");

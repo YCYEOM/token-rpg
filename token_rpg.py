@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.17.2"
+__version__ = "0.17.3"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1045,6 +1045,8 @@ button.chip{padding:1px 2px;font-size:11px;white-space:nowrap;font-variant-numer
 #picksBox summary{font-size:12px;cursor:pointer;padding:6px 10px;background:#21262d;
 border:1px solid var(--line);border-radius:6px}#picksBox summary:hover{border-color:var(--on)}
 #picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:4px;max-height:34vh;overflow-y:auto;padding-top:4px}
+#picks button.fl{grid-column:1/-1;text-align:left;font-size:11px;padding:3px 8px;margin-top:4px;
+display:flex;justify-content:space-between;gap:8px}#picks button.fl:first-child{margin-top:0}
 .pulse{animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.45}}
 .banner{border:1px dashed var(--xp);border-radius:8px;padding:9px;margin-bottom:10px;
@@ -1595,6 +1597,10 @@ const picks = () => (Array.isArray(save.farm) ? save.farm : save.farm > 0 ? [sav
   .filter(g => Number.isInteger(g) && g >= 1 && g <= save.best).sort((a, b) => a - b);
 const setPicks = ps => { save.farm = [...new Set(ps)].sort((a, b) => a - b); autoReset(); put(); drawAuto(); };
 const autoSay = m => { if (m !== autoMsg) { autoMsg = m; drawAuto(); } };
+// f 층에서 역대 깬 스테이지들 (반복으로 고를 수 있는 칸). 마지막 층은 깬 데까지만이다
+const floorStages = f => { const out = [];
+  for (let g = (f - 1) * N + 1; g <= Math.min(f * N, save.best || 0); g++) out.push(g);
+  return out; };
 function drawAuto(){
   if (!save.rebirths) {
     autoKey = "";
@@ -1607,10 +1613,19 @@ function drawAuto(){
   if (key !== autoKey || !$("autoMsg")) {
     autoKey = key;
     // 스테이지마다 유물 속성이 다르다 — 여러 곳을 골라 돌려야 속성이 골고루 모인다
+    // 층마다 머리줄을 둔다 — 누르면 그 층에서 깬 스테이지를 통째로 고르거나 뺀다.
+    // 칸을 하나씩만 고를 수 있던 때는 한 층을 돌리려면 열다섯 번을 눌러야 했다.
     const chips = [];
-    for (let g = 1; g <= best; g++)
+    for (let g = 1; g <= best; g++) {
+      if ((g - 1) % N === 0) {
+        const all = floorStages(Math.floor((g - 1) / N) + 1), cnt = all.filter(x => on.has(x)).length;
+        chips.push(`<button class="fl${cnt === all.length ? " on" : ""}" data-f="${Math.floor((g - 1) / N) + 1}"
+          title="이 층을 통째로 고르거나 뺀다">${Math.floor((g - 1) / N) + 1}층 ${slotOf(g).theme}
+          <span>${cnt === all.length ? "전부 고름 — 눌러서 빼기" : `${cnt}/${all.length} — 눌러서 층 전체 고르기`}</span></button>`);
+      }
       chips.push(`<button class="chip${on.has(g) ? " on" : ""}" data-g="${g}"
         title="${g}. ${slotOf(g).name}">${slotOf(g).emoji}${g}</button>`);
+    }
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
       <button id="pickAll">${ps.length === best && best ? "전체 해제" : "전체 반복"}</button>
       <details id="picksBox" ${picksOpen ? "open" : ""}><summary>${ps.length
@@ -1622,8 +1637,14 @@ function drawAuto(){
       ? [] : Array.from({length: best}, (_, i) => i + 1));
     $("picksBox").ontoggle = e => { picksOpen = e.target.open; };
     $("picks").onclick = e => {                       // 칸 하나하나가 아니라 묶어서 듣는다
-      const g = +(e.target.dataset || {}).g;
+      // 머리줄 안의 글자(span)를 눌러도 머리줄로 친다
+      const d = (e.target.closest ? e.target.closest("button") || e.target : e.target).dataset || {};
+      const g = +d.g, f = +d.f;
       if (g) setPicks(on.has(g) ? ps.filter(x => x !== g) : [...ps, g]);
+      else if (f) {                                   // 층 머리줄: 다 골라져 있으면 빼고, 아니면 채운다
+        const all = floorStages(f);
+        setPicks(all.every(x => on.has(x)) ? ps.filter(x => !all.includes(x)) : [...ps, ...all]);
+      }
     };
   }
   $("autoMsg").textContent = save.auto ? autoMsg : "";

@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.17.1"
+__version__ = "0.17.2"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1020,8 +1020,9 @@ h2{font-size:12px;color:var(--dim);margin:0 0 12px;letter-spacing:.02em}
 .bar>i{display:block;height:100%;background:var(--xp);transition:width .35s}
 .bar.hpb>i{background:var(--hp)}
 .row{display:flex;justify-content:space-between;font-size:11px;gap:8px}
-.sheet{display:grid;grid-template-columns:repeat(3,auto);justify-content:start;gap:2px 14px;
-font-size:12px;margin-top:6px}.sheet>span{white-space:nowrap}
+.sheet{display:grid;grid-template-columns:repeat(3,minmax(0,auto));justify-content:space-between;gap:2px 6px;
+font-size:11px;margin-top:6px;max-width:400px}.sheet>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheet b{font-size:13px}
 .badge{display:inline-block;border:1px solid var(--line);border-radius:20px;
 padding:0 9px;font-size:11px;margin-right:5px}
 .alloc{display:grid;gap:6px;align-items:center;font-size:13px}
@@ -1198,7 +1199,7 @@ const TM = k => K.tmuls[k] || K.tmul;
 const compact = new Intl.NumberFormat("en", {notation: "compact", maximumSignificantDigits: 3});
 const n = x => Math.abs(x) < 1000 ? String(Math.round(x)) : compact.format(x);
 // 스탯은 1,000 아래에서 소수 한 자리가 뜻이 있다(DEF 281.8) — 그 위는 n() 으로 줄인다
-const ns = (x, d) => Math.abs(x) < 1000 ? x.toFixed(d) : n(x);
+const ns = (x, d) => Math.abs(x) < 1000 ? String(+x.toFixed(d)) : n(x);      // 100.0 은 100 으로 — 좁은 칸에서 한 글자가 아쉽다
 // 원정은 초당 소수점 단위로 쌓인다 — 정수로 표시하면 멈춘 것처럼 보인다
 const nf = x => x < 1000 ? x.toFixed(2) : n(x);
 const MULTIPROV = (D.providers || []).length > 1;
@@ -1850,8 +1851,8 @@ function raidRelic(){
   if (up.length) {
     const slot = up[Math.floor(Math.random() * up.length)], k = relicKey(slot), old = rs[k];
     rs[k] = {...old, r: old.r + 1};
-    const from = Number.isInteger(old.g) && old.g >= 1 && (old.g - 1) % N === slot.slot - 1 ? old.g : slot.slot;
-    return `${slotOf(from).name}의 유물 승급: ${RARITY[old.r][0]} → ${RARITY[old.r + 1][0]} — `
+    const from = (floorNow() - 1) * N + slot.slot;      // 도감과 같은 이름 — 지금 층에서 그 칸을 지키는 보스
+    return `${from}. ${slotOf(from).name}의 유물 승급: ${RARITY[old.r][0]} → ${RARITY[old.r + 1][0]} — `
          + `${AFFIX[old.a][0]} +${relicVal(rs[k])}${AFFIX[old.a][2]}`;
   }
   if (!owned.length) {                           // 올릴 유물이 없다 — 이번 주 칸의 유물을 하나 준다
@@ -2124,18 +2125,19 @@ function drawRelics(){
   $("relicNews").innerHTML =
     (relicNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${relicNews}</div>` : "") +
     `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 그 보스의 유물이 나온다
-     (역대 첫 격파 ${RELIC_FIRST*100}%, 재격파 ${RELIC_AGAIN*100}%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}</div>`;
+     (역대 첫 격파 ${RELIC_FIRST*100}%, 재격파 ${RELIC_AGAIN*100}%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}
+     <br>유물은 층의 칸마다 하나다 — 어느 층이든 같은 칸의 보스가 같은 유물을 준다.
+     아래 이름은 <b>지금 ${floorNow()}층</b>에서 그 칸을 지키는 보스다. 던전 목록의 번호와 같다.</div>`;
   $("relics").innerHTML = SLOTS.map(slot => {
     const r = rs[relicKey(slot)];
-    // 유물은 칸마다 하나인데 보스 이름은 층마다 다르다. 가진 유물은 떨어뜨린 보스 이름으로,
-    // 없는 칸은 지금 층에서 그 칸을 지키는 보스 이름으로 적는다 — 어디를 깨면 나오는지가 정보다.
-    // 예전 저장의 유물에는 스테이지(g)가 없다 — 1층 이름으로 적는다.
-    const from = relicOk(r) ? (Number.isInteger(r.g) && r.g >= 1 && (r.g - 1) % N === slot.slot - 1 ? r.g : slot.slot)
-                            : (floorNow() - 1) * N + slot.slot;
+    // 유물은 칸마다 하나인데 보스 이름은 층마다 다르다. 늘 지금 층에서 그 칸을 지키는 보스로 적는다 —
+    // 던전 목록과 같은 번호·같은 이름이라, 이 유물을 올리려면 어디를 깨야 하는지가 바로 보인다.
+    // 처음엔 '떨어뜨린 보스' 이름으로 적었다(v0.15.0). 5층에 있는데 도감은 1층 이름이라 짝을 찾을 수 없었다.
+    const from = (floorNow() - 1) * N + slot.slot;
     const s = slotOf(from);
     // 긴 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게
     return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
-        text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${s.name}</span>${relicOk(r)
+        text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${from}. ${s.name}</span>${relicOk(r)
       ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
       : `<span class="dim" style="white-space:nowrap">? · ${AFFIX[s.affix][0]}</span>`}</div>`;
   }).join("");

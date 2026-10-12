@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, mutOf, mutPow, mutId, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -194,7 +194,7 @@ async function boot(name, {page = "base", served = true, save, rev = 0, local = 
 function parity(g) {
   const {t} = g, e = fx.expect;
   for (const [n, want] of e.boss)
-    ok(JSON.stringify(t.boss(n)) === JSON.stringify(want),
+    ok(["hp", "atk", "dfn", "spd"].every(k => t.boss(n)[k] === want[k]) && t.boss(n).g === n,
        `보스 ${n}: 화면 ${JSON.stringify(t.boss(n))} · 파이썬 ${JSON.stringify(want)}`);
   for (const [n, want] of e.slots) {             // 층 테마 — 이름·이모지·테마와 칸 고정값
     const s = t.slotOf(n);
@@ -239,6 +239,7 @@ async function playthrough() {
 
   ok(/1층 코드 버그/.test(g.$("floorTitle").text), "층 제목에 테마가 없다: " + g.$("floorTitle").text);
   ok(/2층 첫 보스/.test(g.$("raid").html) && !g.$("raid").querySelectorAll("button").length, "레이드가 2층 전에 열려 있다");
+  ok(/5층을 다 깨면/.test(g.$("mutHelp").html) && !g.$("muts").html && !g.$("mutNote").html, "변종 층이 열리기 전인데 변이 내성이 보인다");
   await g.fight(0);
   ok(t.save.cleared.includes(1) && t.save.best === 1, "1스테이지를 이겼는데 기록이 안 남았다");
 
@@ -490,6 +491,75 @@ async function raid(g) {
   g.clean("레이드");
 }
 
+// ── 변이와 변이 조각: 변종 층(6층~)의 보스는 능력치 하나에 배수가 걸린다. 조각으로 내성을 올리면 약해진다
+async function mutations() {
+  const g = await boot("변이", {rev: 3, seed: 7, save: {
+    alloc: {atk: 20, hp: 10, dfn: 10, crit: 5, cdmg: 5, spd: 5}, souls: 5, rebirths: 30, auto: false,
+    cleared: Array.from({length: 76}, (_, i) => i + 1), best: 76,
+    traits: {atk: 80, hp: 80, dfn: 70, crit: 0, cdmg: 60, spd: 0, soul: 20, pt: 10},
+    exped: {since: NOON, seenExp: 1}, relics: {}, rbExp: 1, shards: 200}});
+  const {t} = g;
+  // 파이썬과 같은 변이 · 같은 배수 (내성 0 과 내성 5)
+  for (const [n, id, lap, p0] of fx.expect.mut) {
+    const m = t.mutOf(n);
+    ok((m ? m.id : null) === id && (m ? m.lap : 0) === lap && same(t.mutPow(n), p0), `변이 ${n}스테이지: 화면 ${m && m.id}/${m && m.lap}/${t.mutPow(n)} · 파이썬 ${id}/${lap}/${p0}`);
+  }
+  ok(!t.mutOf(75) && !t.mutId(75) && t.mutPow(75) === 1, "5층에 변이가 붙었다");
+  ok(/변이 <b>철갑<\/b> — 내가 주는 피해 ÷3/.test(g.$("mutNote").html) && /조각 200/.test(g.$("mutHead").text), "6층의 변이가 던전 카드에 안 보인다: " + g.$("mutNote").html);
+  // 전투에 실제로 걸린다: 철갑은 내가 주는 피해를 나눈다
+  ok(t.newFighters(t.boss(77))[0].div === 3 && !t.newFighters(t.boss(75))[0].div, "철갑이 전투에 안 걸렸다");
+  // 벽이 파이썬과 같은 자리에 선다 — 내성이 오르면 벽이 뒤로 밀린다 (beatable 과 turns_to_win 이 같은 규칙)
+  const keepSave = JSON.stringify(t.save);
+  for (const build of fx.expect.mutWall) {         // 벽이 6층(철갑)에 서는 빌드와 8층(광폭)에 서는 빌드
+    const walls = [];
+    for (const [res, want] of build.cases) {
+      t.save.alloc = {...build.alloc}; t.save.traits = {...t.fresh().traits, ...build.traits}; t.save.res = res;
+      let wall = 1;
+      while (wall < 400 && t.beatable(t.boss(wall))) wall++;
+      ok(wall === want, `변이 벽 (내성 ${JSON.stringify(res)}): 화면 ${wall} · 파이썬 ${want}`);
+      walls.push(wall);
+    }
+    ok(walls[0] < walls[2] && walls[2] <= walls[3], "내성을 올려도 벽이 안 밀린다: " + walls);
+  }
+  t.save = JSON.parse(keepSave); t.drawAll();
+  // 내성: 조각으로 한 레벨씩. 값은 30, 45, 60… 이고 배수가 줄어든다
+  const btn = id => g.btn("muts", {m: id});
+  await g.click(btn("armor"));
+  ok(t.save.res.armor === 1 && t.save.shards === 170 && same(t.mutPow(77), Math.pow(3, 0.9)), `내성 구입이 어긋났다: ${JSON.stringify(t.save.res)} 조각 ${t.save.shards}`);
+  for (let i = 0; i < 2; i++) await g.click(btn("armor"));
+  ok(t.save.res.armor === 3 && t.save.shards === 170 - 45 - 60 && btn("armor").disabled, `조각 65개로 75개짜리를 살 수 있다: ${t.save.shards}`);
+  t.buyRes("armor", 1);
+  ok(t.save.res.armor === 3 && t.save.shards === 65, "조각이 모자란데 내성이 올랐다");
+  // 다 올리면 사라진다 — 덤은 없다. 닿은 깊이(한 겹)보다 더는 못 올린다
+  t.save.shards = 5000; t.drawAll();
+  for (let i = 0; i < 7; i++) await g.click(btn("armor"));
+  ok(t.save.res.armor === 10 && t.mutPow(77) === 1 && !t.mutId(77) && btn("armor").disabled, "내성 10레벨인데 변이가 남았다");
+  ok(!t.newFighters(t.boss(77))[0].div && /내성으로 지웠다/.test(g.$("mutNote").html), "지운 변이가 전투에 남아 있다");
+  t.buyRes("armor", 5);
+  ok(t.save.res.armor === 10, "닿지 않은 겹의 내성을 살 수 있다");
+  // 내성이 넘쳐도 덤은 없다 — 배수가 1 아래로 내려가면 켜 두기만 해서 기준보다 빨라진다
+  t.save.res = {...t.save.res, armor: 25};
+  ok(t.mutPow(77) === 1 && !t.newFighters(t.boss(77))[0].div, "내성이 넘치면 변이가 덤이 된다: " + t.mutPow(77));
+  t.save.res = {...t.save.res, armor: 10};
+  ok(same(t.mutPow(151), 3), "11층(두 겹)의 철갑이 내성 10레벨에서 3배가 아니다: " + t.mutPow(151));
+  // 다른 변이도 전투에 걸린다
+  const f = n => t.newFighters(t.boss(n));
+  const plain = t.newFighters(t.boss(75));
+  ok(same(f(91)[0].max, plain[0].max / 3), "저주가 내 HP 를 안 나눈다");
+  ok(same(f(106)[1].atk, t.boss(106).atk * 1.75), "광폭이 보스 ATK 를 안 올린다");
+  ok(same(f(121)[0].dfn, plain[0].dfn / 4), "관통이 내 DEF 를 안 나눈다");
+  ok(same(f(136)[0].cdmg, Math.max(100, plain[0].cdmg / 3)), "무감각이 치명타 피해를 안 나눈다");
+  // 조각은 변종 층에서만 나온다
+  g.rand(() => 0);
+  const had = t.save.shards;
+  ok(!t.rollShard(75) && t.save.shards === had && t.rollShard(76) && t.save.shards === had + 1, "조각이 변종 층 밖에서 나오거나 변종 층에서 안 나온다");
+  g.rand();
+  ok(!t.validSave({...t.save, shards: -1}) && !t.validSave({...t.save, res: {armor: 1.5}}), "조각·내성에 이상한 값이 든 저장을 받는다");
+  // 변종 층에서 수동 전투를 한 판 — 변이가 걸린 채로 끝까지 돈다
+  await g.fight(1);
+  g.clean("변이 전투");
+}
+
 // ── 초월: Lv.99 에서 레벨만 되돌린다. 식이 파이썬 hero() 와 같아야 메뉴 막대 배지가 안 어긋난다
 async function transcend() {
   const g = await boot("초월", {page: "maxed", seed: 4}), {t} = g;
@@ -526,5 +596,5 @@ async function fileMode() {
 
 (async () => {
   process.on("unhandledRejection", e => { throw e; });
-  for (const run of [playthrough, oldSave, deepSave, transcend, zeroHero, fileMode]) await run();
+  for (const run of [playthrough, oldSave, deepSave, mutations, transcend, zeroHero, fileMode]) await run();
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });

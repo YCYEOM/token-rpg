@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.17.4"
+__version__ = "0.18.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -363,6 +363,42 @@ RAID_MIN_BEST = len(AFFIXES) + 1
 RAID_MIN_HP   = 1_000_000
 RAID_BOSSES = [("월요일의 거신", "🗿"), ("분기 마감의 용", "🐲"), ("전사 장애의 크라켄", "🦑"),
                ("대이동의 골렘", "🏗️"), ("감사 시즌의 스핑크스", "🦁"), ("연말 정산의 불사조", "🦅")]
+# 변이와 변이 조각 (v0.18.0): 변종 층(6층~)의 보스는 층마다 특수한 능력(변이) 하나를 갖는다.
+# 반복 전투로 변이 조각을 모아 그 변이의 내성을 올리면 능력이 약해지고, 다 올리면 사라진다.
+# (id, 이름, 이모지, 세기, 설명틀) — 6층부터 차례로 붙고 다섯 층마다 되풀이한다.
+# 세기는 능력치 하나에 곱하는 배수다. 되풀이할 때마다(11층~, 16층~) 한 번씩 더 곱한다.
+MUTS = [
+    ("armor",  "철갑",   "🛡️", 3.0,  "내가 주는 피해 ÷{0}"),
+    ("curse",  "저주",   "☠️", 3.0,  "내 최대 HP ÷{0}"),
+    ("fury",   "광폭",   "💢", 1.75, "보스 ATK x{0}"),
+    ("pierce", "관통",   "🗡️", 4.0,  "내 DEF ÷{0}"),
+    ("numb",   "무감각", "🧊", 3.0,  "내 치명타 피해 ÷{0}"),
+]
+MUT_LV = 10          # 내성 10레벨이면 그 변이 한 겹이 사라진다. 되풀이 층(11층~)의 두 겹째는 11~20레벨이 지운다
+SHARD_RATE = 0.02    # 변종 층의 보스를 반복 전투로 이길 때 조각이 나올 확률
+SHARD_K, SHARD_STEP = 30, 15     # 내성 L -> L+1 의 값 = SHARD_K + SHARD_STEP * L
+
+
+def shard_cost(lv):
+    return SHARD_K + SHARD_STEP * lv
+
+
+def mut_of(g):
+    """g 스테이지의 변이 -> (id, 겹). 변종 층이 아니면 None. 겹은 6~10층이 1, 11~15층이 2다."""
+    fl = (g - 1) // len(AFFIXES) - len(THEMES)
+    return None if fl < 0 or not MUTS else (MUTS[fl % len(MUTS)][0], fl // len(MUTS) + 1)
+
+
+def mut_power(g, res=None):
+    """g 스테이지의 변이가 지금 내성으로 몇 배짜리인가 (1 이면 사라졌다). JS 의 mutPow() 와 같은 식.
+    세기^(겹 - 내성/MUT_LV), 1 아래로는 안 내려간다 — 내성이 남아도 덤은 없다."""
+    m = mut_of(g)
+    if not m:
+        return None, 1.0
+    base = next(x[3] for x in MUTS if x[0] == m[0])
+    return m[0], max(1.0, base ** (m[1] - (res or {}).get(m[0], 0) / MUT_LV))
+
+
 # 1층 보스 (이름, 이모지, 유물 능력치). 칸별 혼 배수·유물 능력치의 기준이라 그대로 둔다.
 BOSSES = [(name, emoji, affix) for (name, emoji), affix in zip(THEMES[0][1], AFFIXES)]
 
@@ -857,13 +893,19 @@ def final_stats(h, alloc=None, tr=None):
     }
 
 
-def turns_to_win(h, b, alloc=None, tr=None):
+def turns_to_win(h, b, alloc=None, tr=None, mut=None):
     """평균 피해 기준 결판 턴수 -> (보스를 잡는 턴, 내가 죽는 턴).
-    치명타는 기대값으로 반영. JS 전투와 같은 공식, 난수만 뺐다 = 밸런스 검증용."""
+    치명타는 기대값으로 반영. JS 전투와 같은 공식, 난수만 뺐다 = 밸런스 검증용.
+    mut = (변이 id, 배수) — mut_power() 가 준다. JS 의 mutate() 와 같은 규칙이어야 한다."""
     s = final_stats(h, alloc, tr)
-    eff = s["atk"] * (1 + s["crit"] / 100 * (s["cdmg"] / 100 - 1))
+    mid, k = mut or (None, 1.0)
+    cdmg = max(100.0, s["cdmg"] / k) if mid == "numb" else s["cdmg"]
+    eff = s["atk"] * (1 + s["crit"] / 100 * (cdmg / 100 - 1))
     hit = 1 + spd_extra(s["spd"], b["spd"])      # 추가타는 '타격 수'를 늘린다
-    return b["hp"] / (mitigate(eff, b["dfn"]) * hit), s["hp"] / mitigate(b["atk"], s["dfn"])
+    kill = b["hp"] / (mitigate(eff, b["dfn"]) / (k if mid == "armor" else 1) * hit)
+    die = (s["hp"] / (k if mid == "curse" else 1)
+           / mitigate(b["atk"] * (k if mid == "fury" else 1), s["dfn"] / (k if mid == "pierce" else 1)))
+    return kill, die
 
 
 def _splits(pts):
@@ -878,20 +920,26 @@ def _splits(pts):
                                "crit": pts*c/10, "cdmg": pts*x/10, "spd": pts*sp/10}
 
 
-def reach(h, tr=None, cap=400):
-    """이 특성으로 최적 배분을 했을 때 도달 가능한 최고 전역 스테이지."""
+def reach(h, tr=None, cap=400, res=None, start=0):
+    """이 특성으로 최적 배분을 했을 때 도달 가능한 최고 전역 스테이지.
+    res = 변이 내성 {id: 레벨}. start = 이미 닿은 곳(거기서부터 본다 — 내성이 오르는 모델에서 쓴다)."""
     tr = tr or {}
     pts = h["level"] * PT_PER_LEVEL + tr.get("pt", 0) * TRAIT_PT
     # 보스는 스테이지마다 단조로 강해진다. 그래서 best+1 을 못 넘는 배분은 best 를 못 늘린다 —
     # 배분마다 1스테이지부터 다시 오르지 않고 지금 최고 다음 칸만 본다. 값은 같고 14배 빠르다.
     # 이게 느리면 selftest 가 고정 영웅 여럿으로 밸런스를 볼 수 없다.
-    best = 0
-    for alloc in _splits(pts):
-        while best < cap:
-            kill, die = turns_to_win(h, boss(best + 1), alloc, tr)
-            if kill >= die:
-                break
-            best += 1
+    # 변이는 배수라 층 경계에서 난이도가 뛰거나 떨어질 수 있다. 배분은 판마다 다시 할 수 있으므로
+    # '어느 배분으로든 다음 칸을 넘으면 오른다' — 한 바퀴에 진전이 없을 때까지 배분을 다시 훑는다.
+    best, grew = start, True
+    while grew and best < cap:
+        grew = False
+        for alloc in _splits(pts):
+            while best < cap:
+                kill, die = turns_to_win(h, boss(best + 1), alloc, tr, mut_power(best + 1, res))
+                if kill >= die:
+                    break
+                best += 1
+                grew = True
     return best
 
 
@@ -955,7 +1003,8 @@ def balance(h, ds):
 def game_data(agg, hosts=(), providers=(), models=(), daily=None):
     """게임 화면에 심는 데이터. build() 와 selftest 의 화면 검증이 같은 길로 만든다 —
     따로 만들면 검증이 보는 화면과 실제 화면이 갈라진다."""
-    return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "raid": RAID_BOSSES, "hosts": list(hosts),
+    return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "raid": RAID_BOSSES, "muts": MUTS,
+            "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
@@ -973,6 +1022,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
                   "miniShots": MINI_SHOTS,
                   "rareRate": RARE_RATE, "rareMul": RARE_MUL, "dexSoul": DEX_SOUL, "dexPt": DEX_PT,
                   "raidBudget": RAID_BUDGET, "raidMinBest": RAID_MIN_BEST, "raidMinHp": RAID_MIN_HP,
+                  "mutLv": MUT_LV, "shardRate": SHARD_RATE, "shardK": SHARD_K, "shardStep": SHARD_STEP,
                   "slotTries": SLOT_TRIES, "slotBudget": SLOT_BUDGET, "slotAvg": SLOT_AVG}}
 
 
@@ -1149,7 +1199,12 @@ margin-top:10px;padding-top:8px}
 <details class="card" data-k="dex" open><summary><h2>보스 도감 <span class="gold" id="dexCount"></span></h2></summary>
   <div id="dexNews"></div><div id="dex"></div></details>
 
+<details class="card" data-k="mut" open><summary><h2>변이 내성 <span class="gold" id="mutHead"></span></h2></summary>
+  <div id="mutNews"></div><div class="alloc" id="muts" style="grid-template-columns:1fr auto auto auto"></div>
+  <div id="mutHelp"></div></details>
+
 <details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
+  <div id="mutNote"></div>
   <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
   <div id="stages"></div><div id="wall"></div></details>
 <details class="card" data-k="hosts" open><summary><h2>합산된 기기</h2></summary><div id="hosts" style="font-size:12px"></div>
@@ -1216,7 +1271,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+TM("atk")+"/lv"],["hp","혼의 �
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:true, claimed:{}, relics:{}, rbExp:null, farm:0,
-            trans:0, mini:{day:"", n:0}, dex:{}, raid:{wk:"", got:[]}});
+            trans:0, mini:{day:"", n:0}, dex:{}, raid:{wk:"", got:[]}, shards:0, res:{}});
 
 // ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
 // EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
@@ -1298,7 +1353,21 @@ const boss = g => { let p = Math.pow(K.step, g-1);
   if (g < K.earlyG) p *= Math.pow(K.earlyMul, (K.earlyG - g) / (K.earlyG - 1));
   return {
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
-  dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9) }; };
+  dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9), g }; };
+// ── 변이: 변종 층(6층~)의 보스는 층마다 특수한 능력 하나를 갖는다. 능력치 하나에 배수가 걸린다.
+// 변이 조각으로 내성을 올리면 배수가 줄고, K.mutLv 레벨이면 한 겹이 사라진다. 11층부터는 두 겹이다.
+// 파이썬 mut_of() · mut_power() · turns_to_win() 과 같은 규칙이어야 한다.
+const MUTS = D.muts;                             // [id, 이름, 이모지, 세기, 설명틀]
+const mutOf = g => { const fl = Math.floor((g - 1) / N) - THEMES.length;
+  if (!(fl >= 0) || !MUTS.length) return null;
+  const m = MUTS[fl % MUTS.length];
+  return {id: m[0], name: m[1], emoji: m[2], base: m[3], tmpl: m[4], lap: Math.floor(fl / MUTS.length) + 1}; };
+const resOf = id => (save.res || {})[id] | 0;
+// 지금 내성으로 몇 배짜리인가 (1 이면 사라졌다). 내성이 남아도 덤은 없다
+const mutPow = g => { const m = mutOf(g); return m ? Math.max(1, Math.pow(m.base, m.lap - resOf(m.id) / K.mutLv)) : 1; };
+const mutId = g => mutPow(g) > 1 ? mutOf(g).id : "";      // 아직 살아 있는 변이의 id
+const mutText = (m, k) => m.tmpl.replace("{0}", +k.toFixed(2));
+const shardCost = lv => K.shardK + K.shardStep * lv;
 // K.soulLateG 를 넘은 스테이지마다 K.soulLateMul 배 — 파이썬 soul_base() 와 같은 식이어야 한다
 const lateMul = g => Math.pow(K.soulLateMul, Math.max(0, g - K.soulLateG));
 // 환생 한 번이 버는 혼이 후반 배율 덕에 몇 배가 됐는가 (K.soulLateG 까지는 1). 파이썬 side_scale() 과 같은 식.
@@ -1532,7 +1601,7 @@ const decodeSave = code => {
 };
 // 체크섬이 맞아도 규칙상 불가능한 값은 거른다: 음수·소수, 레벨이 준 것보다 많은 배분
 const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.alloc && !!s.exped
-  && [s.souls, s.rebirths, s.best, s.trans ?? 0, (s.mini || {}).n || 0, ...s.cleared,
+  && [s.souls, s.rebirths, s.best, s.trans ?? 0, (s.mini || {}).n || 0, s.shards ?? 0, ...Object.values(s.res || {}), ...s.cleared,
       ...Object.values(s.traits), ...Object.values(s.alloc)]
        .every(v => Number.isInteger(v) && v >= 0)
   && Object.values(s.dex || {}).every(v => v === 1 || v === 2)
@@ -1578,9 +1647,12 @@ function turnDmg(a, d, hits, critPct){
 
 // 평균 피해로 따져 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다
 const beatable = b => {
-  const eff = F("atk") * (1 + F("crit")/100 * (F("cdmg")/100 - 1));
+  const id = mutId(b.g), k = mutPow(b.g);        // 변이 — 전투(mutate)와 같은 규칙
+  const cd = id === "numb" ? Math.max(100, F("cdmg") / k) : F("cdmg");
+  const eff = F("atk") * (1 + F("crit")/100 * (cd/100 - 1));
   const mit = (atk, dfn) => atk * atk / (atk + dfn);
-  return b.hp / (mit(eff, b.dfn) * (1 + xtra(b))) < F("hp") / mit(b.atk, F("dfn"));
+  return b.hp / (mit(eff, b.dfn) / (id === "armor" ? k : 1) * (1 + xtra(b)))
+       < F("hp") / (id === "curse" ? k : 1) / mit(b.atk * (id === "fury" ? k : 1), F("dfn") / (id === "pierce" ? k : 1));
 };
 
 // ── 자동 도전: 첫 환생 후 해금. 1초에 한 판씩 연출 없이 같은 규칙으로 싸운다.
@@ -1661,6 +1733,7 @@ function autoStep(){
     if (quickFight(boss(next))) {
       winStage(next); autoMsg = `${next}. ${slotOf(next).name} 격파`;
       if (rare) { dexNews = catchRare(next); put(); }
+      if (rollShard(next)) put();
       drawAll();
     } else {
       autoFailSig = statSig() + "@" + next;
@@ -1687,7 +1760,8 @@ function autoStep(){
     const drop = rollRelic(g, slotOf(g), false);
     if (drop) relicNews = drop;
     if (rare) dexNews = catchRare(g);
-    if (drop || rare) { put(); drawAll(); }
+    const shard = rollShard(g);
+    if (drop || rare || shard) { put(); drawAll(); }
   } else farmL++;
   autoSay(`${g}스테이지 반복 중${ps.length > 1 ? ` (고른 ${ps.length}곳 순회)` : ""}`
     + ` · 승 ${farmW} 패 ${farmL}${next <= tgt ? ` · ${next}스테이지는 아직 무리` : ""}`);
@@ -2225,6 +2299,53 @@ function drawDex(){
     이미 잡은 황금은 다시 잡아도 혼을 주지 않는다 — 켜 두기만 해서 혼이 쌓이지 않게.</div>`;
 }
 
+// ── 변이 내성: 조각으로 변이를 한 레벨씩 지운다. 한 겹에 K.mutLv 레벨이고, 닿은 깊이만큼만 올릴 수 있다
+// (6~10층에 닿았으면 한 겹, 11층부터 두 겹). 변종 층이 열리기 전에는 안내만 한다.
+const mutLaps = () => Math.max(0, Math.ceil((Math.floor(((save.best || 0)) / N) + 1 - THEMES.length) / MUTS.length));
+const mutCap = () => mutLaps() * K.mutLv;        // 지금 올릴 수 있는 내성의 끝
+function buyRes(id, cnt){
+  for (let i = 0; i < cnt; i++) {
+    const lv = resOf(id), c = shardCost(lv);
+    if (lv >= mutCap() || (save.shards | 0) < c) break;
+    save.shards -= c; save.res = {...(save.res || {}), [id]: lv + 1};
+  }
+  put(); drawAll();
+}
+function drawMuts(){
+  const here = floorNow(), cur = mutOf((here - 1) * N + 1);
+  // 던전 카드 맨 위: 지금 층의 변이. 사라졌으면 사라졌다고 적는다
+  $("mutNote").innerHTML = !cur ? "" : mutPow((here - 1) * N + 1) > 1
+    ? `<div class="wall" style="margin:0 0 8px">${cur.emoji} 변이 <b>${cur.name}</b> — ${mutText(cur, mutPow((here - 1) * N + 1))}.
+       반복 전투로 변이 조각을 모아 내성을 올리면 약해진다.</div>`
+    : `<div class="banner" style="margin:0 0 8px">${cur.emoji} 변이 ${cur.name} — 내성으로 지웠다.</div>`;
+  $("mutHead").textContent = mutLaps() || (save.shards | 0) ? `조각 ${n(save.shards | 0)}` : "";
+  $("mutNews").innerHTML = shardNews ? `<div class="banner">${shardNews}</div>` : "";
+  if (!mutLaps()) {
+    $("muts").innerHTML = "";
+    $("mutHelp").innerHTML = `<div class="dim">${THEMES.length}층을 다 깨면(${N * THEMES.length}스테이지) 변종 층이 열린다.
+      변종 보스는 층마다 특수한 능력(변이)을 하나 갖고, 반복 전투로 얻는 변이 조각으로 그 능력을 지운다.</div>`;
+    return;
+  }
+  const cap = mutCap();
+  $("muts").innerHTML = MUTS.map((m, i) => {
+    const lv = resOf(m[0]), c = shardCost(lv), full = lv >= cap, can = !full && (save.shards | 0) >= c;
+    const fl = THEMES.length + 1 + i;                       // 이 변이가 처음 나오는 층
+    const k = Math.max(1, Math.pow(m[3], 1 - lv / K.mutLv)); // 첫 겹이 지금 몇 배인가
+    return `<span>${m[2]} ${m[1]} <small>${fl}층${mutLaps() > 1 ? "·" + (fl + MUTS.length) + "층" : ""} —
+        ${k > 1 ? m[4].replace("{0}", +k.toFixed(2)) : "첫 겹을 지웠다"}${
+        lv > K.mutLv ? ` · 둘째 겹 ${m[4].replace("{0}", +Math.max(1, Math.pow(m[3], 2 - lv / K.mutLv)).toFixed(2))}` : ""}</small></span>
+      <b class="soul">Lv.${lv}/${cap}</b>
+      <span class="dim" style="font-size:11px;text-align:right;white-space:nowrap">${full ? "" : n(c) + "조각"}</span>
+      <button data-m="${m[0]}" ${can ? "" : "disabled"}>${full ? "끝" : "내성 +1"}</button>`;
+  }).join("");
+  $("muts").querySelectorAll("button[data-m]").forEach(b => b.onclick = () => buyRes(b.dataset.m, 1));
+  $("mutHelp").innerHTML = `<div class="dim" style="font-size:11px;margin-top:8px">
+    변종 층(${THEMES.length + 1}층~)의 보스는 층마다 변이 하나를 갖는다 — 능력치 하나에 배수가 걸린다.
+    변종 층의 보스를 이길 때마다 ${+(K.shardRate * 100).toFixed(1)}% 로 변이 조각이 나온다. 반복 전투가 주된 길이다.
+    내성 ${K.mutLv}레벨이면 그 변이 한 겹이 사라진다. ${THEMES.length + MUTS.length + 1}층부터는 변이가 두 겹이라 ${K.mutLv}레벨이 더 든다.
+    조각은 변이를 지우는 데만 쓴다 — 다 모아도 변이가 없던 때보다 빨라지지는 않는다. 환생해도 남는다.</div>`;
+}
+
 // ── 환생 보너스: 환생할 때마다 얻는 혼(환생·원정·미션·유물 중복)이 K.rbSoul 씩 영구히 는다
 function drawRbBonus(){
   // 혼 배수는 셋(환생·유물·수확)이 곱해진다. 따로 두면 산 특성이 얼마나 일하는지 볼 데가 없다.
@@ -2240,17 +2361,32 @@ function drawRbBonus(){
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); };
+const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawMuts(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 // DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라
 // 천 단위 DEF 가 아무 일도 못 했고, 뚫고 못 뚫고의 벼랑만 있었다. 파이썬 mitigate() 와 같은 식.
 const dmgOf = (a, d, crit) => {
   const p = a.atk * (0.85 + Math.random()*0.3) * (crit ? a.cdmg / 100 : 1);
-  return Math.max(1, Math.round(p * p / (p + d.dfn)));
+  return Math.max(1, Math.round(p * p / (p + d.dfn) / (a.div || 1)));      // div = 철갑 변이
 };
-const newFighters = b => [{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit"), cdmg:F("cdmg")},
-                          {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}];
+const newFighters = b => mutate([{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit"), cdmg:F("cdmg")},
+                                  {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}], b.g);
+// 변이를 두 싸움꾼에게 건다. beatable() 과 파이썬 turns_to_win() 이 같은 규칙을 쓴다
+function mutate(pair, g){
+  const [me, foe] = pair, id = mutId(g), k = mutPow(g);
+  if (id === "armor") me.div = k;                           // 내가 주는 피해 ÷k
+  if (id === "curse") { me.hp /= k; me.max /= k; }          // 내 최대 HP ÷k
+  if (id === "fury") foe.atk *= k;                          // 보스 ATK xk
+  if (id === "pierce") me.dfn /= k;                         // 내 DEF ÷k
+  if (id === "numb") me.cdmg = Math.max(100, me.cdmg / k);  // 내 치명타 피해 ÷k
+  return pair;
+}
+// 변이 조각: 변종 층의 보스를 이기면 가끔 나온다. 반복 전투가 주된 길이다 — 켜 둔 시간이 내성이 된다.
+// 혼이 아니라 '변이를 지우는 힘' 만 사므로, 다 모아도 변이가 없던 때보다 빨라지지 않는다 (selftest 가 붙든다).
+let shardNews = "";
+const rollShard = g => { if (!mutOf(g) || Math.random() >= K.shardRate) return false;
+  save.shards = (save.shards | 0) + 1; return true; };
 // 승리 처리 (수동·자동 공통). 유물이 나오면 그 안내 문구를 돌려준다.
 const winStage = g => {
   const first = g > (save.best || 0);             // 역대 처음 깬 스테이지
@@ -2290,6 +2426,7 @@ function fightStart(g, slot, b){
   say(`${slot.emoji} ${g}스테이지 — ${slot.name} 등장!`
       + (xtra(b) ? ` <span class="dim">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""));
   if (fightRare) say(`<span class="gold">황금 개체다 — 이기면 도감에 오른다.</span>`);
+  if (mutId(g)) say(`<span class="lose">${mutOf(g).emoji} 변이 ${mutOf(g).name} — ${mutText(mutOf(g), mutPow(g))}</span>`);
   paint(me, foe);
   timer = setInterval(() => {
     if (++turn > 200) return end(false, me, foe, g, slot, "소모전 — 화력이 부족하다");
@@ -2325,6 +2462,7 @@ function end(won, me, foe, g, slot, why){
     const drop = winStage(g);
     if (drop) say(`<span class="gold">${drop}</span>`);
     if (fightRare) { dexNews = catchRare(g); put(); say(`<span class="gold">${dexNews}</span>`); }
+    if (rollShard(g)) { put(); say(`<span class="soul">변이 조각 +1 (보유 ${n(save.shards)})</span>`); }
     if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층 ${slotOf(g+1).theme} 이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);
   } else {
@@ -3168,6 +3306,63 @@ def _check_themes():
     assert set(boss(1)) == {"hp", "atk", "dfn", "spd"}, "보스 능력치에 테마가 섞였다 — 밸런스는 스테이지 번호만 본다"
 
 
+def _check_muts():
+    """변이와 변이 조각. 지켜야 할 것은 넷이다.
+
+    (1) 변이는 언제나 불이익이다 — 내성을 아무리 올려도 변이가 없던 때보다 쉬워지지 않는다. 조각은 반복 전투
+        (토큰이 안 드는 시간)로 벌기 때문에, 덤이 생기면 켜 두기만 해서 환생 기운 제한을 돈다.
+    (2) 다섯 변이의 무게가 비슷하다 — 하나만 가벼우면 그 층은 조각을 캘 이유가 없고, 하나만 무거우면 그 층이 벽이다.
+    (3) 조각을 한 번도 안 캐도 막히지는 않는다 — 이건 _check_balance 의 속도 검사가 본다(내성 없이 돈다).
+    (4) 내성 한 겹은 '몇 시간' 의 일이다 — 몇 분이면 장애물이 아니고 며칠이면 못 한다."""
+    n, nt = len(AFFIXES), len(THEMES)
+    assert all(mut_of(g) is None for g in range(1, n * nt + 1)), "1~5층에 변이가 붙었다"
+    assert [mut_of(n * (nt + i) + 1) for i in range(len(MUTS) + 1)] == \
+        [(m[0], 1) for m in MUTS] + [(MUTS[0][0], 2)], "변이가 6층부터 차례로 붙고 11층에서 두 겹이 되지 않는다"
+    assert len({m[0] for m in MUTS}) == len(MUTS) and all(m[3] > 1 and "{0}" in m[4] for m in MUTS), "변이 표가 어긋났다"
+    h = hero(BALANCE_HEROES[1][1])
+    alloc = {"atk": 20, "hp": 10, "dfn": 10, "crit": 5, "cdmg": 5, "spd": 5}
+    tr = {"atk": 100, "hp": 100, "dfn": 88, "cdmg": 75}
+    for i, m in enumerate(MUTS):
+        g = n * (nt + i) + 5                     # 이 변이가 붙는 층 — 배수는 여기서 읽는다
+        b = boss(80)                             # 무게는 이 빌드가 막히는 깊이(80스테이지 언저리)에서 잰다.
+        k0, d0 = turns_to_win(h, b, alloc, tr)   # 빌드보다 한참 깊은 데서 재면 DEF 가 이미 무의미해 관통이 0 으로 나온다
+        seen = []
+        for lv in (0, 3, MUT_LV, MUT_LV + 5, 3 * MUT_LV):
+            mid, power = mut_power(g, {m[0]: lv})
+            assert power >= 1, f"{m[1]} 내성 {lv}레벨: 배수 {power} — 1 아래면 변이가 덤이 된다"
+            k, d = turns_to_win(h, b, alloc, tr, (mid, power))
+            assert k >= k0 - 1e-9 and d <= d0 + 1e-9, f"{m[1]} 내성 {lv}레벨에서 변이가 없을 때보다 쉽다"
+            seen.append((d / k) / (d0 / k0))
+        assert seen == sorted(seen) and abs(seen[2] - 1) < 1e-9 and abs(seen[-1] - 1) < 1e-9, \
+            f"{m[1]}: 내성을 올릴수록 약해지다가 {MUT_LV}레벨에서 사라져야 한다 — {seen}"
+        # 광폭(보스 ATK)은 내 DEF 가 보스 ATK 보다 낮은 빌드에서 가볍다 — 그 경우가 0.57 이다. 최적 배분으로는 0.33 안팎
+        assert 0.2 <= seen[0] <= 0.6, f"{m[1]}의 무게가 {seen[0]:.2f} — 다섯 변이는 여유를 1/5~3/5 로 줄여야 한다"
+    assert mut_power(n * (nt + len(MUTS)) + 1, {MUTS[0][0]: MUT_LV})[1] == MUTS[0][3], "두 겹째는 내성 10레벨로 한 겹만 지워져야 한다"
+    hours = sum(shard_cost(l) for l in range(MUT_LV)) / SHARD_RATE / 3600
+    assert 6 <= hours <= 30, f"내성 한 겹이 반복 전투 {hours:.1f}시간이다 — 6~30시간이어야 한다"
+    assert all(shard_cost(l) < shard_cost(l + 1) for l in range(3 * MUT_LV)), "내성 값이 오르지 않는다"
+
+
+def _mut_walls(h):
+    """변이가 걸린 층에서 '어디서 막히는가' 를 화면과 맞대 볼 값. 내성에 따라 벽이 달라져야 한다.
+    두 빌드를 쓴다 — 벽이 6층(철갑)에 서는 것과 8층(광폭)에 서는 것."""
+    alloc = {"atk": 20, "hp": 10, "dfn": 10, "crit": 5, "cdmg": 5, "spd": 5}
+    out = []
+    for tr in ({"atk": 100, "hp": 100, "dfn": 88, "cdmg": 75, "soul": 20, "pt": 10},
+               {"atk": 140, "hp": 140, "dfn": 120, "cdmg": 105, "soul": 20, "pt": 10}):
+        cases = []
+        for res in ({}, {"armor": 4}, {m[0]: MUT_LV for m in MUTS}, {m[0]: 2 * MUT_LV for m in MUTS}):
+            g = 1
+            while g < 400:
+                kill, die = turns_to_win(h, boss(g), alloc, tr, mut_power(g, res))
+                if kill >= die:
+                    break
+                g += 1
+            cases.append([res, g])
+        out.append({"alloc": alloc, "traits": tr, "cases": cases})
+    return out
+
+
 def _check_js():
     """화면 쪽(JS)을 node 로 실제로 돌린다 — tests/game_smoke.js 가 가짜 DOM 위에서 버튼을 눌러 한 바퀴 돈다.
 
@@ -3227,6 +3422,9 @@ def _check_js():
                                                   TRANS_EXP - 1, TRANS_EXP, TRANS_EXP * 3)],
             "cost": [trait_cost(lv) for lv in range(0, 121)],
             "slots": [[g, slot_of(g)] for g in list(range(1, 77)) + [90, 150, 151, 165, 226, 300]],
+            "mutWall": _mut_walls(h),
+            "mut": [[g, (mut_of(g) or (None, 0))[0], (mut_of(g) or (None, 0))[1], mut_power(g)[1]]
+                    for g in (1, 75, 76, 90, 91, 106, 121, 136, 150, 151, 166, 226, 301)],
             "side": [[g, round(side_base(g) * dungeons()[(g - 1) % len(BOSSES)]["soul"])]
                      for g in list(range(1, 91)) + [120, 150, 200]],
             "soul": [[g, round(soul_base(g) * dungeons()[(g - 1) % len(BOSSES)]["soul"])]
@@ -3266,6 +3464,7 @@ def _demo():
     _check_update_app()
     _check_cli_flags()
     _check_themes()
+    _check_muts()
     _check_js()
     assert level_of(0) == 1 and level_of(exp_for(2)) == 2 and level_of(exp_for(2) - 1) == 1
     assert [level_of(e) for e in (5_460, 268_800, 2_211_300)] == [2, 5, 10]   # 저렙 완만 구간

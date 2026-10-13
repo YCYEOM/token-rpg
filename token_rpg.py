@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.1"
+__version__ = "0.18.2"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1258,8 +1258,19 @@ const rareOf = slot => ({...slot, name: "황금 " + slot.name, emoji: slot.emoji
 // 아래에 두면 TDZ 로 스크립트 전체가 죽는다. node --check 는 문법만 보므로 이걸 못 잡는다.
 const TM = k => K.tmuls[k] || K.tmul;
 // 1,000 이상은 1.25K · 12.5M · 3.4B 처럼 줄인다 — 커진 숫자가 좁은 팝오버에서 밀리지 않게
-const compact = new Intl.NumberFormat("en", {notation: "compact", maximumSignificantDigits: 3});
-const n = x => Math.abs(x) < 1000 ? String(Math.round(x)) : compact.format(x);
+// 단위는 직접 붙인다. 예전엔 Intl 의 compact 를 썼는데 T(조) 다음 단위가 없어서 1000T · 12,500T ·
+// 3,400,000T 로 끝없이 길어졌다 — 보스 HP 가 120스테이지쯤에 거기 닿는다. 유효숫자는 셋이다.
+// K M B T 까지만 글자고, 그 위(10^15~)는 승수로 적는다 — 1.25e16. Qa · Qi · Sx 같은 약자도 넣어 봤는데
+// 뜻을 외워야 읽힌다. 승수는 숫자 하나만 견주면 된다 (e18 이 e15 보다 크다).
+const UNITS = ["K", "M", "B", "T"];
+const n = x => { const a = Math.abs(x);
+  if (!(a >= 1000) || !isFinite(a)) return String(Math.round(x));
+  let u = Math.floor(Math.log10(a) / 3), v = +(a / Math.pow(1000, u)).toPrecision(3);
+  if (v >= 1000) { u++; v = +(a / Math.pow(1000, u)).toPrecision(3); }      // 999.5K 는 1M 이다
+  if (v < 1) { u--; v = +(a / Math.pow(1000, u)).toPrecision(3); }          // log10 의 끝자리 오차
+  const sign = x < 0 ? "-" : "";
+  if (u > UNITS.length) { const [m, e] = a.toExponential(2).split("e"); return sign + +m + "e" + +e; }   // 반올림 넘침(9.996e14 -> 1e15)은 toExponential 이 맡는다
+  return sign + v + UNITS[u - 1]; };
 // 스탯은 1,000 아래에서 소수 한 자리가 뜻이 있다(DEF 281.8) — 그 위는 n() 으로 줄인다
 const ns = (x, d) => Math.abs(x) < 1000 ? String(+x.toFixed(d)) : n(x);      // 100.0 은 100 으로 — 좁은 칸에서 한 글자가 아쉽다
 // 원정은 초당 소수점 단위로 쌓인다 — 정수로 표시하면 멈춘 것처럼 보인다

@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, mutOf, mutPow, mutId, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, mutOf, mutPow, mutId, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -201,6 +201,13 @@ function parity(g) {
     for (const k of Object.keys(want))
       ok(s[k] === want[k], `${n}스테이지 칸의 ${k}: 화면 ${s[k]} · 파이썬 ${want[k]}`);
   }
+  // 큰 수의 단위: T 다음에도 단위가 있어야 한다. 없으면 12,500T 처럼 끝없이 길어져 칸을 넘는다
+  for (const [x, want] of [[0, "0"], [999, "999"], [999.6, "1000"], [1000, "1K"], [1250, "1.25K"], [12500, "12.5K"], [125000, "125K"],
+                           [999499, "999K"], [999500, "1M"], [1.25e12, "1.25T"], [9.99e14, "999T"], [9.996e14, "1e15"], [1e15, "1e15"], [1.25e16, "1.25e16"],
+                           [3.4e18, "3.4e18"], [9.999e20, "1e21"], [5e24, "5e24"], [7.77e27, "7.77e27"], [1e30, "1e30"], [9.99e35, "9.99e35"],
+                           [1e36, "1e36"], [4.56e40, "4.56e40"], [-2500, "-2.5K"], [-3e17, "-3e17"], [1e3 - 1e-9, "1000"]])
+    ok(t.n(x) === want, `숫자 줄이기 ${x}: ${t.n(x)} — ${want} 이어야 한다`);
+  for (let p = 3; p < 99; p += 0.37) ok(t.n(Math.pow(10, p)).length <= 7, `10^${p.toFixed(2)} 이 ${t.n(Math.pow(10, p))} 로 길다`);
   e.exp.forEach((want, i) => ok(t.expFor(i + 1) === want, `Lv.${i + 1} EXP: 화면 ${t.expFor(i + 1)} · 파이썬 ${want}`));
   for (const [x, want] of e.levels) ok(t.levelOf(x) === want, `EXP ${x}: 화면 Lv.${t.levelOf(x)} · 파이썬 Lv.${want}`);
   e.cost.forEach((want, lv) => ok(t.costOf(lv) === want, `특성 ${lv}레벨 비용: 화면 ${t.costOf(lv)} · 파이썬 ${want}`));

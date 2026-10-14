@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.4"
+__version__ = "0.18.5"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -256,19 +256,13 @@ REBIRTH_SOUL = 0.02  # 환생 1회마다 얻는 혼 +2% (선형 누적). 옛 축
 # 환생이 주 수입원이어야 하므로 demo() 에서 환생 수입과 비교해 상한을 지킨다.
 DAY_BUDGET, WEEK_BUDGET = 5, 20
 
-# 미니게임(혼 사냥): 손으로 직접 벌어가는 칸. 단위는 미션과 같다(최고 스테이지 보스 격파 몇 번분).
-# 하루 예산이 고정이라 아무리 잘해도 진행 속도가 흔들리지 않는다 — 실력은 '얼마나 빨리 하루치를
-# 채우느냐'만 바꾼다. MINI_BEST 는 과녁 한가운데(정확)일 때 배수다.
-MINI_TRIES, MINI_BUDGET, MINI_BEST = 3, 2, 1.5
-MINI_SHOTS = 5       # 한 판에 쏘는 횟수. 발마다 표식이 빨라진다 — 한 번 눌러 끝나면 게임이 아니다
-
 # 슬롯: 실력이 없는 칸이라 하루 판수만 정해 주고 나머지는 운에 맡긴다. 단위는 위와 같다.
 # SLOT_AVG 는 SLOT_SYM 문양표에서 나오는 한 판 평균 배당이고, 지급을 이 값으로 나눠 둔다 —
 # 그래야 표를 어떻게 흔들어도 하루 기대 수입이 SLOT_BUDGET 에 붙박이고 변동성만 남는다.
 # (selftest 가 문양표에서 다시 계산해 이 값을 붙들고 있다)
-# 예산이 2 면 selftest 의 1층 상한(주간 미션 수입 < 환생 x2)을 넘는다 — 하루 벌이 칸이
-# 미션·혼 사냥으로 이미 거의 차 있어서 여기 남은 자리가 1 격파분뿐이다.
-SLOT_TRIES, SLOT_BUDGET, SLOT_AVG = 10, 1, 2.42
+# 예산은 4 격파분이다. 혼 사냥(하루 2 격파분 x 한가운데 1.5배 = 3)을 v0.18.5 에 없애며 그 몫을 여기로
+# 옮겼다 — 보조 수입 총량은 그대로라 selftest 의 1층 상한(주간 미션 수입 < 환생 x2)도 그대로 지킨다.
+SLOT_TRIES, SLOT_BUDGET, SLOT_AVG = 10, 4, 2.42
 # 하루 몫을 다 쓴 뒤에도 돌리는 것 자체는 막지 않는다(연습판). 혼만 안 들어간다 —
 # 못 누르게 막아 두면 하루 열 판이 끝인 칸이 되고, 돌리는 재미가 예산과 묶일 이유는 없다.
 
@@ -870,7 +864,7 @@ def side_scale(g):
 
 
 def side_base(g):
-    """보조 수입(원정·미션·혼 사냥·슬롯·유물 중복·황금 개체)이 쓰는 혼의 기준값.
+    """보조 수입(원정·미션·슬롯·유물 중복·황금 개체)이 쓰는 혼의 기준값.
     JS 의 sideSoul() 과 같은 식이어야 한다.
 
     보조 수입은 '최고 스테이지 보스 몇 판치' 로 정해져 있다(원정 하루 26판치, 미션 13판치…).
@@ -1032,8 +1026,6 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
                   "dayBudget": DAY_BUDGET, "weekBudget": WEEK_BUDGET,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX,
-                  "miniTries": MINI_TRIES, "miniBudget": MINI_BUDGET, "miniBest": MINI_BEST,
-                  "miniShots": MINI_SHOTS,
                   "rareRate": RARE_RATE, "rareMul": RARE_MUL, "dexSoul": DEX_SOUL, "dexPt": DEX_PT,
                   "raidBudget": RAID_BUDGET, "raidMinBest": RAID_MIN_BEST, "raidMinHp": RAID_MIN_HP,
                   "mutLv": MUT_LV, "shardRate": SHARD_RATE, "shardK": SHARD_K, "shardStep": SHARD_STEP,
@@ -1185,11 +1177,6 @@ margin-top:10px;padding-top:8px}
   <div id="raid"></div>
 </details>
 
-<details class="card" data-k="mini" open>
-  <summary><h2>혼 사냥 <span class="soul" id="miniLeft"></span></h2></summary>
-  <div id="mini"></div>
-</details>
-
 <details class="card" data-k="slot" open>
   <summary><h2>슬롯 <span class="gold" id="slotHead"></span></h2></summary>
   <div id="slot"></div>
@@ -1296,7 +1283,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+TM("atk")+"/lv"],["hp","혼의 �
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:true, claimed:{}, relics:{}, rbExp:null, farm:0,
-            trans:0, mini:{day:"", n:0}, dex:{}, raid:{wk:"", got:[]}, shards:0, res:{}});
+            trans:0, dex:{}, raid:{wk:"", got:[]}, shards:0, res:{}});
 
 // ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
 // EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
@@ -1325,7 +1312,7 @@ const note = t => { $("expedBanner").innerHTML = `<div class="banner">${t}</div>
 const adopt = d => { rev = d.rev; save = Object.assign(fresh(), d.save || {}); fill(); };
 // 옛 저장에는 새로 생긴 스탯 칸(cdmg 등)이 없다 — 비어 있으면 계산이 전부 NaN 이 된다
 function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; save.traits = {...f.traits, ...save.traits};
-                 delete save.bless; delete save.blessOffer;     // 없어진 축복 칸은 저장에서 치운다
+                 delete save.bless; delete save.blessOffer; delete save.mini;   // 없어진 칸(축복·혼 사냥)은 저장에서 치운다
   // 도감이 없던 저장: 이미 깬 스테이지의 보스는 본 것으로 찍어 준다 (황금은 지금부터 잡는다)
   save.dex = {...dexOf(save)};
   const seen = Math.min(Math.max(save.best || 0, ...(save.cleared || [])), N * THEMES.length);
@@ -1415,7 +1402,7 @@ const soulRaw = (g, late) => Math.round(Math.pow(g, K.soulExp) * (late ? lateMul
                                 * (1 + K.tsoul/100 * save.traits.soul) * (1 + dexSoul()/100));
 // 환생할 때 정산되는 혼. 후반 배율은 여기에만 붙는다.
 const soulOf = g => soulRaw(g, true);
-// 보조 수입(원정·미션·혼 사냥·슬롯·유물 중복·황금 개체)이 쓰는 혼. 파이썬 side_base().
+// 보조 수입(원정·미션·슬롯·유물 중복·황금 개체)이 쓰는 혼. 파이썬 side_base().
 // 후반 배율을 그대로 붙이면(v0.14.11) 보조 수입이 환생보다 많이 벌고, 안 붙이면 깊은 층에서 죽는다.
 // 환생이 커진 만큼만(sideScale) 키운다 — 깊은 층에서도 환생 대비 예전 비율로 남는다.
 const sideSoul = g => soulRaw(g, false);
@@ -1643,7 +1630,7 @@ const decodeSave = code => {
 };
 // 체크섬이 맞아도 규칙상 불가능한 값은 거른다: 음수·소수, 레벨이 준 것보다 많은 배분
 const validSave = s => !!s && Array.isArray(s.cleared) && !!s.traits && !!s.alloc && !!s.exped
-  && [s.souls, s.rebirths, s.best, s.trans ?? 0, (s.mini || {}).n || 0, s.shards ?? 0, ...Object.values(s.res || {}), ...s.cleared,
+  && [s.souls, s.rebirths, s.best, s.trans ?? 0, s.shards ?? 0, ...Object.values(s.res || {}), ...s.cleared,
       ...Object.values(s.traits), ...Object.values(s.alloc)]
        .every(v => Number.isInteger(v) && v >= 0)
   && Object.values(s.dex || {}).every(v => v === 1 || v === 2)
@@ -2036,108 +2023,8 @@ function drawRaid(){
   $("raid").querySelectorAll("button[data-r]").forEach(b => b.onclick = () => raidClaim(+b.dataset.r));
 }
 
-// ── 혼 사냥: 하루 K.miniTries 판, 한 판은 K.miniShots 발. 왕복하는 표식을 과녁에서 멈춘다.
-// 게임 안의 행동으로 혼을 버는 유일한 칸이라 예산을 미션과 같은 단위로 묶어 뒀다 —
-// 아무리 잘해도 하루 K.miniBudget x K.miniBest 격파분이 끝이다. 실력은 수입의 상한이 아니라
-// 그 상한을 채우는 속도만 바꾼다. (demo() 의 밸런스 검사가 이 상한을 붙들고 있다)
-const MINI_P0 = 2400;           // 첫 발 왕복(ms)
-// 맞힌 발 하나당 이만큼 빨라진다. '발 수'가 아니라 '명중 수'에 걸어 둔다 —
-// 빗나가면 속도가 그대로라, 못 맞히는 사람에게 벌로 더 어려워지지 않는다.
-const MINI_RAMP = 0.85;
-const MINI_HALF = 9;            // 과녁 반폭(%)
-const MINI_EYE = 0.2;           // 이 안쪽이 한가운데(x K.miniBest). 화면의 금색 띠와 같은 값이어야 한다
-const MINI_HOLD = 650;          // 맞은 자리를 보여주는 시간(ms) — 바로 다음 발이 뛰면 맞췄는지 알 수 없다
-const miniDay = () => { const m = save.mini || {}; return m.day === daysBack(0) ? m : {day: daysBack(0), n: 0}; };
-const miniLeft = () => Math.max(0, K.miniTries - (miniDay().n | 0));
-const miniP = () => MINI_P0 * Math.pow(MINI_RAMP, miniHits);
-const miniSpd = () => MINI_P0 / miniP();        // 지금 속도 배수 (표시용)
-// 표식 위치: 이번 발이 시작된 때부터의 삼각파. 프레임을 건너뛰어도 위치가 어긋나지 않는다
-const miniPos = () => { const x = ((Date.now() - miniT0) % miniP()) / miniP() * 2; return 100 * (x < 1 ? x : 2 - x); };
-const miniAcc = d => d > MINI_HALF ? 0 : d < MINI_HALF * MINI_EYE ? K.miniBest : 1 - d / MINI_HALF;
-let miniRun = false, miniHold = false, miniT0 = 0, miniZone = 50;
-let miniShot = 0, miniHits = 0, miniEarned = 0, miniMsg = "", miniMark = null;
-
-const miniAim = () => { miniZone = MINI_HALF + Math.random() * (100 - 2 * MINI_HALF); miniT0 = Date.now(); };
-const miniStep = () => { if (!miniRun || miniHold) return;
-  const pin = $("miniPin"); if (pin) pin.style.left = miniPos() + "%";
-  requestAnimationFrame(miniStep); };
-
-function miniStart(){
-  if (miniRun || miniHold || !save.best || miniLeft() <= 0) return;
-  // 판을 시작하는 순간 1회가 빠진다 — 불리한 발을 새로고침으로 무를 수 없게
-  save.mini = {day: daysBack(0), n: (miniDay().n | 0) + 1};
-  miniShot = 0; miniHits = 0; miniEarned = 0; miniMsg = ""; miniMark = null; miniRun = true;
-  miniAim(); put(); drawAll(); miniStep();
-}
-function miniStop(){
-  if (!miniRun || miniHold) return;
-  const at = miniPos(), acc = miniAcc(Math.abs(at - miniZone));
-  // 혼은 발마다 바로 들어온다 — 스테이지 격파와 달리 환생 정산을 기다리지 않는다
-  const pay = Math.round(sideSoul(Math.max(1, save.best))
-                         * K.miniBudget / (K.miniTries * K.miniShots) * acc);
-  save.souls += pay; miniEarned += pay;
-  // 멈춘 자리를 그대로 남겨 둔다 — 과녁과 얼마나 어긋났는지 눈으로 봐야 다음 발이 는다
-  miniMark = {at, acc};
-  const off = Math.abs(at - miniZone).toFixed(1);
-  const hit = acc >= K.miniBest ? `<span class="crit">한가운데! +${n(pay)} 혼</span>`
-            : acc ? `<span class="win">명중 +${n(pay)} 혼</span> <span class="dim">· ${off}%p 빗나감 (x${acc.toFixed(2)})</span>`
-                  : `<span class="lose">빗나갔다</span> <span class="dim">· ${off}%p</span>`;
-  miniHold = true;
-  if (acc) miniHits++;                     // 맞힐수록 다음 발이 빨라진다
-  const last = ++miniShot >= K.miniShots;
-  miniMsg = last ? `${hit} · <span class="soul">이번 판 혼 ${n(miniEarned)}</span>`
-         : acc  ? `${hit} <span class="dim">· 다음 발 속도 x${miniSpd().toFixed(2)}</span>`
-                : `${hit} <span class="dim">· 속도는 그대로다 (x${miniSpd().toFixed(2)})</span>`;
-  if (last) miniRun = false;
-  put(); drawAll();
-  setTimeout(() => {                       // 결과를 보여준 뒤 다음 발
-    miniHold = false;
-    if (!last) { miniMark = null; miniAim(); drawMini(); miniStep(); } else { drawMini(); }
-  }, MINI_HOLD);
-}
-function drawMini(){
-  const rest = miniLeft();
-  $("miniLeft").textContent = save.best
-    ? (miniRun ? `${Math.min(miniShot + 1, K.miniShots)}/${K.miniShots}발 · 명중 ${miniHits} · 속도 x${miniSpd().toFixed(2)} · 혼 ${n(miniEarned)}`
-               : `오늘 ${rest}/${K.miniTries}판`)
-    : "";
-  if (!save.best) {
-    $("mini").innerHTML = '<div class="dim">스테이지를 하나 클리어하면 사냥터가 열린다.</div>';
-    return;
-  }
-  const full = Math.round(sideSoul(save.best) * K.miniBudget / K.miniTries * K.miniBest);
-  const m = miniMark;
-  // 멈춘 표식: 한가운데 금색 · 명중 초록 · 빗나감 빨강. 흐르는 표식은 늘 금색 실선
-  const mc = !m ? "" : m.acc >= K.miniBest ? "var(--gold)" : m.acc ? "var(--xp)" : "var(--hp)";
-  $("mini").innerHTML =
-    `<div class="bar" style="height:22px;position:relative;margin:2px 0 8px;overflow:visible">
-       <i style="position:absolute;left:${miniZone - MINI_HALF}%;width:${2 * MINI_HALF}%;height:100%;
-          background:var(--soul);opacity:${m && m.acc ? .75 : .35}"></i>
-       <i style="position:absolute;left:${miniZone - MINI_HALF * MINI_EYE}%;
-          width:${2 * MINI_HALF * MINI_EYE}%;height:100%;background:var(--gold);
-          opacity:${m && m.acc >= K.miniBest ? 1 : .6}"></i>
-       ${m ? `<i class="${m.acc ? "thud" : "miss"}" style="position:absolute;left:${m.at}%;
-          width:5px;height:100%;background:${mc};box-shadow:0 0 8px ${mc}"></i>` : ""}
-       <i id="miniPin" style="position:absolute;left:${miniRun && !miniHold ? miniPos() : 0}%;
-          width:3px;height:100%;background:var(--fg);
-          visibility:${miniRun && !miniHold ? "visible" : "hidden"}"></i></div>
-     <button class="big" id="miniBtn" ${(rest <= 0 && !miniRun) || miniHold ? "disabled" : ""}>${
-       miniRun ? `멈춰라! (${Math.min(miniShot + 1, K.miniShots)}/${K.miniShots})`
-               : rest > 0 ? `사냥 시작 — ${K.miniShots}발` : "오늘 몫을 다 캤다 — 자정에 다시"}</button>
-     <div style="margin-top:8px;font-size:13px;min-height:20px">${miniMsg}</div>
-     <div class="dim" style="font-size:11px">
-       <span class="gold">금색 띠</span>가 한가운데 — 거기서 멈추면 x${K.miniBest},
-       <span class="soul">보라 띠</span> 안이면 중심에 가까울수록 더 준다. 밖이면 0이다.
-       한 판 ${K.miniShots}발. <b>맞힐수록 표식이 빨라지고</b>, 빗나가면 속도는 그대로다 —
-       다 맞히면 최대 혼 ${n(full)}.
-       보상은 역대 최고 스테이지(${save.best})를 따라 오른다.
-       하루 ${K.miniTries}판, 시작하면 한 판이 빠진다. 자정에 초기화된다.</div>`;
-  const b = $("miniBtn");
-  if (b) b.onclick = () => miniRun ? miniStop() : miniStart();
-}
-
 // ── 슬롯: 3x3, 가로 셋 + 세로 셋 + 대각 둘 = 여덟 줄. 하루 K.slotTries 판을 그냥 준다.
-// 혼 사냥이 실력으로 버는 칸이라면 여기는 운으로 버는 칸이다 — 잘 하고 못 하고가 없으니
+// 운으로 버는 칸이다 — 잘 하고 못 하고가 없으니
 // 하루 기대 수입을 K.slotBudget 격파분에 못박고(slotPay 가 평균 배당으로 나눈다) 변동성만 남긴다.
 // 스테이지 클리어마다 한 장씩 주는 안은 접었다 — 원정 자동반복이 1초에 한 판이라 티켓이 무한이 되고,
 // '처음 깬 스테이지만' 으로 막으면 이번엔 하루 한두 장이라 열어볼 이유가 안 된다.
@@ -2158,7 +2045,7 @@ let slotG = [[0, 1, 2], [3, 1, 0], [2, 0, 4]], slotDone = 3, slotWin = [], slotM
 let slotEarned = 0;                             // 오늘 이 칸에서 번 혼 — 화면에만 쓰고 저장하지 않는다
 let slotDry = false;                            // 이번 판이 연습판인가(오늘 몫을 다 쓴 뒤)
 const slotLit = (c, r) => slotWin.some(L => L.some(x => x[0] === c && x[1] === r));
-// 남은 판수는 혼 사냥과 같은 모양으로 저장한다(날짜 + 쓴 횟수). 자정에 저절로 초기화된다
+// 남은 판수는 날짜 + 쓴 횟수로 저장한다. 자정에 저절로 초기화된다
 const slotDay = () => { const t = save.slot || {}; return t.day === daysBack(0) ? t : {day: daysBack(0), n: 0}; };
 const slotLeft = () => Math.max(0, K.slotTries - (slotDay().n | 0));
 // 한 판 지급 = 하루 예산 / (판수 x 평균 배당) x 이번 배당. 운이 나빠도 좋아도 하루 기대값은 그대로다
@@ -2173,7 +2060,7 @@ function slotScore(){
     sum += SLOT_SYM[s][2]; return true;
   });
   const pay = sum && !slotDry ? slotPay(sum) : 0;
-  save.souls += pay; slotEarned += pay;         // 혼 사냥과 같이 판마다 바로 들어온다
+  save.souls += pay; slotEarned += pay;         // 판마다 바로 들어온다
   slotMsg = sum
     ? `<span class="${sum >= 90 ? "crit" : "win"}">${slotWin.length}줄 · 배당 x${sum}</span>`
       + (slotDry ? ` <span class="dim">· 연습판이라 혼은 안 들어온다</span>`
@@ -2410,7 +2297,7 @@ function drawRbBonus(){
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { if (fixCrit()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawMuts(); };
+const drawAll = () => { if (fixCrit()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawMuts(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 // DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라
@@ -3870,10 +3757,9 @@ def _demo():
             f"{last//n}층 방치 수입 {idle8:.0f}이 환생 {rebirth}의 4배 이상 — IDLE_DIV 상향 필요"
         # 미션도 보조 수입이어야 한다. 한 주치 미션 vs 한 주치 환생(하루 2회 = 토큰 200만/일).
         # 1.7 = 연속 7일 최대 배율(streakMul). 미션을 쪼개도 예산이 고정이라 여기가 안 움직인다.
-        # 혼 사냥은 연속 배율(streakMul)을 안 받고, 대신 정확도 최대 MINI_BEST 배까지 간다
         # 슬롯은 운이라 평균으로 센다 — 지급을 평균 배당으로 나눠 둬서 하루 기대값이 SLOT_BUDGET 이다
         wk_mission = ((DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7
-                      + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7) * side_of(last)
+                      + SLOT_BUDGET * 7) * side_of(last)
         wk_rebirth = 14 * rebirth
         assert wk_mission < wk_rebirth * 2, (
             f"{last//n}층 미션 주간 수입 {wk_mission:.0f}이 환생 {wk_rebirth}의 2배 이상 "
@@ -3881,7 +3767,7 @@ def _demo():
     # 3-0) 레이드가 열린 뒤(RAID_MIN_BEST~)에는 레이드 몫까지 얹어도 주간 보조 수입이 상한 안이어야 한다.
     #       위 검사는 층 끝만 본다. 여기는 스테이지를 하나도 건너뛰지 않는다 — 문턱을 한 칸 잘못 잡으면
     #       그 칸에서만 상한을 넘는다 (15스테이지에서는 레이드를 얹으면 넘는다).
-    week = (DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7 + MINI_BUDGET * MINI_BEST * 7 + SLOT_BUDGET * 7 + RAID_BUDGET
+    week = (DAY_BUDGET * 7 + WEEK_BUDGET) * 1.7 + SLOT_BUDGET * 7 + RAID_BUDGET
     paid = sum(soul_of(g) for g in range(1, RAID_MIN_BEST))
     for g in range(RAID_MIN_BEST, 12 * n + 1):
         paid += soul_of(g)
@@ -3917,9 +3803,9 @@ BALANCE_HEROES = [
 
 
 # 환생 한 번 사이(반나절 — 하루 2회 환생)에 들어오는 보조 수입의 최대치. 단위는 역대 최고 스테이지 보스 한 판의 혼.
-# 원정 12시간 x 최대 배율, 미션 연속 7일(x1.7), 혼 사냥 전부 한가운데, 슬롯 평균.
+# 원정 12시간 x 최대 배율, 미션 연속 7일(x1.7), 슬롯 평균.
 SIDE_MAX = (12 * 3600 / IDLE_DIV * (1 + IDLE_TOKEN_MAX) + (DAY_BUDGET / 2 + WEEK_BUDGET / 14) * 1.7
-            + MINI_BUDGET * MINI_BEST / 2 + SLOT_BUDGET / 2 + RAID_BUDGET / 14)
+            + SLOT_BUDGET / 2 + RAID_BUDGET / 14)
 
 
 def _full_floors(h, n, side=SIDE_MAX, fights=43_200, rebirths=80):

@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.3"
+__version__ = "0.18.4"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1090,8 +1090,8 @@ font-size:11px;margin-top:6px;max-width:400px}.sheet>span{white-space:nowrap;ove
 .badge{display:inline-block;border:1px solid var(--line);border-radius:20px;
 padding:0 9px;font-size:11px;margin-right:5px}
 .alloc{display:grid;gap:6px;align-items:center;font-size:13px}
-#alloc{grid-template-columns:1fr auto auto auto auto auto auto}#traits{grid-template-columns:1fr auto auto auto auto}
-.alloc small{display:block;color:var(--dim);font-size:11px;white-space:nowrap}
+#alloc{grid-template-columns:minmax(0,1fr) auto auto auto auto auto auto}#traits{grid-template-columns:minmax(0,1fr) auto auto auto auto}
+.alloc small{display:block;color:var(--dim);font-size:11px;white-space:normal;overflow-wrap:anywhere}
 .alloc>b{min-width:34px;text-align:right}.alloc button{white-space:nowrap;padding:2px 7px}
 details.card>summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:6px;user-select:none}
 details.card>summary::-webkit-details-marker{display:none}
@@ -1214,7 +1214,7 @@ margin-top:10px;padding-top:8px}
   <div id="dexNews"></div><div id="dex"></div></details>
 
 <details class="card" data-k="mut" open><summary><h2>변이 내성 <span class="gold" id="mutHead"></span></h2></summary>
-  <div id="mutNews"></div><div class="alloc" id="muts" style="grid-template-columns:1fr auto auto auto"></div>
+  <div id="mutNews"></div><div class="alloc" id="muts" style="grid-template-columns:minmax(0,1fr) auto auto auto"></div>
   <div id="mutHelp"></div></details>
 
 <details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
@@ -2377,11 +2377,11 @@ function drawMuts(){
   const cap = mutCap();
   $("muts").innerHTML = MUTS.map((m, i) => {
     const lv = resOf(m[0]), c = shardCost(lv), full = lv >= cap, can = !full && (save.shards | 0) >= c;
-    const fl = THEMES.length + 1 + i;                       // 이 변이가 처음 나오는 층
-    const k = Math.max(1, Math.pow(m[3], 1 - lv / K.mutLv)); // 첫 겹이 지금 몇 배인가
-    return `<span>${m[2]} ${m[1]} <small>${fl}층${mutLaps() > 1 ? "·" + (fl + MUTS.length) + "층" : ""} —
-        ${k > 1 ? m[4].replace("{0}", +k.toFixed(2)) : "첫 겹을 지웠다"}${
-        lv > K.mutLv ? ` · 둘째 겹 ${m[4].replace("{0}", +Math.max(1, Math.pow(m[3], 2 - lv / K.mutLv)).toFixed(2))}` : ""}</small></span>
+    // 지금 지우고 있는 겹만 적는다 — 이미 지운 겹은 볼 일이 없다
+    const layer = Math.min(mutLaps(), Math.floor(lv / K.mutLv) + 1);
+    const fl = THEMES.length + 1 + i + MUTS.length * (layer - 1);       // 그 겹이 붙는 층
+    return `<span>${m[2]} ${m[1]} <small>${full ? `${fl}층까지 다 지웠다`
+        : `${fl}층 — ${m[4].replace("{0}", +Math.pow(m[3], layer - lv / K.mutLv).toFixed(2))}`}</small></span>
       <b class="soul">Lv.${lv}/${cap}</b>
       <span class="dim" style="font-size:11px;text-align:right;white-space:nowrap">${full ? "" : n(c) + "조각"}</span>
       <button data-m="${m[0]}" ${can ? "" : "disabled"}>${full ? "끝" : "내성 +1"}</button>`;

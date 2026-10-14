@@ -228,7 +228,7 @@ function parity(g) {
   t.save = keep;
 }
 
-// ── 새 설치에서 한 바퀴: 배분 → 전투 → 슬롯 → 혼 사냥 → 미션 → 원정 → 환생 → 자동 도전 → 특성
+// ── 새 설치에서 한 바퀴: 배분 → 전투 → 슬롯 → 미션 → 원정 → 환생 → 자동 도전 → 특성
 async function playthrough() {
   const g = await boot("한 바퀴"), {t, server} = g;
   ok(t.save.rbExp === t.H.exp, "새 저장의 환생 기운 기준이 지금 EXP 가 아니다");
@@ -279,14 +279,8 @@ async function playthrough() {
   ok(t.save.slot.n === 1 && !g.$("slotBtn").disabled, "슬롯 한 판이 안 끝났다");
   g.clean("슬롯");
 
-  await g.click(g.$("miniBtn"));
-  for (let shot = 0; shot < t.K.miniShots; shot++) {
-    await g.advance(300 + 137 * shot);
-    await g.click(g.$("miniBtn"));
-    g.clean("혼 사냥 " + (shot + 1) + "발");
-    await g.advance(700);
-  }
-  ok(t.save.mini.n === 1, "혼 사냥 한 판이 안 빠졌다");
+  // 혼 사냥은 v0.18.5 에 없앴다 — 그 몫(하루 3 격파분)이 슬롯으로 갔다
+  ok(!g.has("mini") && !g.has("miniBtn") && t.K.slotBudget === 4 && !("mini" in t.save), "혼 사냥이 남아 있거나 슬롯 예산이 안 늘었다");
   ok(Number.isInteger(t.save.souls) && t.save.souls >= 0, "혼이 정수가 아니다: " + t.save.souls);
 
   const due = t.missions().filter(m => m.cur >= m.goal);
@@ -399,7 +393,7 @@ async function deepSave() {
     cleared: Array.from({length: 47}, (_, i) => i + 1), best: 120, auto: true, farm: [3, 17, 46],
     traits: {atk: 70, hp: 70, dfn: 60, crit: 0, cdmg: 50, spd: 90, soul: 30, pt: 20},
     exped: {since: NOON - 30 * 3600 * 1000, seenExp: 1}, relics, rbExp: 1,
-    mini: {day: fx.today, n: 3}, slot: {day: fx.today, n: 10}}});
+    mini: {day: fx.today, n: 3}, slot: {day: fx.today, n: 10}}});   // mini = 없어진 혼 사냥 칸 (치워야 한다)
   const {t} = g;
   const [dmg] = t.turnDmg({atk: t.F("atk"), cdmg: t.F("cdmg")}, {dfn: 5}, 5000, t.F("crit"));
   ok(Number.isFinite(dmg) && dmg > 0, "타격이 많을 때 피해가 숫자가 아니다: " + dmg);
@@ -413,6 +407,7 @@ async function deepSave() {
      "보조 수입용 혼이 환생만큼 못 자랐거나(후반에 죽는다) 정산용만큼 자랐다(환생을 넘어선다)");
   ok(t.idleRate() > 0 && t.idleRate() <= side / t.K.idleDiv * (1 + t.K.idleTokenMax) * 1.0001, "원정이 보조 수입용 혼을 안 쓴다");
   ok(t.slotPay(1) === Math.round(side * t.K.slotBudget / (t.K.slotTries * t.K.slotAvg)), "슬롯이 보조 수입용 혼을 안 쓴다");
+  ok(!("mini" in t.save), "옛 저장의 혼 사냥 칸을 안 치웠다");
   ok(t.missions().every(m => m.souls > 0 && m.souls <= side * t.K.weekBudget * 2), "미션이 보조 수입용 혼을 안 쓴다");
   // 유물 도감은 지금 층(4층)의 보스 이름과 번호로 적는다 — 던전 목록과 짝이 맞아야 한다
   for (let i = 1; i <= 15; i++)

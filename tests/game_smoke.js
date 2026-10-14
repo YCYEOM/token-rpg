@@ -563,6 +563,10 @@ async function mutations() {
   ok(t.save.res.armor === 10 && t.save.res.curse === 3 && !t.save.res.fury, "넘은 관문의 내성을 안 찍어 준다: " + JSON.stringify(t.save.res));
   t.save.best = 170; t.fill();
   ok(t.save.res.armor === 20 && t.save.res.curse === 10 && t.save.res.numb === 10 && !t.gated(165) && t.gated(180), "두 겹째 관문의 내성이 어긋났다: " + JSON.stringify(t.save.res));
+  t.drawAll();
+  // 지운 겹은 안 적는다 — 지금 지우는 겹만. 철갑은 두 겹 다(11층까지), 저주는 둘째 겹(12층)을 지우는 중
+  const mh = g.$("muts").html;
+  ok(/11층까지 다 지웠다/.test(mh) && /12층 — 내 최대 HP ÷3/.test(mh) && !/첫 겹|÷1</.test(mh), "내성 줄이 지운 겹까지 적는다: " + mh.slice(0, 400));
   t.save = JSON.parse(keepSave); t.drawAll();
   // 내성: 조각으로 한 레벨씩. 값은 12, 14, 16… 이고 배수가 줄어든다
   const btn = id => g.btn("muts", {m: id});

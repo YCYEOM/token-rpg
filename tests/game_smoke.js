@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, mutOf, mutPow, mutId, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -529,14 +529,51 @@ async function mutations() {
     ok(walls[0] < walls[2] && walls[2] <= walls[3], "내성을 올려도 벽이 안 밀린다: " + walls);
   }
   t.save = JSON.parse(keepSave); t.drawAll();
-  // 내성: 조각으로 한 레벨씩. 값은 30, 45, 60… 이고 배수가 줄어든다
+  // 치명타 배분은 100% 가 되는 데까지만 — 넘친 %p 를 치명타 피해로 바꾸는 건 1점 0.4%p 라 손해였다
+  t.save.alloc = {atk: 0, hp: 0, dfn: 0, crit: 0, cdmg: 0, spd: 0}; t.save.traits.pt = 100; t.drawAll();   // 각성으로 점수를 넉넉히
+  const cm = t.critMax(), critBtn = d => g.btn("alloc", {k: "crit", d});
+  await g.click(critBtn("max"));
+  ok(cm > 0 && t.save.alloc.crit === cm && t.F("crit") === 100, `치명타 최대가 100% 에 안 맞는다: ${t.save.alloc.crit}/${cm} → ${t.F("crit")}`);
+  t.save.alloc.crit = cm - 1; t.drawAll();
+  ok(t.F("crit") < 100 && !critBtn("1").disabled, "100% 한 점 앞에서 더 못 넣는다");
+  await g.click(critBtn("10"));
+  ok(t.save.alloc.crit === cm && critBtn("1").disabled && critBtn("max").disabled && !g.btn("alloc", {k: "atk", d: "1"}).disabled,
+     `+10 이 100% 를 넘겨 넣었거나 다른 줄까지 막혔다: ${t.save.alloc.crit}/${cm}`);
+  ok(/더 넣을 수 없다/.test(g.$("alloc").html), "치명타 100% 안내가 없다");
+  // 유물로 치명타가 오르면 남는 점수는 돌려준다
+  t.save.alloc.crit = cm + 40; t.drawAll();
+  ok(t.save.alloc.crit === cm, `넘친 치명타 배분을 돌려주지 않는다: ${t.save.alloc.crit}/${cm}`);
+  t.save = JSON.parse(keepSave); t.drawAll();
+  // 관문: 변종 층의 마지막 보스는 그 층의 변이를 다 지워야 싸울 수 있다 — 파이썬 gated() 와 같은 자리
+  for (const [n, res, want] of fx.expect.gate) {
+    t.save.res = res;
+    ok(t.gated(n) === want && (!want || !t.beatable(t.boss(n))), `관문 ${n}스테이지 (내성 ${JSON.stringify(res)}): 화면 ${t.gated(n)} · 파이썬 ${want}`);
+  }
+  // 능력치가 아무리 높아도 관문은 못 넘고, 내성을 채우면 넘는다. 화면은 '벽' 이 아니라 '관문' 이라고 적는다
+  t.save.traits = {...t.save.traits, atk: 400, hp: 400, dfn: 400, cdmg: 300};
+  t.save.cleared = Array.from({length: 89}, (_, i) => i + 1); t.save.best = 89; t.save.res = {armor: 9}; t.drawAll();
+  ok(t.beatable(t.boss(89)) && !t.beatable(t.boss(90)), "내성 9레벨로 6층 보스를 넘는다");
+  ok(/관문: 90스테이지/.test(g.$("wall").html) && /내성\s+Lv\.10/.test(g.$("wall").html) && /지금 Lv\.9/.test(g.$("wall").html), "관문 안내가 없다: " + g.$("wall").html);
+  const gateBtn = g.$("stages").kids[14].kids.find(k => k.tag === "button");
+  ok(gateBtn && gateBtn.disabled && gateBtn.textContent === "내성 부족", "관문 보스에 도전할 수 있다: " + (gateBtn && gateBtn.textContent));
+  t.save.res = {armor: 10}; t.drawAll();
+  ok(t.beatable(t.boss(90)) && !/관문/.test(g.$("wall").html), "내성 10레벨인데 관문이 안 열린다");
+  // 관문이 없던 때 넘은 층은 내성을 찍어 준다 — 7층(104)까지 간 저장은 6층 관문 몫만 받는다. 두 겹(11층~)은 20레벨
+  t.save.res = {curse: 3}; t.save.best = 104; t.fill();
+  ok(t.save.res.armor === 10 && t.save.res.curse === 3 && !t.save.res.fury, "넘은 관문의 내성을 안 찍어 준다: " + JSON.stringify(t.save.res));
+  t.save.best = 170; t.fill();
+  ok(t.save.res.armor === 20 && t.save.res.curse === 10 && t.save.res.numb === 10 && !t.gated(165) && t.gated(180), "두 겹째 관문의 내성이 어긋났다: " + JSON.stringify(t.save.res));
+  t.save = JSON.parse(keepSave); t.drawAll();
+  // 내성: 조각으로 한 레벨씩. 값은 12, 14, 16… 이고 배수가 줄어든다
   const btn = id => g.btn("muts", {m: id});
   await g.click(btn("armor"));
-  ok(t.save.res.armor === 1 && t.save.shards === 170 && same(t.mutPow(77), Math.pow(3, 0.9)), `내성 구입이 어긋났다: ${JSON.stringify(t.save.res)} 조각 ${t.save.shards}`);
+  ok(t.save.res.armor === 1 && t.save.shards === 191 && same(t.mutPow(77), Math.pow(3, 0.9)), `내성 구입이 어긋났다: ${JSON.stringify(t.save.res)} 조각 ${t.save.shards}`);
   for (let i = 0; i < 2; i++) await g.click(btn("armor"));
-  ok(t.save.res.armor === 3 && t.save.shards === 170 - 45 - 60 && btn("armor").disabled, `조각 65개로 75개짜리를 살 수 있다: ${t.save.shards}`);
+  ok(t.save.res.armor === 3 && t.save.shards === 191 - 10 - 11, `내성 값이 어긋났다: ${t.save.shards}`);
+  t.save.shards = 11; t.drawAll();
+  ok(btn("armor").disabled, "조각 11개로 12개짜리를 살 수 있다");
   t.buyRes("armor", 1);
-  ok(t.save.res.armor === 3 && t.save.shards === 65, "조각이 모자란데 내성이 올랐다");
+  ok(t.save.res.armor === 3 && t.save.shards === 11, "조각이 모자란데 내성이 올랐다");
   // 다 올리면 사라진다 — 덤은 없다. 닿은 깊이(한 겹)보다 더는 못 올린다
   t.save.shards = 5000; t.drawAll();
   for (let i = 0; i < 7; i++) await g.click(btn("armor"));

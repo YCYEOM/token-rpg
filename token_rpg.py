@@ -5,10 +5,10 @@
 따라서 막힌 스테이지는 토큰을 더 쓰면 반드시 넘을 수 있다.
 """
 import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, socket, subprocess, sys, webbrowser
-import http.server, threading, time, urllib.request
+import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.2"
+__version__ = "0.18.3"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -381,7 +381,8 @@ MUTS = [
 ]
 MUT_LV = 10          # 내성 10레벨이면 그 변이 한 겹이 사라진다. 되풀이 층(11층~)의 두 겹째는 11~20레벨이 지운다
 SHARD_RATE = 0.02    # 변종 층의 보스를 반복 전투로 이길 때 조각이 나올 확률
-SHARD_K, SHARD_STEP = 30, 15     # 내성 L -> L+1 의 값 = SHARD_K + SHARD_STEP * L
+SHARD_K, SHARD_STEP = 9, 1       # 내성 L -> L+1 의 값 = SHARD_K + SHARD_STEP * L. 층 보스의 관문이 생기며 낮췄다(30, 15).
+                                  # 12+2 는 하루 15분 켜는 사람을 두 배 가까이 늦춰 TypeSafe 에서 떨어졌다 (.studio/gate_typesafe.py)
 
 
 def shard_cost(lv):
@@ -402,6 +403,14 @@ def mut_power(g, res=None):
         return None, 1.0
     base = next(x[3] for x in MUTS if x[0] == m[0])
     return m[0], max(1.0, base ** (m[1] - (res or {}).get(m[0], 0) / MUT_LV))
+
+
+def gated(g, res=None):
+    """변종 층의 마지막 보스는 관문이다 — 그 층의 변이를 내성으로 다 지워야(겹마다 MUT_LV 레벨) 싸울 수 있다.
+    JS 의 gated() 와 같은 식. reach() 같은 속도 모델은 관문을 세지 않는다: 관문은 환생이 아니라 반복 전투
+    시간을 받는다 (그 시간은 _check_muts 가 붙든다)."""
+    m = mut_of(g)
+    return bool(m) and g % len(AFFIXES) == 0 and (res or {}).get(m[0], 0) < MUT_LV * m[1]
 
 
 # 1층 보스 (이름, 이모지, 유물 능력치). 칸별 혼 배수·유물 능력치의 기준이라 그대로 둔다.
@@ -1321,6 +1330,12 @@ function fill(){ const f = fresh(); save.alloc = {...f.alloc, ...save.alloc}; sa
   save.dex = {...dexOf(save)};
   const seen = Math.min(Math.max(save.best || 0, ...(save.cleared || [])), N * THEMES.length);
   for (let g = 1; g <= seen; g++) if (!save.dex[dexKey(g)]) save.dex[dexKey(g)] = 1;
+  // 관문이 없던 때 이미 넘은 층 보스: 그만큼의 내성을 찍어 준다 — 업데이트를 받았더니 뒤로 밀리면 안 된다.
+  // 관문이 생긴 뒤로는 내성 없이 최고 기록이 관문을 넘을 수 없으니, 몇 번을 돌려도 같은 결과다
+  save.res = {...(save.res || {})};
+  for (let g = N * (THEMES.length + 1); g <= (save.best || 0); g += N) {
+    const m = mutOf(g); if (m && resOf(m.id) < gateLv(g)) save.res[m.id] = gateLv(g);
+  }
   // 예전 유물(프로바이더|프로젝트 키)은 빈 고정 보스 칸에 차례로 옮긴다 — 모은 유물을 잃지 않게
   const rs = save.relics || {};
   for (const k of Object.keys(rs).filter(k => k.includes("|"))) {
@@ -1382,6 +1397,9 @@ const resOf = id => (save.res || {})[id] | 0;
 // 지금 내성으로 몇 배짜리인가 (1 이면 사라졌다). 내성이 남아도 덤은 없다
 const mutPow = g => { const m = mutOf(g); return m ? Math.max(1, Math.pow(m.base, m.lap - resOf(m.id) / K.mutLv)) : 1; };
 const mutId = g => mutPow(g) > 1 ? mutOf(g).id : "";      // 아직 살아 있는 변이의 id
+// 관문: 변종 층의 마지막 보스는 그 층의 변이를 다 지워야(겹마다 K.mutLv 레벨) 싸울 수 있다. 파이썬 gated() 와 같은 식
+const gateLv = g => { const m = mutOf(g); return m && g % N === 0 ? m.lap * K.mutLv : 0; };
+const gated = g => resOf((mutOf(g) || {}).id) < gateLv(g);
 const mutText = (m, k) => m.tmpl.replace("{0}", +k.toFixed(2));
 const shardCost = lv => K.shardK + K.shardStep * lv;
 // K.soulLateG 를 넘은 스테이지마다 K.soulLateMul 배 — 파이썬 soul_base() 와 같은 식이어야 한다
@@ -1451,6 +1469,11 @@ const left       = () => points() - used();
 // CRIT 은 토큰(thinking)·배분 포인트·유물로만 오른다. 넘친 %p 가 CDMG 로 가는 건 그대로다.
 const spdNow = () => Math.round(F("spd"));
 const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
+// 치명타 배분은 치명타율이 100% 가 되는 데까지만 받는다. 예전엔 더 넣을 수 있었고 넘친 %p 가 치명타 피해로
+// 갔는데, 1점이 0.4%p 라 치명타 피해에 바로 넣는 것(1%p)보다 손해였다. 상한은 토큰·유물에 따라 움직인다 —
+// 유물로 치명타가 오르면 남는 점수는 배분으로 돌려준다 (fixCrit). 토큰·유물만으로 넘친 몫은 예전처럼 치명타 피해로 간다.
+const critMax = () => Math.max(0, Math.ceil((K.critCap - H.crit - relicSum("crit")) / G.crit - 1e-9));
+const fixCrit = () => { if (save.alloc.crit > critMax()) { save.alloc.crit = critMax(); return true; } return false; };
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? (K.cdmgBase + save.alloc.cdmg*G.cdmg + Math.max(0, critRaw() - K.critCap))
                    * Math.pow(TM("cdmg"), save.traits.cdmg)
@@ -1477,8 +1500,11 @@ $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
   `<div class="row"><span>${h} <span class="dim">${u.slice(0,10)}</span></span><span class="gold">${n(v)}</span></div>`).join("");
 
 // 치명타율이 상한이면 배분·특성 줄에 알린다 — 더 올려도 치명타 피해로 간다
+// 이 줄에 더 넣을 수 있는 점수 — 치명타는 100% 가 되는 데까지만
+const roomOf = k => Math.max(0, k === "crit" ? Math.min(left(), critMax() - save.alloc.crit) : left());
 const capNote = k => k === "crit" && critRaw() >= K.critCap
-  ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — 넘친 %p는 치명타 피해로</small>`
+  ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — ${
+      H.crit + relicSum("crit") >= K.critCap ? "토큰·유물만으로 찼다, 넘친 %p는 치명타 피해로" : "더 넣을 수 없다"}</small>`
   : k === "spd" ? spdNote() : "";
 // 신속은 문턱을 넘기 전까지 아무것도 안 준다 — 49스테이지에서 첫 추가타까지 39레벨이 든다.
 // 그 구간이 화면에 안 보이면 혼을 부어 놓고 왜 그대로인지 알 수 없다. 숫자로 적어 준다.
@@ -1520,12 +1546,12 @@ function drawHero(){
      <b class="gold">${save.alloc[k]}</b>
      <button data-k="${k}" data-d="min" ${save.alloc[k]<=0?"disabled":""}>최소</button>
      <button data-k="${k}" data-d="-1" ${save.alloc[k]<=0?"disabled":""}>−</button>
-     <button data-k="${k}" data-d="1" ${lf<=0?"disabled":""}>+1</button>
-     <button data-k="${k}" data-d="10" ${lf<=0?"disabled":""}>+10</button>
-     <button data-k="${k}" data-d="max" ${lf<=0?"disabled":""}>최대</button>`
+     <button data-k="${k}" data-d="1" ${roomOf(k)<=0?"disabled":""}>+1</button>
+     <button data-k="${k}" data-d="10" ${roomOf(k)<=0?"disabled":""}>+10</button>
+     <button data-k="${k}" data-d="max" ${roomOf(k)<=0?"disabled":""}>최대</button>`
   ).join("");
   $("alloc").querySelectorAll("button").forEach(b => b.onclick = () => {
-    const k = b.dataset.k, d = b.dataset.d, room = left();
+    const k = b.dataset.k, d = b.dataset.d, room = roomOf(k);
     save.alloc[k] += d === "min" ? -save.alloc[k]
                    : d === "-1"  ? -Math.min(1, save.alloc[k])
                    : d === "max" ? room : Math.min(+d, room);
@@ -1663,6 +1689,7 @@ function turnDmg(a, d, hits, critPct){
 
 // 평균 피해로 따져 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다
 const beatable = b => {
+  if (gated(b.g)) return false;                  // 관문 — 내성이 모자라면 능력치와 상관없이 못 넘는다
   const id = mutId(b.g), k = mutPow(b.g);        // 변이 — 전투(mutate)와 같은 규칙
   const cd = id === "numb" ? Math.max(100, F("cdmg") / k) : F("cdmg");
   const eff = F("atk") * (1 + F("crit")/100 * (cd/100 - 1));
@@ -1805,14 +1832,19 @@ function drawStages(){
         : xtra(b) ? ` · <span style="color:var(--on);white-space:nowrap">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""}
       <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}</small></div>`;
     const btn = document.createElement("button");
-    btn.textContent = open ? (done ? "재도전" : "도전") : "잠김";
-    btn.disabled = !open;
+    const shut = gated(g);                       // 관문 — 내성을 채우기 전에는 도전도 못 한다
+    btn.textContent = !open ? "잠김" : shut ? "내성 부족" : done ? "재도전" : "도전";
+    btn.disabled = !open || shut;
     btn.onclick = () => fightStart(g, slot, b);
     el.appendChild(btn); $("stages").appendChild(el);
     // 평균 피해 기준으로 이길 수 없는 첫 스테이지 = 환생이 필요한 벽
     if (open && !done && blocked === null && !beatable(b)) blocked = g;
   });
-  $("wall").innerHTML = blocked === null ? "" :
+  const gm = blocked !== null && gated(blocked) ? mutOf(blocked) : null;
+  $("wall").innerHTML = blocked === null ? "" : gm ?
+    `<div class="wall">관문: ${blocked}스테이지 ${slotOf(blocked).name}은(는) ${gm.emoji} ${gm.name} 내성
+     Lv.${gateLv(blocked)} 이 있어야 싸울 수 있다 (지금 Lv.${resOf(gm.id)}).
+     이 층을 반복 전투로 돌며 변이 조각을 모아라.</div>` :
     `<div class="wall">벽: ${blocked}스테이지는 지금 능력치로 넘을 수 없다.
      환생해서 영구 특성을 올려라 — 특성 배율은 배분 포인트와 달리 환생해도 사라지지 않는다.</div>`;
 }
@@ -2332,7 +2364,7 @@ function drawMuts(){
   // 던전 카드 맨 위: 지금 층의 변이. 사라졌으면 사라졌다고 적는다
   $("mutNote").innerHTML = !cur ? "" : mutPow((here - 1) * N + 1) > 1
     ? `<div class="wall" style="margin:0 0 8px">${cur.emoji} 변이 <b>${cur.name}</b> — ${mutText(cur, mutPow((here - 1) * N + 1))}.
-       반복 전투로 변이 조각을 모아 내성을 올리면 약해진다.</div>`
+       반복 전투로 변이 조각을 모아 내성을 올리면 약해진다. 이 층의 마지막 보스는 변이를 다 지워야 싸울 수 있다.</div>`
     : `<div class="banner" style="margin:0 0 8px">${cur.emoji} 변이 ${cur.name} — 내성으로 지웠다.</div>`;
   $("mutHead").textContent = mutLaps() || (save.shards | 0) ? `조각 ${n(save.shards | 0)}` : "";
   $("mutNews").innerHTML = shardNews ? `<div class="banner">${shardNews}</div>` : "";
@@ -2359,6 +2391,7 @@ function drawMuts(){
     변종 층(${THEMES.length + 1}층~)의 보스는 층마다 변이 하나를 갖는다 — 능력치 하나에 배수가 걸린다.
     변종 층의 보스를 이길 때마다 ${+(K.shardRate * 100).toFixed(1)}% 로 변이 조각이 나온다. 반복 전투가 주된 길이다.
     내성 ${K.mutLv}레벨이면 그 변이 한 겹이 사라진다. ${THEMES.length + MUTS.length + 1}층부터는 변이가 두 겹이라 ${K.mutLv}레벨이 더 든다.
+    <b>층의 마지막 보스는 관문이다 — 그 층의 변이를 다 지워야 싸울 수 있다.</b>
     조각은 변이를 지우는 데만 쓴다 — 다 모아도 변이가 없던 때보다 빨라지지는 않는다. 환생해도 남는다.</div>`;
 }
 
@@ -2377,7 +2410,7 @@ function drawRbBonus(){
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawMuts(); };
+const drawAll = () => { if (fixCrit()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawMini(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawMuts(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 // DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라
@@ -2431,6 +2464,7 @@ function quickFight(b){
 
 let timer = null;
 function fightStart(g, slot, b){
+  if (gated(g)) return;
   clearInterval(timer);
   fightRare = rollRare();                        // 황금 개체가 대신 나왔다 — 이름과 이모지만 다르다
   if (fightRare) slot = rareOf(slot);
@@ -2520,7 +2554,8 @@ if (SERVED) fetch("update", {cache: "no-store"}).then(r => r.json()).then(u => {
   const isApp = u.kind === "app";
   $("updBanner").innerHTML = `<div class="banner" style="color:var(--gold);border-color:var(--gold);
     display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
-    <span id="updMsg">새 버전 ${u.latest} — 지금은 ${u.current}</span>
+    <span id="updMsg">새 버전 ${u.latest} — 지금은 ${u.current}${
+      u.failed ? `<br><small style="color:var(--hp)">지난 업데이트 실패: ${u.failed}</small>` : ""}</span>
     <button id="updBtn">업데이트</button></div>`;
   const b = $("updBtn");
   if (b) b.onclick = async () => {
@@ -2666,6 +2701,27 @@ UPDATE_CMD = {
 }
 
 
+def _latest_tag():
+    """최신 릴리스의 태그. 릴리스 페이지(/releases/latest)가 /releases/tag/vX.Y.Z 로 넘기는 것을 읽는다.
+
+    예전엔 api.github.com 에 물었다. 로그인 없이는 한 IP 에서 시간당 60번이라, 사무실처럼 여럿이 한 IP 를
+    쓰면 금방 막혔다 — 알림은 예전에 본 태그로 뜨는데 버튼을 누르면 DMG 주소를 못 얻어 실패했다.
+    웹 주소에는 그 제한이 없다. 막히면 API 로 한 번 더 본다."""
+    ua = {"User-Agent": f"token-rpg/{__version__}"}
+    try:
+        req = urllib.request.Request(f"https://github.com/{REPO}/releases/latest", headers=ua, method="HEAD")
+        with urllib.request.urlopen(req, timeout=4) as r:
+            url = r.geturl()
+        if "/releases/tag/" in url:
+            return urllib.parse.unquote(url.rsplit("/releases/tag/", 1)[1].split("?")[0].strip("/"))
+    except Exception:
+        pass
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                 headers={**ua, "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=3) as r:
+        return json.load(r).get("tag_name") or ""
+
+
 def update_check(cfg=None, force=False):
     """{current, latest, url, kind, cmd, newer}. 네트워크가 막히면 latest 가 없다."""
     cfg = cfg if cfg is not None else load_config()
@@ -2673,12 +2729,7 @@ def update_check(cfg=None, force=False):
     fresh = not force and time.time() - (seen.get("at") or 0) < UPDATE_TTL
     if not fresh and cfg.get("updateCheck", True):
         try:
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{REPO}/releases/latest",
-                headers={"Accept": "application/vnd.github+json",
-                         "User-Agent": f"token-rpg/{__version__}"})
-            with urllib.request.urlopen(req, timeout=3) as r:
-                seen = {"at": time.time(), "tag": json.load(r).get("tag_name") or ""}
+            seen = {"at": time.time(), "tag": _latest_tag()}
             cfg["update"] = seen
             save_config(cfg)
         except Exception:                 # 오프라인·차단·API 제한 — 조용히 넘어간다
@@ -2690,6 +2741,7 @@ def update_check(cfg=None, force=False):
     tag = seen.get("tag") or ""
     cmd = UPDATE_CMD.get(kind, [])
     return {"current": __version__, "latest": tag.lstrip("vV"), "kind": kind,
+            "failed": update_failed(),
             "url": f"https://github.com/{REPO}/releases/latest",
             "cmd": " ".join(cmd[0]) if cmd else "",
             "newer": bool(tag) and _ver(tag) > _ver(__version__)}
@@ -2702,57 +2754,101 @@ def app_bundle(path=None):
     return here[:i + 4] if i > 0 else None
 
 
+DMG_NAME = "Token-RPG-macOS.dmg"      # scripts/build-macos-app.sh 가 만드는 이름과 같아야 한다
+
+
 def _dmg_url():
-    """최신 릴리스에 붙은 DMG 주소. CI(macos-dmg.yml)가 릴리스마다 올려 둔다."""
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{REPO}/releases/latest",
-        headers={"Accept": "application/vnd.github+json",
-                 "User-Agent": f"token-rpg/{__version__}"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        for a in json.load(r).get("assets") or []:
-            if str(a.get("name", "")).endswith(".dmg"):
-                return a.get("browser_download_url")
-    return None
+    """최신 릴리스에 붙은 DMG 주소. CI(macos-dmg.yml)가 릴리스마다 같은 이름으로 올려 둔다.
+    GitHub 이 /releases/latest/download/<이름> 을 최신 릴리스의 파일로 넘겨 준다 — API 를 안 거친다."""
+    return f"https://github.com/{REPO}/releases/latest/download/{DMG_NAME}"
+
+
+def _update_result():
+    return os.path.join(data_dir(), "update.result")
+
+
+def update_failed():
+    """지난 업데이트가 실패했으면 그 이유, 아니면 "". 갈아끼우는 셸은 앱이 닫힌 뒤에 돌아서 화면에
+    아무 말도 못 한다 — 결과를 파일에 적어 두고 다음에 열 때 읽는다. 성공 기록은 읽으면서 치운다."""
+    try:
+        with open(_update_result(), encoding="utf-8") as f:
+            line = f.read().strip()
+    except OSError:
+        return ""
+    if line.startswith("fail "):
+        return line[5:]
+    try:
+        os.remove(_update_result())
+    except OSError:
+        pass
+    return ""
 
 
 # 앱은 자기가 도는 동안 자기를 갈아치울 수 없다 -> 앱을 닫고, 바꾸고, 다시 띄우는 일을
 # 분리된 셸에 맡긴다. 새 번들을 옆에 펼친 뒤 이름만 바꾸므로 중간에 죽어도 옛 앱이 남는다.
+# macOS 는 브라우저로 받은 앱에 '인터넷에서 받음' 딱지(com.apple.quarantine)를 붙인다. 딱지 붙은 앱이
+# 받은 DMG 에도 딱지가 옮겨 붙고, 거기서 꺼낸 새 앱도 물려받는다 — 서명·공증이 없는 앱이라 macOS 가
+# 새 앱 실행을 막는다. 버튼을 누르면 앱이 닫히고 다시 안 떴다. 그래서 갈아끼우기 전에 딱지를 지운다.
+# 우리가 릴리스에서 직접 받은 파일이라 지워도 된다. 과정은 LOG 에, 결과는 RES 에 한 줄로 남긴다.
 _SWAP_SH = r"""
-APP="$1"; DMG="$2"; PID="$3"
+APP="$1"; DMG="$2"; PID="$3"; RES="$4"; LOG="$5"; OPEN="${TOKEN_RPG_OPEN:-open}"
+exec >"$LOG" 2>&1
+echo "swap $(date) app=$APP pid=$PID"
+fail() { echo "fail $1" > "$RES"; echo "FAIL $1"; }
 kill -TERM "$PID" 2>/dev/null
 n=0; while kill -0 "$PID" 2>/dev/null && [ "$n" -lt 80 ]; do sleep 0.25; n=$((n + 1)); done
+/usr/bin/xattr -d com.apple.quarantine "$DMG" 2>/dev/null
 MNT=$(hdiutil attach "$DMG" -nobrowse -readonly | grep -o '/Volumes/.*' | tail -1)
 NEW=$(find "$MNT" -maxdepth 1 -name '*.app' | head -1)
-if [ -n "$NEW" ]; then
+if [ -z "$NEW" ]; then
+  fail "받은 DMG 를 열지 못했다"
+else
   rm -rf "$APP.new" "$APP.old"
-  if ditto "$NEW" "$APP.new"; then
-    mv "$APP" "$APP.old" && mv "$APP.new" "$APP" || mv "$APP.old" "$APP"
+  if ! ditto "$NEW" "$APP.new"; then
+    fail "새 앱을 풀지 못했다 (디스크·권한)"
+  else
+    /usr/bin/xattr -dr com.apple.quarantine "$APP.new" 2>/dev/null
+    if mv "$APP" "$APP.old" && mv "$APP.new" "$APP"; then
+      echo "ok" > "$RES"; echo "OK"
+    else
+      [ -e "$APP" ] || mv "$APP.old" "$APP"
+      fail "앱을 바꾸지 못했다 — macOS 가 막았다 (시스템 설정 > 개인정보 보호 및 보안 > 앱 관리)"
+    fi
   fi
   rm -rf "$APP.new" "$APP.old"
 fi
 [ -n "$MNT" ] && hdiutil detach "$MNT" -quiet
 rm -f "$DMG"
-open "$APP"
+"$OPEN" "$APP"
 """
 
 
 def update_app(bundle):
     """DMG 를 직접 받아 번들을 갈아끼운다. 브라우저를 거치지 않으니 quarantine 딱지도
     안 붙는다 — 그 딱지는 서명 유무가 아니라 받은 프로그램(브라우저)이 찍는 것이다."""
+    # DMG 안에서 바로 열었거나 다운로드 폴더에서 열면 macOS 가 앱을 읽기 전용 임시 위치에서 돌린다
+    if "/AppTranslocation/" in bundle or bundle.startswith("/Volumes/"):
+        return False, "앱이 설치되지 않은 채 돌고 있다 — Token RPG 를 Applications 폴더로 옮긴 뒤 다시 열어라"
     if not os.access(os.path.dirname(bundle), os.W_OK) or not os.access(bundle, os.W_OK):
         return False, f"{bundle} 를 고칠 권한이 없다 — 직접 받아 덮어써라"
     try:
-        url = _dmg_url()
-        if not url:
-            return False, "이번 릴리스에는 DMG 가 없다"
         dmg = os.path.join(data_dir(), "update.dmg")
-        with urllib.request.urlopen(url, timeout=120) as r, open(dmg, "wb") as f:
+        req = urllib.request.Request(_dmg_url(), headers={"User-Agent": f"token-rpg/{__version__}"})
+        with urllib.request.urlopen(req, timeout=120) as r, open(dmg, "wb") as f:
             shutil.copyfileobj(r, f)
+    except urllib.error.HTTPError as e:               # 릴리스를 발행하고 DMG 가 붙기까지 1분쯤 걸린다
+        return False, ("새 버전의 DMG 가 아직 안 올라왔다 — 1분 뒤에 다시 눌러라" if e.code == 404
+                       else f"DMG 를 받지 못했다 — HTTP {e.code}")
     except Exception as e:                            # 네트워크·디스크 — 옛 앱은 그대로다
         return False, f"DMG 를 받지 못했다 — {e}"
+    try:
+        os.remove(_update_result())
+    except OSError:
+        pass
     # 부모가 곧 메뉴 막대 앱이다(앱이 serve 를 띄운다). 스크립트는 우리가 죽어도 살아야 하므로
     # 새 세션으로 떼어 놓는다 — 앱을 닫는 순간 이 파이썬도 같이 죽는다.
-    subprocess.Popen(["/bin/sh", "-c", _SWAP_SH, "swap", bundle, dmg, str(os.getppid())],
+    subprocess.Popen(["/bin/sh", "-c", _SWAP_SH, "swap", bundle, dmg, str(os.getppid()),
+                      _update_result(), os.path.join(data_dir(), "update.log")],
                      start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return True, "새 버전을 받았다 — 앱이 잠깐 닫혔다 다시 뜬다"
@@ -3272,13 +3368,68 @@ def _check_update_app():
             assert real_bundle("/usr/local/bin/token_rpg.py") is None
 
         # 쓸 수 없는 번들은 건드리지 않는다
-        ok, msg = update_app("/nonexistent/Token RPG.app")
+        ok, msg = _real_update_app("/nonexistent/Token RPG.app")     # update_app 은 위에서 바꿔 끼운 가짜다
         assert not ok and "권한" in msg, msg
+        # 설치하지 않고 연 앱(DMG 안 · 임시 위치)은 옮기라고 알린다
+        for where in ("/Volumes/Token RPG/Token RPG.app", "/private/var/folders/x/T/AppTranslocation/A1/d/Token RPG.app"):
+            ok, msg = _real_update_app(where)
+            assert not ok and "Applications" in msg, msg
+        assert _dmg_url() == f"https://github.com/{REPO}/releases/latest/download/{DMG_NAME}"
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "build-macos-app.sh"),
+                  encoding="utf-8") as f:
+            assert DMG_NAME in f.read(), "빌드 스크립트가 만드는 DMG 이름이 DMG_NAME 과 다르다 — 업데이트가 404 를 받는다"
+        if sys.platform == "darwin" and shutil.which("hdiutil"):
+            _check_swap()
     finally:
         globals()["install_kind"] = real_kind
         globals()["app_bundle"] = real_bundle
         globals()["update_app"] = _real_update_app
         webbrowser.open = real_open
+
+
+def _check_swap():
+    """갈아끼우는 셸을 진짜 DMG 로 돌려 본다. 딱지(quarantine) 붙은 DMG 에서 꺼낸 앱에 딱지가 남으면
+    macOS 가 새 앱을 안 띄운다 — 브라우저로 받아 설치한 사람은 업데이트 버튼이 앱을 없애 버렸다."""
+    import tempfile
+    q = "com.apple.quarantine"
+    xa = lambda *a: subprocess.run(["/usr/bin/xattr", *a], capture_output=True, text=True)
+    with tempfile.TemporaryDirectory() as d:
+        app, src = os.path.join(d, "inst", "Token RPG.app"), os.path.join(d, "src", "Token RPG.app")
+        for root, ver in ((app, "old"), (src, "new")):
+            os.makedirs(os.path.join(root, "Contents", "Resources"))
+            with open(os.path.join(root, "Contents", "Resources", "v.txt"), "w") as f:
+                f.write(ver)
+        dmg, res, log, opened = (os.path.join(d, x) for x in ("u.dmg", "res", "log", "opened"))
+        r = subprocess.run(["hdiutil", "create", "-volname", "TRPG selftest", "-srcfolder", os.path.dirname(src),
+                            "-ov", "-format", "UDZO", dmg], capture_output=True, text=True)
+        if r.returncode:                                  # 디스크 이미지를 못 만드는 환경 — 건너뛴다
+            return
+        xa("-w", q, "0083;00000000;Safari;", dmg)
+        xa("-w", q, "0083;00000000;Safari;", app)
+        opener = os.path.join(d, "open.sh")
+        with open(opener, "w") as f:
+            f.write(f'#!/bin/sh\necho "$1" > "{opened}"\n')
+        os.chmod(opener, 0o755)
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            swap = subprocess.Popen(["/bin/sh", "-c", _SWAP_SH, "swap", app, dmg, str(sleeper.pid), res, log],
+                                    env={**os.environ, "TOKEN_RPG_OPEN": opener})
+            sleeper.wait(timeout=20)          # 셸이 앱(여기서는 sleep)을 닫는다 — 거둬 줘야 죽은 것으로 보인다
+            swap.wait(timeout=120)
+        finally:
+            sleeper.kill(); sleeper.wait()
+        note = open(log, encoding="utf-8").read() if os.path.exists(log) else ""
+        assert open(res).read().strip() == "ok", "갈아끼우기 실패\n" + note
+        assert open(os.path.join(app, "Contents", "Resources", "v.txt")).read() == "new", "옛 앱이 그대로다\n" + note
+        assert q not in xa("-lr", app).stdout, "새 앱에 '인터넷에서 받음' 딱지가 남았다 — macOS 가 실행을 막는다"
+        assert open(opened).read().strip() == app and not os.path.exists(dmg), "앱을 다시 띄우지 않았거나 DMG 가 남았다"
+        assert not os.path.exists(app + ".old") and not os.path.exists(app + ".new"), "찌꺼기가 남았다"
+        # 못 여는 DMG 면 옛 앱을 그대로 두고 이유를 남긴다 — 다음에 열 때 화면이 읽는다
+        with open(dmg, "w") as f:
+            f.write("not a dmg")
+        subprocess.run(["/bin/sh", "-c", _SWAP_SH, "swap", app, dmg, "999999", res, log],
+                       env={**os.environ, "TOKEN_RPG_OPEN": opener}, timeout=120)
+        assert open(res).read().startswith("fail ") and os.path.isdir(app), open(res).read()
 
 
 def _check_cli_flags():
@@ -3328,8 +3479,9 @@ def _check_muts():
     (1) 변이는 언제나 불이익이다 — 내성을 아무리 올려도 변이가 없던 때보다 쉬워지지 않는다. 조각은 반복 전투
         (토큰이 안 드는 시간)로 벌기 때문에, 덤이 생기면 켜 두기만 해서 환생 기운 제한을 돈다.
     (2) 다섯 변이의 무게가 비슷하다 — 하나만 가벼우면 그 층은 조각을 캘 이유가 없고, 하나만 무거우면 그 층이 벽이다.
-    (3) 조각을 한 번도 안 캐도 막히지는 않는다 — 이건 _check_balance 의 속도 검사가 본다(내성 없이 돈다).
-    (4) 내성 한 겹은 '몇 시간' 의 일이다 — 몇 분이면 장애물이 아니고 며칠이면 못 한다."""
+    (3) 변종 층의 마지막 보스만 관문이다 — 그 층의 변이를 다 지워야 넘는다. 나머지 14스테이지는 조각 없이 간다
+        (_check_balance 의 속도 검사는 관문을 세지 않고 내성 없이 돈다).
+    (4) 관문 하나는 '몇 시간' 의 일이다 — 몇 분이면 장애물이 아니고, 꼭 넘어야 하는 것이 며칠이면 못 한다."""
     n, nt = len(AFFIXES), len(THEMES)
     assert all(mut_of(g) is None for g in range(1, n * nt + 1)), "1~5층에 변이가 붙었다"
     assert [mut_of(n * (nt + i) + 1) for i in range(len(MUTS) + 1)] == \
@@ -3354,8 +3506,15 @@ def _check_muts():
         # 광폭(보스 ATK)은 내 DEF 가 보스 ATK 보다 낮은 빌드에서 가볍다 — 그 경우가 0.57 이다. 최적 배분으로는 0.33 안팎
         assert 0.2 <= seen[0] <= 0.6, f"{m[1]}의 무게가 {seen[0]:.2f} — 다섯 변이는 여유를 1/5~3/5 로 줄여야 한다"
     assert mut_power(n * (nt + len(MUTS)) + 1, {MUTS[0][0]: MUT_LV})[1] == MUTS[0][3], "두 겹째는 내성 10레벨로 한 겹만 지워져야 한다"
-    hours = sum(shard_cost(l) for l in range(MUT_LV)) / SHARD_RATE / 3600
-    assert 6 <= hours <= 30, f"내성 한 겹이 반복 전투 {hours:.1f}시간이다 — 6~30시간이어야 한다"
+    for lap, (lo, hi) in enumerate(((1.5, 3), (2.5, 5)), 1):
+        hours = sum(shard_cost(l) for l in range((lap - 1) * MUT_LV, lap * MUT_LV)) / SHARD_RATE / 3600
+        assert lo <= hours <= hi, f"{lap}겹째 관문이 반복 전투 {hours:.1f}시간이다 — {lo}~{hi}시간이어야 한다"
+    gates = [g for g in range(1, n * (nt + 2 * len(MUTS)) + 1) if gated(g)]
+    assert gates == list(range(n * (nt + 1), n * (nt + 2 * len(MUTS)) + 1, n)), f"관문이 변종 층의 마지막 보스가 아니다 — {gates}"
+    for g in gates:
+        mid, lap = mut_of(g)
+        assert gated(g, {mid: lap * MUT_LV - 1}) and not gated(g, {mid: lap * MUT_LV}), f"{g}스테이지 관문이 내성 {lap * MUT_LV}레벨에서 안 열린다"
+        assert mut_power(g, {mid: lap * MUT_LV})[1] == 1, "관문이 열렸는데 변이가 남았다"
     assert all(shard_cost(l) < shard_cost(l + 1) for l in range(3 * MUT_LV)), "내성 값이 오르지 않는다"
 
 
@@ -3371,7 +3530,7 @@ def _mut_walls(h):
             g = 1
             while g < 400:
                 kill, die = turns_to_win(h, boss(g), alloc, tr, mut_power(g, res))
-                if kill >= die:
+                if kill >= die or gated(g, res):
                     break
                 g += 1
             cases.append([res, g])
@@ -3439,6 +3598,8 @@ def _check_js():
             "cost": [trait_cost(lv) for lv in range(0, 121)],
             "slots": [[g, slot_of(g)] for g in list(range(1, 77)) + [90, 150, 151, 165, 226, 300]],
             "mutWall": _mut_walls(h),
+            "gate": [[g, res, gated(g, res)] for g in (75, 89, 90, 105, 150, 164, 165, 240)
+                     for res in ({}, {"armor": 9}, {"armor": 10, "curse": 10, "numb": 10}, {"armor": 20})],
             "mut": [[g, (mut_of(g) or (None, 0))[0], (mut_of(g) or (None, 0))[1], mut_power(g)[1]]
                     for g in (1, 75, 76, 90, 91, 106, 121, 136, 150, 151, 166, 226, 301)],
             "side": [[g, round(side_base(g) * dungeons()[(g - 1) % len(BOSSES)]["soul"])]

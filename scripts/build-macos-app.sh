@@ -16,6 +16,8 @@ VER="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$ROOT/token_rpg.py")"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" "$APP/Contents/Info.plist"
 cp "$ROOT/token_rpg.py" "$APP/Contents/Resources/token_rpg.py"
+# 앱 아이콘. 그림은 scripts/make-icon.py 가 그린다 — 다시 그릴 때만 돌린다(Pillow 필요)
+cp "$ROOT/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 # swiftc 는 실행 파일만 임시 서명한다. 번들 전체를 다시 봉인하지 않으면
 # 서명이 깨진 앱이 되어 다른 Mac(격리 속성)에서는 실행이 막힌다.
 codesign --force --deep --sign - "$APP"

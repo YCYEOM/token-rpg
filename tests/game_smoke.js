@@ -420,8 +420,17 @@ async function deepSave() {
   ok(t.picks().join() === [3, ...Array.from({length: 15}, (_, i) => 16 + i), 46].join(), "2층 머리줄이 16~30 을 고르지 않았다: " + t.picks());
   await g.click(g.$("picks"), {target: head(2)});
   ok(t.picks().join() === "3,46", "2층을 뺐는데 다른 층의 선택이 바뀌었다: " + t.picks());
-  await g.click(g.$("picks"), {target: g.$("auto").all().find(e => e.dataset.g === "17")});
+  // 층마다 접고 편다 — 처음에는 가장 깊은 층(8층)만 펼쳐져 있다. 접힌 층도 머리줄로는 고를 수 있다(위에서 2층을 접힌 채 골랐다)
+  const chip = n => g.$("auto").all().find(e => e.dataset.g === String(n));
+  const fold = f => g.$("auto").all().find(e => e.dataset.x === String(f));
+  ok(!chip(17) && chip(106) && fold(2) && fold(8), "처음부터 가장 깊은 층만 펼쳐져 있지 않다");
+  await g.click(g.$("picks"), {target: fold(2)});
+  ok(chip(17) && chip(30) && !chip(31), "2층을 펼쳤는데 칸이 안 보인다");
+  await g.click(g.$("picks"), {target: chip(17)});
   ok(t.picks().join() === "3,17,46", "칸 하나 고르기가 안 된다");
+  ok(chip(17), "칸을 골랐더니 펼친 층이 접혔다");
+  await g.click(g.$("picks"), {target: fold(2)});
+  ok(!chip(17) && t.picks().join() === "3,17,46", "2층을 접었는데 칸이 남았거나 선택이 바뀌었다");
   // 도감은 5층에서 끝나고 변종은 같은 칸을 쓴다 — 화면에 적혀 있어야 하고, 지금 층이 어느 줄인지 보여야 한다
   ok(/도감은 5층까지, 보스 75종이 끝이다/.test(g.$("dex").html) && /6층은 1층 줄/.test(g.$("dex").html), "도감이 어디서 끝나는지 적혀 있지 않다");
   ok(/4층 회사 <span class="gold">← 지금 4층<\/span>/.test(g.$("dex").html), "지금 층이 도감의 어느 줄인지 안 보인다");
@@ -434,7 +443,7 @@ async function deepSave() {
   ok(/4층 회사/.test(g.$("floorTitle").text), "4층 제목이 테마를 안 따른다: " + g.$("floorTitle").text);
   ok(g.$("stages").kids[0].html.includes(t.slotOf(46).name) && t.slotOf(46).name === "급한 건 모기",
      "4층 첫 칸이 테마 보스가 아니다");
-  ok(g.$("auto").html.includes(t.slotOf(17).name), "반복 고르기 칸이 2층 테마 이름을 안 쓴다");
+  ok(g.$("auto").html.includes(t.slotOf(106).name) && /2층 인프라 장애/.test(g.$("auto").html), "반복 고르기 칸이 층 테마 이름을 안 쓴다");
   await raid(g);
   await g.advance(8000);
   g.clean("자동 도전");

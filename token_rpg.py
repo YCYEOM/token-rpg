@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.6"
+__version__ = "0.18.7"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1101,8 +1101,10 @@ button.chip{padding:1px 2px;font-size:11px;white-space:nowrap;font-variant-numer
 #picksBox summary{font-size:12px;cursor:pointer;padding:6px 10px;background:#21262d;
 border:1px solid var(--line);border-radius:6px}#picksBox summary:hover{border-color:var(--on)}
 #picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:4px;max-height:34vh;overflow-y:auto;padding-top:4px}
-#picks button.fl{grid-column:1/-1;text-align:left;font-size:11px;padding:3px 8px;margin-top:4px;
-display:flex;justify-content:space-between;gap:8px}#picks button.fl:first-child{margin-top:0}
+#picks .flrow{grid-column:1/-1;display:flex;gap:4px;margin-top:4px}#picks .flrow:first-child{margin-top:0}
+#picks button.fl{flex:1;min-width:0;text-align:left;font-size:11px;padding:3px 8px;
+display:flex;justify-content:space-between;gap:8px}
+#picks button.fx{font-size:11px;padding:3px 0;width:26px;flex:none}
 .pulse{animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.45}}
 .banner{border:1px dashed var(--xp);border-radius:8px;padding:9px;margin-bottom:10px;
@@ -1690,6 +1692,9 @@ const beatable = b => {
 // 목표(또는 이번 판 가장 깊은 곳)를 반복한다 — 유물 파밍. 환생해도 켜 둔 채면 다시 오른다.
 let autoMsg = "", autoFailSig = "", autoKey = "", farmW = 0, farmL = 0, farmI = 0;
 let picksOpen = false;   // 다시 그려도 펼친 상태는 유지한다 — 고르는 중에 접히면 못 쓴다
+// 층마다 칸을 펼치고 접는다. 층이 늘면 칸이 수백 개라 원하는 층을 찾기 어려웠다.
+// 처음에는 가장 깊은 층만 펼친다. 누른 층은 이 창을 닫을 때까지 기억한다(저장에는 안 쓴다).
+let floorsOpen = null;
 // 능력치가 그대로면 진 스테이지로 다시 오르지 않는다 (치명타 운으로 벽을 넘는 반복 방지)
 const statSig = () => STATS.map(([k]) => F(k)).join();
 const autoReset = () => { autoFailSig = ""; autoMsg = ""; farmW = farmL = farmI = 0; };
@@ -1711,7 +1716,9 @@ function drawAuto(){
   }
   // 버튼·칸은 바뀔 때만 다시 그린다 — 매초 갈아엎으면 누르는 중에 사라진다
   const ps = picks(), on = new Set(ps), best = save.best || 0;
-  const key = `${save.auto}|${ps.join()}|${best}`;
+  const top = Math.max(1, Math.ceil(best / N));
+  if (!floorsOpen) floorsOpen = new Set([top]);
+  const key = `${save.auto}|${ps.join()}|${best}|${[...floorsOpen].join()}`;
   if (key !== autoKey || !$("autoMsg")) {
     autoKey = key;
     // 스테이지마다 유물 속성이 다르다 — 여러 곳을 골라 돌려야 속성이 골고루 모인다
@@ -1719,13 +1726,15 @@ function drawAuto(){
     // 칸을 하나씩만 고를 수 있던 때는 한 층을 돌리려면 열다섯 번을 눌러야 했다.
     const chips = [];
     for (let g = 1; g <= best; g++) {
+      const f = Math.floor((g - 1) / N) + 1, open = floorsOpen.has(f);
       if ((g - 1) % N === 0) {
-        const all = floorStages(Math.floor((g - 1) / N) + 1), cnt = all.filter(x => on.has(x)).length;
-        chips.push(`<button class="fl${cnt === all.length ? " on" : ""}" data-f="${Math.floor((g - 1) / N) + 1}"
-          title="이 층을 통째로 고르거나 뺀다">${Math.floor((g - 1) / N) + 1}층 ${slotOf(g).theme}
-          <span>${cnt === all.length ? "전부 고름 — 눌러서 빼기" : `${cnt}/${all.length} — 눌러서 층 전체 고르기`}</span></button>`);
+        const all = floorStages(f), cnt = all.filter(x => on.has(x)).length;
+        chips.push(`<div class="flrow"><button class="fx" data-x="${f}" title="${open ? "접기" : "펼치기"}">${open ? "▾" : "▸"}</button>
+          <button class="fl${cnt === all.length ? " on" : ""}" data-f="${f}"
+          title="이 층을 통째로 고르거나 뺀다">${f}층 ${slotOf(g).theme}
+          <span>${cnt === all.length ? "전부 고름 — 눌러서 빼기" : `${cnt}/${all.length} — 눌러서 층 전체 고르기`}</span></button></div>`);
       }
-      chips.push(`<button class="chip${on.has(g) ? " on" : ""}" data-g="${g}"
+      if (open) chips.push(`<button class="chip${on.has(g) ? " on" : ""}" data-g="${g}"
         title="${g}. ${slotOf(g).name}">${slotOf(g).emoji}${g}</button>`);
     }
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
@@ -1741,8 +1750,9 @@ function drawAuto(){
     $("picks").onclick = e => {                       // 칸 하나하나가 아니라 묶어서 듣는다
       // 머리줄 안의 글자(span)를 눌러도 머리줄로 친다
       const d = (e.target.closest ? e.target.closest("button") || e.target : e.target).dataset || {};
-      const g = +d.g, f = +d.f;
-      if (g) setPicks(on.has(g) ? ps.filter(x => x !== g) : [...ps, g]);
+      const g = +d.g, f = +d.f, x = +d.x;
+      if (x) { floorsOpen.has(x) ? floorsOpen.delete(x) : floorsOpen.add(x); drawAuto(); }
+      else if (g) setPicks(on.has(g) ? ps.filter(x => x !== g) : [...ps, g]);
       else if (f) {                                   // 층 머리줄: 다 골라져 있으면 빼고, 아니면 채운다
         const all = floorStages(f);
         setPicks(all.every(x => on.has(x)) ? ps.filter(x => !all.includes(x)) : [...ps, ...all]);

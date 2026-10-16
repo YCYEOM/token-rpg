@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.8"
+__version__ = "0.19.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -285,6 +285,45 @@ RARE_MUL  = 1
 # 다 모으면 혼 +37.5% · 배분 +20pt. 수확 12레벨, 각성 5레벨어치다 — 혼이 아니라 시간으로 사는 성장이다.
 DEX_SOUL = 0.5
 DEX_PT   = 4
+
+# 업적 (v0.19.0): 달성하면 칭호 하나와 얻는 혼 +ACH_SOUL % (영구). 전부 모아도 +10% 안이다 —
+# 그 이상은 층 진입이 15% 넘게 당겨져 TypeSafe 에서 떨어졌다 (.studio/ach_balance.py).
+# (id, 분류, 무엇을 세나, 목표, 칭호, 설명, 숨김)
+ACH_SOUL = 0.3
+ACHS = [
+    ("floor3",  "모험", "floor", 3,      "던전 탐험가",       "3층 도달", False),
+    ("floor6",  "모험", "floor", 6,      "변종 사냥꾼",       "6층 도달", False),
+    ("floor10", "모험", "floor", 10,     "심연을 걷는 자",    "10층 도달", False),
+    ("reb10",   "모험", "reb",   10,     "다시 태어난 자",    "환생 10번", False),
+    ("reb50",   "모험", "reb",   50,     "윤회의 여행자",     "환생 50번", False),
+    ("reb200",  "모험", "reb",   200,    "영원의 순례자",     "환생 200번", False),
+    ("trans1",  "모험", "trans", 1,      "한계를 넘은 자",    "초월 1번", False),
+    ("kill1k",  "전투", "kill",  1000,   "견습 전사",         "보스 1,000마리 처치", False),
+    ("kill10k", "전투", "kill",  10000,  "베테랑",            "보스 10,000마리 처치", False),
+    ("kill100k","전투", "kill",  100000, "전장의 전설",       "보스 100,000마리 처치", False),
+    ("gate1",   "전투", "gate",  1,      "관문 파괴자",       "변이 관문 1개 돌파", False),
+    ("gate5",   "전투", "gate",  5,      "변이를 이긴 자",    "변이 관문 5개 돌파", False),
+    ("gate10",  "전투", "gate",  10,     "불굴의 정복자",     "변이 관문 10개 돌파", False),
+    ("dex15",   "수집", "dex",   15,     "초보 수집가",       "보스 도감 15종", False),
+    ("dex45",   "수집", "dex",   45,     "열성 수집가",       "보스 도감 45종", False),
+    ("dex75",   "수집", "dex",   75,     "도감의 주인",       "보스 도감 75종", False),
+    ("gold1",   "수집", "gold",  1,      "황금을 본 자",      "황금 개체 1마리", False),
+    ("gold15",  "수집", "gold",  15,     "황금 수집가",       "황금 개체 15마리", False),
+    ("gold75",  "수집", "gold",  75,     "황금 사냥꾼",       "황금 개체 75마리", False),
+    ("relic5",  "수집", "relic", 5,      "유물 수집가",       "유물 5칸", False),
+    ("relic15", "수집", "relic", 15,     "유물 감정사",       "유물 15칸", False),
+    ("myth1",   "수집", "myth",  1,      "신화의 주인",       "신화 유물 1개", False),
+    ("streak3", "꾸준함", "streak", 3,   "꾸준한 모험가",     "3일 연속 사용", False),
+    ("streak7", "꾸준함", "streak", 7,   "성실한 모험가",     "7일 연속 사용", False),
+    ("streak30","꾸준함", "streak", 30,  "한결같은 모험가",   "30일 연속 사용", False),
+    ("raid1",   "꾸준함", "raid",  1,    "거인 사냥꾼",       "레이드 격파 1번", False),
+    ("raid4",   "꾸준함", "raidrun", 4,  "주간 정복자",       "레이드 4주 연속 격파", False),
+    ("raid12",  "꾸준함", "raid",  12,   "레이드의 왕",       "레이드 격파 12번", False),
+    ("jackpot", "행운", "jackpot", 1,    "행운의 여신이 본 자", "슬롯 💎 세 줄", False),
+    ("gold2",   "행운", "gold2", 1,      "겹경사",            "하루에 황금 개체 둘", False),
+    ("night",   "숨은 업적", "night", 1, "잠들지 않는 자",    "새벽 3~5시에 보스 처치", True),
+    ("lose100", "숨은 업적", "lose", 100, "넘어져도 일어서는 자", "패배 100번", True),
+]
 
 # 원정(방치 수입): 클리어한 가장 깊은 스테이지를 자동 반복해 혼을 캔다.
 # 초당 수확 = soulOf(최고 클리어) / IDLE_DIV. 8시간이면 환생 1회분 언저리 =
@@ -1011,7 +1050,7 @@ def balance(h, ds):
 def game_data(agg, hosts=(), providers=(), models=(), daily=None):
     """게임 화면에 심는 데이터. build() 와 selftest 의 화면 검증이 같은 길로 만든다 —
     따로 만들면 검증이 보는 화면과 실제 화면이 갈라진다."""
-    return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "raid": RAID_BOSSES, "muts": MUTS,
+    return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "raid": RAID_BOSSES, "muts": MUTS, "achs": ACHS,
             "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
@@ -1026,7 +1065,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
                   "dayBudget": DAY_BUDGET, "weekBudget": WEEK_BUDGET,
                   "idleDiv": IDLE_DIV, "idleCapH": IDLE_CAP_H,
                   "idleTokenDiv": IDLE_TOKEN_DIV, "idleTokenMax": IDLE_TOKEN_MAX,
-                  "rareRate": RARE_RATE, "rareMul": RARE_MUL, "dexSoul": DEX_SOUL, "dexPt": DEX_PT,
+                  "rareRate": RARE_RATE, "rareMul": RARE_MUL, "dexSoul": DEX_SOUL, "dexPt": DEX_PT, "achSoul": ACH_SOUL,
                   "raidBudget": RAID_BUDGET, "raidMinBest": RAID_MIN_BEST, "raidMinHp": RAID_MIN_HP,
                   "mutLv": MUT_LV, "shardRate": SHARD_RATE, "shardK": SHARD_K, "shardStep": SHARD_STEP,
                   "slotTries": SLOT_TRIES, "slotBudget": SLOT_BUDGET, "slotAvg": SLOT_AVG}}
@@ -1148,6 +1187,7 @@ margin-top:10px;padding-top:8px}
 <div class="card hero">
   <div class="face" id="face"></div>
   <div class="meta">
+    <div class="gold" id="achTitle" style="font-size:11px;min-height:0"></div>
     <b id="title"></b> <span class="gold" id="lv"></span>
     <div style="margin:3px 0"><span class="badge soul" id="bRebirth"></span>
       <span class="badge" id="bFloor"></span><span class="badge soul" id="bSouls"></span></div>
@@ -1202,6 +1242,9 @@ margin-top:10px;padding-top:8px}
 <details class="card" data-k="dex" open><summary><h2>보스 도감 <span class="gold" id="dexCount"></span></h2></summary>
   <div id="dexNews"></div><div id="dex"></div></details>
 
+<details class="card" data-k="ach" open><summary><h2>업적 <span class="gold" id="achHead"></span></h2></summary>
+  <div id="achNews"></div><div id="ach"></div></details>
+
 <details class="card" data-k="mut" open><summary><h2>변이 내성 <span class="gold" id="mutHead"></span></h2></summary>
   <div id="mutNews"></div><div class="alloc" id="muts" style="grid-template-columns:minmax(0,1fr) auto auto auto"></div>
   <div id="mutHelp"></div></details>
@@ -1248,6 +1291,12 @@ const dexOf = s => (s && s.dex && typeof s.dex === "object") ? s.dex : {};
 const dexRare = (s, ti) => SLOTS.filter(x => dexOf(s)[ti + ":" + x.slot] === 2).length;
 const dexRareAll = s => Object.values(dexOf(s)).filter(v => v === 2).length;
 const dexSoul = () => K.dexSoul * dexRareAll(save);                       // 얻는 혼 +%
+// ── 업적: 달성하면 칭호와 얻는 혼 +K.achSoul %. 저장에 이미 있는 기록(층·환생·도감·유물)은 바로 센다
+const ACH = D.achs;                                // [id, 분류, 무엇을 세나, 목표, 칭호, 설명, 숨김]
+const achOf = s => (s && s.ach && typeof s.ach === "object") ? s.ach : {};
+const achSoul = () => K.achSoul * ACH.filter(a => achOf(save)[a[0]]).length;
+const stOf = () => (save.st && typeof save.st === "object") ? save.st : (save.st = {});
+const tally = (k, d = 1) => { const t = stOf(); t[k] = (t[k] | 0) + d; };
 const dexPts = s => THEMES.filter((_, ti) => dexRare(s, ti) === N).length * K.dexPt;
 const rollRare = () => Math.random() < K.rareRate;
 const rareOf = slot => ({...slot, name: "황금 " + slot.name, emoji: slot.emoji + "✨"});
@@ -1284,7 +1333,7 @@ const TRAITS = [["atk","힘의 유산","ATK x"+TM("atk")+"/lv"],["hp","혼의 �
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
             traits:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0,soul:0,pt:0},
             best:0, exped:{since:Date.now(), seenExp:0}, auto:true, claimed:{}, relics:{}, rbExp:null, farm:0,
-            trans:0, dex:{}, raid:{wk:"", got:[]}, shards:0, res:{}});
+            trans:0, dex:{}, raid:{wk:"", got:[]}, shards:0, res:{}, ach:{}, st:{}, title:""});
 
 // ── 초월: Lv.99 에서 레벨을 1로 되돌리고 그 위로 다시 올린다.
 // EXP 는 쓴 토큰이라 줄지 않는다 -> 초월 횟수만큼 덜어내고 다시 센다.
@@ -1400,7 +1449,7 @@ const sideScale = (() => { const late = [0], flat = [0];
 const soulRaw = (g, late) => Math.round(Math.pow(g, K.soulExp) * (late ? lateMul(g) : sideScale(g))
                                 * SLOTS[(g-1)%N].soul
                                 * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths)
-                                * (1 + K.tsoul/100 * save.traits.soul) * (1 + dexSoul()/100));
+                                * (1 + K.tsoul/100 * save.traits.soul) * (1 + dexSoul()/100) * (1 + achSoul()/100));
 // 환생할 때 정산되는 혼. 후반 배율은 여기에만 붙는다.
 const soulOf = g => soulRaw(g, true);
 // 보조 수입(원정·미션·슬롯·유물 중복·황금 개체)이 쓰는 혼. 파이썬 side_base().
@@ -1770,7 +1819,7 @@ function autoStep(){
       if (rollShard(next)) put();
       drawAll();
     } else {
-      autoFailSig = statSig() + "@" + next;
+      autoFailSig = statSig() + "@" + next; tally("losses");
       autoSay(`${next}스테이지 패배 — 능력치가 바뀌면 다시 오른다`);
     }
     return;
@@ -1790,13 +1839,13 @@ function autoStep(){
   if (g < 1) return autoSay(`${next}스테이지 앞에서 대기 — 능력치를 올려라`);
   const rare = rollRare();                       // 황금 개체 — 이겨야 잡는다
   if (quickFight(boss(g))) {
-    farmW++;
+    farmW++; winTally();
     const drop = rollRelic(g, slotOf(g), false);
     if (drop) relicNews = drop;
     if (rare) dexNews = catchRare(g);
     const shard = rollShard(g);
     if (drop || rare || shard) { put(); drawAll(); }
-  } else farmL++;
+  } else { farmL++; tally("losses"); }
   autoSay(`${g}스테이지 반복 중${ps.length > 1 ? ` (고른 ${ps.length}곳 순회)` : ""}`
     + ` · 승 ${farmW} 패 ${farmL}${next <= tgt ? ` · ${next}스테이지는 아직 무리` : ""}`);
 }
@@ -1965,6 +2014,10 @@ function raidClaim(i){
   save.souls += pay;
   raidNews = `${(i + 1) * 25}% 돌파 — 혼 +${n(pay)}`;
   if (i === 3) {
+    const t = stOf(), wi = raidIdx(raidWk());
+    t.raids = (t.raids | 0) + 1;
+    t.raidRun = t.raidLast === wi - 1 ? (t.raidRun | 0) + 1 : 1; t.raidLast = wi;
+    t.raidRunMax = Math.max(t.raidRunMax | 0, t.raidRun);
     const drop = raidRelic();
     relicNews = drop;
     raidNews = `${raidBoss()[0]} 격파 — 혼 +${n(pay)} · ${drop}`;
@@ -2058,6 +2111,7 @@ function slotScore(){
     sum += SLOT_SYM[s][2]; return true;
   });
   const pay = sum && !slotDry ? slotPay(sum) : 0;
+  if (!slotDry && slotWin.some(L => SLOT_SYM[slotG[L[0][0]][L[0][1]]][0] === "💎")) stOf().jackpot = 1;
   save.souls += pay; slotEarned += pay;         // 판마다 바로 들어온다
   slotMsg = sum
     ? `<span class="${sum >= 90 ? "crit" : "win"}">${slotWin.length}줄 · 배당 x${sum}</span>`
@@ -2192,6 +2246,8 @@ function catchRare(g){
   const pay = sideSoul(g) * K.rareMul;           // 찍기 전 배수로 센다 — 자기 보너스를 자기가 받지 않는다
   save.dex = {...dexOf(save), [k]: 2};
   save.souls += pay;
+  const gd = stOf().gd || {}; stOf().gd = {day: daysBack(0), n: (gd.day === daysBack(0) ? gd.n | 0 : 0) + 1};
+  if (stOf().gd.n >= 2) stOf().gold2 = 1;
   return `${s.emoji} ${s.name} 포획! 도감에 올렸다 — 혼 +${n(pay)} · 얻는 혼 +${K.dexSoul}%`
     + (dexRare(save, slotOf(g).ti) === N ? ` · ${THEMES[slotOf(g).ti][0]} 황금 ${N}종 완성, 배분 +${K.dexPt}pt` : "");
 }
@@ -2277,12 +2333,69 @@ function drawRbBonus(){
   add("유물", relicSum("soul"));
   add("수확", K.tsoul * save.traits.soul);
   add("도감", dexSoul());
+  add("업적", achSoul());
   $("rbBonus").innerHTML = parts.length
     ? `<span class="dim">얻는 혼</span> <span class="soul">x${mul.toFixed(2)}</span>
        <span class="dim">(${parts.join(" · ")})</span>` : "";
 }
 
-const drawAll = () => { if (fixCrit()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawMuts(); };
+// 업적마다 지금 값. 이미 저장에 있는 기록으로 셀 수 있는 것은 업데이트하자마자 달성된다
+const achCur = kind => {
+  const t = stOf(), rs = save.relics || {};
+  switch (kind) {
+    case "floor": return Math.ceil((save.best || 0) / N);
+    case "reb": return save.rebirths | 0;
+    case "trans": return transOf(save);
+    case "kill": return t.kills | 0;
+    case "gate": return Math.max(0, Math.floor((save.best || 0) / N) - THEMES.length);
+    case "dex": return Object.values(dexOf(save)).filter(v => v === 1 || v === 2).length;
+    case "gold": return dexRareAll(save);
+    case "relic": return SLOTS.filter(sl => relicOk(rs[relicKey(sl)])).length;
+    case "myth": return SLOTS.some(sl => relicOk(rs[relicKey(sl)]) && rs[relicKey(sl)].r === RARITY.length - 1) ? 1 : 0;
+    case "streak": return Math.max(t.streakMax | 0, streak());
+    case "raid": return t.raids | 0;
+    case "raidrun": return t.raidRunMax | 0;
+    case "jackpot": return t.jackpot | 0;
+    case "gold2": return t.gold2 | 0;
+    case "night": return t.night | 0;
+    case "lose": return t.losses | 0;
+  }
+  return 0;
+};
+let achNews = "";
+function checkAch(){
+  const got = achOf(save), now = [];
+  stOf().streakMax = Math.max(stOf().streakMax | 0, streak());
+  for (const [id, , kind, goal, title] of ACH)
+    if (!got[id] && achCur(kind) >= goal) { got[id] = daysBack(0); now.push(title); }
+  if (!now.length) return false;
+  save.ach = got;
+  achNews = `업적 달성 — 칭호 ${now.map(x => `「${x}」`).join(" ")} · 얻는 혼 +${+(K.achSoul * now.length).toFixed(1)}%`;
+  return true;
+}
+function drawAch(){
+  const got = achOf(save), done = ACH.filter(a => got[a[0]]).length;
+  $("achHead").textContent = `${done}/${ACH.length} · 혼 +${+achSoul().toFixed(1)}%`;
+  const ti = ACH.find(a => a[0] === save.title && got[a[0]]);
+  $("achTitle").textContent = ti ? `「${ti[4]}」` : "";
+  $("achNews").innerHTML = achNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${achNews}</div>` : "";
+  const groups = [...new Set(ACH.map(a => a[1]))];
+  $("ach").innerHTML = groups.map(gr => `<div class="dim" style="font-size:11px;margin:10px 0 2px">${gr}</div>` +
+    ACH.filter(a => a[1] === gr).map(([id, , kind, goal, title, desc, hidden]) => {
+      const ok = !!got[id], cur = Math.min(achCur(kind), goal);
+      if (hidden && !ok) return `<div class="row" style="font-size:12px;padding:3px 0"><span class="dim">🔒 ??? — 숨은 업적</span></div>`;
+      return `<div class="row" style="font-size:12px;padding:3px 0;align-items:center;gap:8px">
+        <span style="flex:1;min-width:0">${ok ? "🏅" : "▫️"} <b${ok ? ' class="gold"' : ""}>${title}</b>
+          <small class="dim" style="display:block">${desc}${ok ? ` · ${got[id]}` : goal > 1 ? ` · ${n(cur)}/${n(goal)}` : ""}</small></span>
+        ${ok ? `<button data-t="${id}" class="${save.title === id ? "on" : ""}">${save.title === id ? "칭호 해제" : "칭호로"}</button>` : ""}</div>`;
+    }).join("")).join("") +
+    `<div class="dim" style="font-size:11px;margin-top:8px">업적 하나마다 얻는 혼 +${K.achSoul}%. 칭호는 하나 골라 이름 위에 단다.</div>`;
+  $("ach").querySelectorAll("button[data-t]").forEach(b => b.onclick = () => {
+    save.title = save.title === b.dataset.t ? "" : b.dataset.t; put(); drawAch();
+  });
+}
+
+const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); };
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 // DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라
@@ -2309,7 +2422,9 @@ let shardNews = "";
 const rollShard = g => { if (!mutOf(g) || Math.random() >= K.shardRate) return false;
   save.shards = (save.shards | 0) + 1; return true; };
 // 승리 처리 (수동·자동 공통). 유물이 나오면 그 안내 문구를 돌려준다.
+const winTally = () => { tally("kills"); const h = new Date().getHours(); if (h >= 3 && h < 5) stOf().night = 1; };
 const winStage = g => {
+  winTally();
   const first = g > (save.best || 0);             // 역대 처음 깬 스테이지
   if (!save.cleared.includes(g)) save.cleared.push(g);
   markBest(g);
@@ -2388,7 +2503,7 @@ function end(won, me, foe, g, slot, why){
     if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층 ${slotOf(g+1).theme} 이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);
   } else {
-    say(`<span class="lose">패배.</span> <span class="dim">${why}</span>`);
+    say(`<span class="lose">패배.</span> <span class="dim">${why}</span>`); tally("losses"); put();
   }
   $("close").disabled = false; $("close").textContent = "닫기";
   drawAll();
@@ -3341,6 +3456,8 @@ def _check_themes():
     assert 0 < RARE_RATE <= 0.002, f"황금 확률 {RARE_RATE} — 자동 반복이 1초에 한 판이라 0.2% 를 넘으면 한 층이 두 시간 안에 찬다"
     assert DEX_SOUL * n * len(THEMES) <= 50, "도감을 다 채운 혼 보너스가 +50% 를 넘는다 — 수확 특성을 밀어낸다"
     assert DEX_PT <= TRAIT_PT, "한 층 완성 보상이 각성 1레벨보다 크다"
+    assert ACH_SOUL * len(ACHS) <= 10, "업적을 다 모은 혼 보너스가 +10% 를 넘는다 — 층 진입이 15% 넘게 당겨진다"
+    assert len({a[0] for a in ACHS}) == len(ACHS) and len({a[4] for a in ACHS}) == len(ACHS), "업적 id 나 칭호가 겹친다"
     assert RARE_MUL <= 1, "황금 한 마리가 보스 한 판보다 많이 준다 — 한 층 15칸이라 환생 사이 수입이 환생을 넘는다"
     assert set(boss(1)) == {"hp", "atk", "dfn", "spd"}, "보스 능력치에 테마가 섞였다 — 밸런스는 스테이지 번호만 본다"
 
@@ -3814,7 +3931,7 @@ def _full_floors(h, n, side=SIDE_MAX, fights=43_200, rebirths=80):
         best = max(best, g)
         floors.setdefault((g - 1) // n + 1, r)
         mult = ((1 + REBIRTH_SOUL * r) * (1 + TRAIT_SOUL / 100 * tr.get("soul", 0))
-                * (1 + DEX_SOUL / 100 * len(caught)))
+                * (1 + DEX_SOUL / 100 * len(caught)) * (1 + ACH_SOUL / 100 * len(ACHS)))
         reb = sum(soul(i) for i in range(1, g + 1)) * mult
         extra = side * sside(best) * mult
         cand = []

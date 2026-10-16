@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -211,9 +211,11 @@ function parity(g) {
   e.exp.forEach((want, i) => ok(t.expFor(i + 1) === want, `Lv.${i + 1} EXP: 화면 ${t.expFor(i + 1)} · 파이썬 ${want}`));
   for (const [x, want] of e.levels) ok(t.levelOf(x) === want, `EXP ${x}: 화면 Lv.${t.levelOf(x)} · 파이썬 Lv.${want}`);
   e.cost.forEach((want, lv) => ok(t.costOf(lv) === want, `특성 ${lv}레벨 비용: 화면 ${t.costOf(lv)} · 파이썬 ${want}`));
-  // 혼은 환생·유물·수확 배수가 없는 새 저장에서 잰다
+  // 혼은 환생·유물·수확·업적 배수가 없는 새 저장에서 잰다 (픽스처의 사용 기록으로 '3일 연속' 업적이 이미 달성돼 있다)
+  const keepAch = t.save.ach; t.save.ach = {};
   for (const [n, want] of e.soul) ok(t.soulOf(n) === want, `혼 ${n}스테이지: 화면 ${t.soulOf(n)} · 파이썬 ${want}`);
   for (const [n, want] of e.side) ok(t.sideSoul(n) === want, `보조 수입 혼 ${n}스테이지: 화면 ${t.sideSoul(n)} · 파이썬 ${want}`);
+  t.save.ach = keepAch;
   ok(t.lvNow() === e.hero.level && t.points() === e.hero.points,
      `레벨·배분: 화면 Lv.${t.lvNow()} ${t.points()}pt · 파이썬 Lv.${e.hero.level} ${e.hero.points}pt`);
   const keep = t.save;
@@ -502,6 +504,37 @@ async function raid(g) {
   g.clean("레이드");
 }
 
+// ── 업적: 저장에 있는 기록으로 바로 달성되고, 셈은 이긴 판에서 오르고, 칭호를 달 수 있다
+async function achievements() {
+  const g = await boot("업적", {rev: 3, seed: 11, save: {
+    alloc: {atk: 20, hp: 10, dfn: 10, crit: 5, cdmg: 5, spd: 5}, souls: 5, rebirths: 12, auto: false,
+    cleared: Array.from({length: 92}, (_, i) => i + 1), best: 92,
+    traits: {atk: 80, hp: 80, dfn: 70, crit: 0, cdmg: 60, spd: 0, soul: 0, pt: 10},
+    exped: {since: NOON, seenExp: 1}, relics: {}, rbExp: 1, st: {kills: 998, losses: 99}}});
+  const {t} = g, got = () => t.save.ach || {};
+  // 92스테이지 = 7층, 관문 하나(90), 환생 12번 — 업데이트하자마자 달성. 10층·환생 50번은 아직
+  ok(got().floor3 && got().floor6 && !got().floor10 && got().reb10 && !got().reb50 && got().gate1 && !got().gate5,
+     "저장에 있는 기록으로 업적이 바로 달성되지 않는다: " + JSON.stringify(got()));
+  ok(t.ACH.length * t.K.achSoul <= 10, "업적을 다 모은 혼 보너스가 +10% 를 넘는다");
+  const base = Object.keys(got()).length;
+  ok(Math.abs(t.achSoul() - base * t.K.achSoul) < 1e-9 && /업적 \+/.test(g.$("rbBonus").html), "업적 혼 보너스가 얻는 혼에 안 붙는다");
+  // 이긴 판이 쌓여 1,000마리 — 두 판이면 달성된다. 패배 100번은 숨은 업적이라 그전에는 ??? 로 보인다
+  ok(/숨은 업적/.test(g.$("ach").html) && !/넘어져도 일어서는 자/.test(g.$("ach").html), "숨은 업적이 미리 보인다");
+  t.winStage(5); t.winStage(5); t.save.st.losses = 100; t.drawAll();
+  ok(got().kill1k && got().lose100 && /넘어져도 일어서는 자/.test(g.$("ach").html) && /업적 달성/.test(g.$("achNews").html),
+     "처치 1,000마리·패배 100번이 달성되지 않았다: " + JSON.stringify(t.save.st));
+  // 칭호를 달고 뗀다
+  const tb = () => g.btn("ach", {t: "floor6"});
+  await g.click(tb());
+  ok(t.save.title === "floor6" && /변종 사냥꾼/.test(g.$("achTitle").text), "칭호가 이름 위에 안 붙는다: " + g.$("achTitle").text);
+  await g.click(tb());
+  ok(t.save.title === "" && !g.$("achTitle").text, "칭호를 뗄 수 없다");
+  // 하루에 황금 둘
+  t.catchRare(1); t.catchRare(2); t.drawAll();
+  ok(got().gold1 && got().gold2, "하루에 황금 둘 업적이 안 된다: " + JSON.stringify(t.save.st));
+  g.clean("업적");
+}
+
 // ── 변이와 변이 조각: 변종 층(6층~)의 보스는 능력치 하나에 배수가 걸린다. 조각으로 내성을 올리면 약해진다
 async function mutations() {
   const g = await boot("변이", {rev: 3, seed: 7, save: {
@@ -648,5 +681,5 @@ async function fileMode() {
 
 (async () => {
   process.on("unhandledRejection", e => { throw e; });
-  for (const run of [playthrough, oldSave, deepSave, mutations, transcend, zeroHero, fileMode]) await run();
+  for (const run of [playthrough, oldSave, deepSave, mutations, achievements, transcend, zeroHero, fileMode]) await run();
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });

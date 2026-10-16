@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.18.7"
+__version__ = "0.18.8"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1213,8 +1213,7 @@ margin-top:10px;padding-top:8px}
 <details class="card" data-k="hosts" open><summary><h2>합산된 기기</h2></summary><div id="hosts" style="font-size:12px"></div>
   <div id="provs" style="font-size:12px;margin-top:10px"></div></details>
 <details class="card" data-k="code" open><summary><h2>저장 코드 — 백업·옮기기</h2></summary>
-  <div class="dim" style="font-size:11px;margin-bottom:6px">메뉴 막대 앱과 token-rpg open 은 저장 파일 하나를 같이 쓴다.
-    예전처럼 파일로 연 브라우저 저장을 옮기거나 백업할 때 쓴다. 고친 코드는 거부된다.</div>
+  <div class="dim" style="font-size:11px;margin-bottom:6px">백업하거나 다른 곳으로 옮길 때 쓴다. 고친 코드는 받지 않는다.</div>
   <textarea id="saveBox" rows="3" spellcheck="false" style="width:100%;background:#0d1117;
     color:var(--fg);border:1px solid var(--line);border-radius:6px;font:11px ui-monospace,monospace"></textarea>
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
@@ -1500,9 +1499,8 @@ const capNote = k => k === "crit" && critRaw() >= K.critCap
 function spdNote(){
   const g = Math.max(1, save.best || 1), b = boss(g), now = 1 + xtra(b);
   const lv = Math.ceil(Math.log(2 * b.spd / Math.max(1, spdNow())) / Math.log(TM("spd")));
-  return `<small style="color:var(--dim);white-space:normal">보스보다 N배 빠르면 한 턴에 N번 친다`
-    + ` · ${g}스테이지에서 지금 ${now.toFixed(1)}회`
-    + (now < 2 ? ` — 2회까지 신속 ${lv}레벨` : "") + `</small>`;
+  return `<small style="color:var(--dim);white-space:normal">보스보다 빠른 만큼 더 친다 · 지금 한 턴 ${now.toFixed(1)}회`
+    + (now < 2 ? ` (2회까지 신속 ${lv}레벨)` : "") + `</small>`;
 }
 function drawHero(){
   const lv = lvNow(), e = expNow(), cur = expFor(lv), nxt = expFor(lv + 1), t = tierOf(lv);
@@ -1577,11 +1575,9 @@ function drawRebirth(){
      <div class="row"><span class="soul">환생 기운 ${ch}/${K.rbCap}</span>
        <span class="dim">${ch >= K.rbCap ? "가득 참" : "다음 기운까지 토큰 " + n(toNext)}</span></div>
      <div class="dim" style="font-size:11px;margin-top:6px">
-       환생 1회에 기운 하나 — AI 툴로 새로 쓴 토큰 ${n(K.rbExp)}마다 하나씩, ${K.rbCap}개까지 쌓인다.
-       클리어 기록${save.auto ? "" : "과 스탯 배분"}을 버리고 1층부터 다시 시작한다.
-       영구 특성·혼·유물·원정(역대 최고 ${save.best || 0}스테이지 기준)은 그대로 남는다.
-       환생할 때마다 얻는 혼이 영구히 +${K.rbSoul * 100}%씩 는다 (지금 +${Math.round(K.rbSoul * save.rebirths * 100)}%).
-       ${!save.cleared.length ? "먼저 스테이지를 하나 이상 클리어해라." : ch ? "" : "기운이 없다 — 토큰을 더 쓰면 찬다."}</div>`;
+       토큰 ${n(K.rbExp)}마다 기운이 하나 찬다(최대 ${K.rbCap}개). 1층부터 다시 시작하고, 특성·혼·유물은 남는다.
+       환생할수록 얻는 혼이 늘어난다 (지금 +${Math.round(K.rbSoul * save.rebirths * 100)}%).
+       ${!save.cleared.length ? "먼저 스테이지를 하나 깨라." : ch ? "" : "기운이 없다 — 토큰을 더 쓰면 찬다."}</div>`;
   if (can) $("rbBtn").onclick = () => {
     if (!rbArmed) { rbArmed = true; drawRebirth(); return; }
     rbArmed = false;
@@ -1602,9 +1598,7 @@ function drawTrans(){
     ? `<button class="big" id="transBtn" style="margin-top:10px">초월 — 배분 ${
          K.maxLv * K.ptPerLevel}pt 적립하고 Lv.1 부터 다시</button>
        <div class="dim" style="font-size:11px;margin-top:6px">
-         Lv.${K.maxLv} 위로는 토큰을 더 써도 배분 포인트가 늘지 않는다. 초월하면 레벨과 칭호만
-         처음으로 돌아가고, 지금까지 레벨이 준 포인트는 그대로 남은 채 다시 올릴 수 있다.
-         스탯 배분·혼·유물·클리어 기록은 건드리지 않는다.</div>`
+         레벨만 1로 돌아가고 받은 배분 포인트는 남는다. 다시 레벨을 올리며 포인트를 더 받는다.</div>`
     : `<div class="dim" style="font-size:11px;margin-top:6px">초월 ${t}회 —
          적립된 배분 ${n(t * K.maxLv * K.ptPerLevel)}pt</div>`;
   const b = $("transBtn");
@@ -1839,11 +1833,9 @@ function drawStages(){
   });
   const gm = blocked !== null && gated(blocked) ? mutOf(blocked) : null;
   $("wall").innerHTML = blocked === null ? "" : gm ?
-    `<div class="wall">관문: ${blocked}스테이지 ${slotOf(blocked).name}은(는) ${gm.emoji} ${gm.name} 내성
-     Lv.${gateLv(blocked)} 이 있어야 싸울 수 있다 (지금 Lv.${resOf(gm.id)}).
-     이 층을 반복 전투로 돌며 변이 조각을 모아라.</div>` :
-    `<div class="wall">벽: ${blocked}스테이지는 지금 능력치로 넘을 수 없다.
-     환생해서 영구 특성을 올려라 — 특성 배율은 배분 포인트와 달리 환생해도 사라지지 않는다.</div>`;
+    `<div class="wall">관문: ${blocked}스테이지는 ${gm.emoji} ${gm.name} 내성 Lv.${gateLv(blocked)} 이 필요하다
+     (지금 Lv.${resOf(gm.id)}). 반복 전투로 조각을 모아라.</div>` :
+    `<div class="wall">벽: ${blocked}스테이지는 지금 능력치로 못 넘는다. 환생해서 특성을 올려라.</div>`;
 }
 
 function drawExped(){
@@ -1867,7 +1859,7 @@ function drawExped(){
      <button class="big" id="claim" style="margin-top:10px" ${have < 1 ? "disabled" : ""}>
        수령 — ${nf(have)} 혼</button>
      <div class="dim" style="font-size:11px;margin-top:6px">
-       생산량은 클리어한 가장 깊은 스테이지와, 수령 이후 새로 쓴 토큰에 비례한다.</div>`;
+       깊이 깰수록, 토큰을 많이 쓸수록 많이 캔다.</div>`;
   const b = $("claim");
   if (b) b.onclick = () => {
     save.souls += Math.floor(pending());
@@ -1934,8 +1926,7 @@ function drawMissions(){
   $("missions").innerHTML =
     group("일일 미션", "매일 자정에", ms.filter(m => m.key[0] === "d")) +
     group("주간 미션", "월요일에", ms.filter(m => m.key[0] === "w")) +
-    `<div class="dim" style="font-size:11px;margin-top:6px">실제 사용량으로 채워진다.
-    Claude Code 응답마다, 메뉴 막대 앱은 5분마다 갱신. 연속 사용일마다 보상 +10% (최대 7일).</div>`;
+    `<div class="dim" style="font-size:11px;margin-top:6px">AI를 쓴 만큼 채워진다. 매일 쓰면 보상이 늘어난다(최대 7일).</div>`;
   $("missions").querySelectorAll("button[data-k]").forEach(b => b.onclick = () => {
     const m = missions().find(x => x.key === b.dataset.k);
     if (!m || m.cur < m.goal || got(m.key)) return;
@@ -2025,11 +2016,8 @@ function drawRaid(){
         <small style="display:block">토큰 ${n(need)} · 보상 혼 ${n(raidPay())}${i === 3 ? " · 유물 한 등급 승급" : ""}</small></div>
         <button data-r="${i}" ${done && !had ? "" : "disabled"}>${had ? "받음" : done ? "받기" : "진행 중"}</button></div>`;
     }).join("") +
-    `<div class="dim" style="font-size:11px;margin-top:6px">매주 월요일에 새 보스가 선다. HP 는 이번 주에 실제로 쓴 토큰으로만
-     깎인다 — 스탯과 전투는 관계없다. HP 는 지난 4주의 주간 사용량 평균이라 평소대로 쓰면 주말쯤 잡는다.
-     한 주가 지나면 남은 HP 와 상관없이 다음 보스로 넘어가고, 안 받은 보상은 사라진다.
-     격파하면 가진 유물 가운데 하나가 한 등급 오른다 (${RARITY.map(r => r[0]).join(" → ")}).
-     유물이 하나도 없으면 하나를 주고, 전부 ${RARITY[RARITY.length - 1][0]}면 혼을 준다.</div>`;
+    `<div class="dim" style="font-size:11px;margin-top:6px">매주 월요일에 새 보스가 나온다. 이번 주에 쓴 토큰만큼 HP가 깎인다.
+     평소대로 쓰면 주말쯤 잡는다. 격파하면 유물 하나가 한 등급 오른다. 받지 않은 보상은 다음 주에 사라진다.</div>`;
   $("raid").querySelectorAll("button[data-r]").forEach(b => b.onclick = () => raidClaim(+b.dataset.r));
 }
 
@@ -2111,13 +2099,9 @@ function drawSlot(){
                                             : "연습으로 돌려라 — 혼은 안 들어온다"}</button>
      <div style="margin-top:8px;font-size:13px;min-height:20px">${slotMsg}</div>
      <div class="dim" style="font-size:11px">
-       가로 셋·세로 셋·대각선 둘, 모두 여덟 줄이다. 한 줄에 같은 문양이 셋이면 배당이 붙는다 —
-       ${SLOT_SYM.map(x => `${x[0]} x${x[2]}`).join(" · ")}.
-       세 판 중 한 판꼴로 맞고, 한 판 평균은 x${K.slotAvg} 다.
-       실력이 없는 칸이라 <b>하루 기대 수입이 ${K.slotBudget} 격파분에 고정</b>돼 있다 —
-       운은 언제 받느냐만 바꾼다. x1 당 혼 ${n(slotPay(1))}, 보상은 역대 최고 스테이지(${save.best})를 따라 오른다.
-       하루 ${K.slotTries}판, 돌리면 한 판이 빠지고 자정에 초기화된다.
-       <b>다 쓴 뒤에도 돌리는 것 자체는 막지 않는다</b> — 혼만 안 들어오는 연습판이다.</div>`;
+       가로·세로·대각선 여덟 줄 중 한 줄에 같은 문양이 셋이면 당첨이다.
+       ${SLOT_SYM.map(x => `${x[0]} x${x[2]}`).join(" · ")} (x1 = 혼 ${n(slotPay(1))})<br>
+       하루 ${K.slotTries}판, 자정에 다시 찬다. 다 쓴 뒤에는 혼 없이 연습판으로 돌릴 수 있다.</div>`;
   const b = $("slotBtn");
   if (b) b.onclick = slotSpin;
 }
@@ -2164,10 +2148,9 @@ function drawRelics(){
     .map(([a, v]) => `${AFFIX[a][0]} +${+v.toFixed(1)}${AFFIX[a][2]}`).join(" · ");
   $("relicNews").innerHTML =
     (relicNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${relicNews}</div>` : "") +
-    `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 그 보스의 유물이 나온다
-     (역대 첫 격파 ${RELIC_FIRST*100}%, 재격파 ${RELIC_AGAIN*100}%). 환생해도 남는다.${sum ? " 합계: " + sum : ""}
-     <br>유물은 층의 칸마다 하나다 — 어느 층이든 같은 칸의 보스가 같은 유물을 준다.
-     아래 이름은 <b>지금 ${floorNow()}층</b>에서 그 칸을 지키는 보스다. 던전 목록의 번호와 같다.</div>`;
+    `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 유물이 나온다
+     (처음 이길 때 ${RELIC_FIRST*100}%, 다시 이길 때 ${RELIC_AGAIN*100}%).${sum ? " 합계: " + sum : ""}
+     <br>이름은 <b>지금 ${floorNow()}층</b> 보스 기준이다. 다른 층에서도 같은 자리 보스가 같은 유물을 준다.</div>`;
   $("relics").innerHTML = SLOTS.map(slot => {
     const r = rs[relicKey(slot)];
     // 유물은 칸마다 하나인데 보스 이름은 층마다 다르다. 늘 지금 층에서 그 칸을 지키는 보스로 적는다 —
@@ -2196,9 +2179,8 @@ function drawRelics(){
           cell(pct(RELIC_AGAIN * p)), cell("+" + AFFIX.atk[1] * 2 ** r + "%"),
           cell("+" + AFFIX.crit[1] * 2 ** r + "%p")].join("")).join("")}
     </div>
-    <div class="dim" style="margin-top:4px">첫 격파·재격파 = 한 판 이겼을 때 그 등급이 나올 확률.
-      어떤 능력치가 붙을지는 보스마다 고정이다 — 무작위인 것은 등급뿐이다.
-      보스마다 유물은 하나 — 더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.</div></details>`;
+    <div class="dim" style="margin-top:4px">능력치는 보스마다 정해져 있고 등급만 무작위다.
+      더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.</div></details>`;
 }
 
 // ── 황금 개체를 잡았다. 처음이면 도감에 찍고 혼을 준다. 이미 잡은 칸은 혼을 주지 않는다 —
@@ -2235,13 +2217,9 @@ function drawDex(){
         <span class="${got === N ? "gold" : "dim"}">황금 ${got}/${N}${got === N ? ` · 배분 +${K.dexPt}pt` : ""}</span></div>
       <div class="dex">${line(1)}</div><div class="dex">${line(2)}</div>`;
   }).join("") + `<div class="dim" style="font-size:11px;margin-top:10px">
-    <b>도감은 ${THEMES.length}층까지, 보스 ${all}종이 끝이다.</b> ${THEMES.length + 1}층부터 나오는 '변종'은 같은 보스의 강한 판이라
-    같은 칸을 쓴다 — ${THEMES.length + 1}층은 1층 줄, ${THEMES.length + 2}층은 2층 줄에 찍힌다. 못 잡은 황금은 변종 층에서도 잡힌다.<br>
-    보스를 처음 이기면 윗줄에 찍힌다. 싸울 때마다 ${+(K.rareRate * 100).toFixed(2)}% 확률로 <span class="gold">황금 개체</span>가
-    대신 나온다 — 능력치는 같다. 이기면 아랫줄에 찍히고, 처음 잡을 때 그 스테이지 혼의 ${K.rareMul}배를 준다.
-    황금 한 칸마다 얻는 혼 +${K.dexSoul}% (지금 +${+dexSoul().toFixed(1)}%),
-    한 층의 황금 ${N}종을 다 채우면 배분 +${K.dexPt}pt (지금 +${dexPts(save)}pt). 환생해도 남는다.
-    이미 잡은 황금은 다시 잡아도 혼을 주지 않는다 — 켜 두기만 해서 혼이 쌓이지 않게.</div>`;
+    <b>도감은 ${THEMES.length}층까지, 보스 ${all}종이 끝이다.</b> 변종은 같은 줄에 찍힌다(${THEMES.length + 1}층은 1층 줄).<br>
+    보스를 이기면 윗줄, <span class="gold">황금 개체</span>(${+(K.rareRate * 100).toFixed(2)}% 확률)를 잡으면 아랫줄에 찍힌다.
+    황금 하나마다 혼 +${K.dexSoul}% (지금 +${+dexSoul().toFixed(1)}%), 한 층을 다 채우면 배분 +${K.dexPt}pt.</div>`;
 }
 
 // ── 변이 내성: 조각으로 변이를 한 레벨씩 지운다. 한 겹에 K.mutLv 레벨이고, 닿은 깊이만큼만 올릴 수 있다
@@ -2261,14 +2239,14 @@ function drawMuts(){
   // 던전 카드 맨 위: 지금 층의 변이. 사라졌으면 사라졌다고 적는다
   $("mutNote").innerHTML = !cur ? "" : mutPow((here - 1) * N + 1) > 1
     ? `<div class="wall" style="margin:0 0 8px">${cur.emoji} 변이 <b>${cur.name}</b> — ${mutText(cur, mutPow((here - 1) * N + 1))}.
-       반복 전투로 변이 조각을 모아 내성을 올리면 약해진다. 이 층의 마지막 보스는 변이를 다 지워야 싸울 수 있다.</div>`
+       조각으로 내성을 올리면 약해진다.</div>`
     : `<div class="banner" style="margin:0 0 8px">${cur.emoji} 변이 ${cur.name} — 내성으로 지웠다.</div>`;
   $("mutHead").textContent = mutLaps() || (save.shards | 0) ? `조각 ${n(save.shards | 0)}` : "";
   $("mutNews").innerHTML = shardNews ? `<div class="banner">${shardNews}</div>` : "";
   if (!mutLaps()) {
     $("muts").innerHTML = "";
     $("mutHelp").innerHTML = `<div class="dim">${THEMES.length}층을 다 깨면(${N * THEMES.length}스테이지) 변종 층이 열린다.
-      변종 보스는 층마다 특수한 능력(변이)을 하나 갖고, 반복 전투로 얻는 변이 조각으로 그 능력을 지운다.</div>`;
+      변종 보스는 특수한 능력(변이)을 갖는다. 반복 전투에서 나오는 조각으로 지운다.</div>`;
     return;
   }
   const cap = mutCap();
@@ -2285,11 +2263,8 @@ function drawMuts(){
   }).join("");
   $("muts").querySelectorAll("button[data-m]").forEach(b => b.onclick = () => buyRes(b.dataset.m, 1));
   $("mutHelp").innerHTML = `<div class="dim" style="font-size:11px;margin-top:8px">
-    변종 층(${THEMES.length + 1}층~)의 보스는 층마다 변이 하나를 갖는다 — 능력치 하나에 배수가 걸린다.
-    변종 층의 보스를 이길 때마다 ${+(K.shardRate * 100).toFixed(1)}% 로 변이 조각이 나온다. 반복 전투가 주된 길이다.
-    내성 ${K.mutLv}레벨이면 그 변이 한 겹이 사라진다. ${THEMES.length + MUTS.length + 1}층부터는 변이가 두 겹이라 ${K.mutLv}레벨이 더 든다.
-    <b>층의 마지막 보스는 관문이다 — 그 층의 변이를 다 지워야 싸울 수 있다.</b>
-    조각은 변이를 지우는 데만 쓴다 — 다 모아도 변이가 없던 때보다 빨라지지는 않는다. 환생해도 남는다.</div>`;
+    변종 보스를 이기면 ${+(K.shardRate * 100).toFixed(1)}% 확률로 조각이 나온다. 내성 ${K.mutLv}레벨마다 변이가 한 겹 사라진다.
+    <b>층의 마지막 보스는 그 층의 변이를 다 지워야 싸울 수 있다.</b></div>`;
 }
 
 // ── 환생 보너스: 환생할 때마다 얻는 혼(환생·원정·미션·유물 중복)이 K.rbSoul 씩 영구히 는다

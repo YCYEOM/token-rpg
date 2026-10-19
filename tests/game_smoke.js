@@ -306,7 +306,7 @@ async function playthrough() {
   ok(t.save.rebirths === 0, "환생이 한 번 눌러 실행됐다");
   await g.click(g.$("rbBtn"));
   ok(t.save.rebirths === 1 && !t.save.cleared.length && t.save.souls > before, "환생이 정산을 안 했다");
-  ok(JSON.stringify(t.save.alloc) === alloc, "자동 도전을 켠 채 환생했는데 배분이 풀렸다");
+  ok(JSON.stringify(t.save.alloc) === alloc, "환생했는데 배분이 풀렸다");
   g.clean("환생");
 
   await g.advance(6000);

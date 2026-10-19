@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -577,6 +577,14 @@ async function mutations() {
   ok(t.save.alloc.crit === cm && critBtn("1").disabled && critBtn("max").disabled && !g.btn("alloc", {k: "atk", d: "1"}).disabled,
      `+10 이 100% 를 넘겨 넣었거나 다른 줄까지 막혔다: ${t.save.alloc.crit}/${cm}`);
   ok(/더 넣을 수 없다/.test(g.$("alloc").html), "치명타 100% 안내가 없다");
+  // 속도: 보스 SPD 는 스테이지당 K.bspd 씩, 한 턴 최대 2타 (v0.19.2)
+  ok(t.boss(100).spd === 100 * t.K.bspd && t.boss(200).spd === 2 * t.boss(100).spd, "보스 SPD 가 덧셈으로 안 오른다");
+  t.save.alloc.spd = 0; t.save.traits.spd = 0; t.drawAll();
+  { const b = t.boss(10), want = Math.ceil((2 * b.spd - t.H.spd) / 3);
+    t.save.alloc = {atk: 0, hp: 0, dfn: 0, crit: 0, cdmg: 0, spd: want + 50}; t.drawAll();
+    ok(t.xtra(b) === 1 && t.hitsOf(b) === 2, `보스보다 훨씬 빨라도 2타가 아니다: ${t.xtra(b)} ${t.hitsOf(b)}`);
+    t.save.alloc.spd = 0; t.drawAll();
+    ok(/2타 확률/.test(g.$("alloc").html), "속도 줄에 2타 확률 안내가 없다"); }
   // 유물로 치명타가 오르면 남는 점수는 돌려준다
   t.save.alloc.crit = cm + 40; t.drawAll();
   ok(t.save.alloc.crit === cm, `넘친 치명타 배분을 돌려주지 않는다: ${t.save.alloc.crit}/${cm}`);

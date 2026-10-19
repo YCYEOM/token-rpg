@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.1"
+__version__ = "0.19.2"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -187,14 +187,11 @@ B_HP, B_ATK, B_DEF = 115, 24, 8          # 1스테이지 보스 기준치
 EARLY_G   = 6                            # 여기부터는 원래 곡선 그대로
 EARLY_MUL = 0.12                         # 1스테이지 배율 (EARLY_G 에서 1.0 으로 복귀)
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
-# 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD 와 같은 자리수에 놓으려고 고른 값이다 —
-# 토큰만으로 얻는 SPD(호출수/400)는 13스테이지 보스의 1/9 이라, 배분 없이 신속의 유산만으로
-# 뒤집으려면 20레벨(혼 6,475)이 든다. 같은 혼이면 힘의 유산 ATK x9.65 다. 그건 선택이 아니다.
+# 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD(스테이지당 +BOSS_SPD)와 같은 걸음이다 —
+# 1점이 보스 한 스테이지분이다.
 GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4, "cdmg": 1, "spd": 3}
-# 보스보다 N 배 빠르면 한 턴에 N 번 친다. 소수점은 확률로 한 번 더 친다.
-# 상한을 뒀던 시절엔 효과가 '피해 두 배'에서 멈춰, 배율 특성(힘의 유산 20레벨 = ATK x9.65)과
-# 애초에 겨룰 수가 없었다 — 상한이 곧 천장이라 신속은 영원히 들러리였다. 상한을 없애고
-# 타격 수를 그대로 늘린다. 벽은 demo() 가 붙든다 (추가타가 벽을 한 칸 넘게 밀면 실패).
+# 보스보다 1~2배 빠르면 그 비율만큼 확률로 2타, 2배부터 늘 2타 (BOSS_SPD 아래 주석).
+# v0.19.1 까지는 천장이 없고 보스 SPD 가 STEP 배로 올라, 깊은 층에서 아무도 SPD 에 배분하지 않았다.
 CRIT_CAP  = 100      # 치명타율 상한(%). 넘친 %p 는 치명타 피해 %p 로 옮겨 간다 — 올려도 헛되지 않게
 CDMG_BASE = 200      # 치명타 피해 기본값(%) = 예전 고정 2배
 # '파괴의 유산'은 치명타 피해에 TRAIT_MUL 을 곱한다. 전에는 레벨당 +5%p 가산이었는데,
@@ -211,10 +208,15 @@ TRAIT_MUL  = 1.12    # 특성 1레벨당 스탯 배율 (기본값)
 #   힘·파괴  피해에 곱으로 붙는다. x1.12 로 충분하다.
 #   벽       보스 ATK 와 1:1 로 맞선다. 보스 ATK 는 스테이지마다 STEP 이므로 벽도 STEP —
 #            벽 1레벨이 보스 한 스테이지분이다. x1.12 면 60레벨을 사도 도달이 15 에서 멈췄다.
-#   신속     보스 SPD 와의 비율 싸움. 타격 수가 배로 늘어 STEP 은 과했다(도달 26 > 힘 24).
+#   신속     배율이 아니라 덧셈(SPD_TRAIT). 2타 천장이라 힘과 나란히 서지 않는다 — 싸게 배분 점수를 아껴 준다.
 #   혼(HP)   피해를 견디는 쪽. 벽과 함께 크므로 그 사이 값이면 된다.
 # 다섯이 도달 스테이지에서 서로 두 칸 안에 서고 힘을 넘지 않는 값이다 (demo() 가 붙든다).
-TRAIT_MULS = {"dfn": STEP, "spd": 1.20, "hp": 1.16}
+TRAIT_MULS = {"dfn": STEP, "hp": 1.16}
+# 속도 (v0.19.2): 보스 SPD 는 스테이지마다 BOSS_SPD 씩만 오른다(다른 능력치는 STEP 배). 그래서 배분으로 따라잡을 수 있다.
+# 보스보다 1~2배 빠르면 그 비율만큼 확률로 2타, 2배부터 늘 2타 — 3타는 없다(HITS_MAX).
+# 신속의 유산은 레벨당 SPD +SPD_TRAIT(덧셈). 곱셈(1.2/lv)이면 2타가 금방 공짜가 된다.
+# 값은 .studio/spd_linear.py · spd_linear_typesafe.py 로 골랐다 (k=3: 초반·후반 모두 배분에 속도가 들어가고 층 진입은 3회 안에서 움직인다).
+BOSS_SPD, HITS_MAX, SPD_TRAIT = 3, 2, 0.05
 tmul_of = lambda k: TRAIT_MULS.get(k, TRAIT_MUL)
 COST_MUL   = 1.13    # 특성 1레벨당 비용 증가율
 COST_K     = 80      # 특성 1레벨 기본 비용
@@ -238,9 +240,8 @@ TRAIT_PT   = 4       # '각성' 1레벨당 배분 포인트
 # 개발자 영웅 Lv.31): 3 이면 5층 19회 · 8층 40회, 6 이면 16회 · 31회, 10 이면 14회 · 25회.
 # 3층까지는 어느 값이든 7~8회로 같다. 처음 고를 때의 숫자(3층 23회)는 옛 상수에서 잰 것이다.
 TRAIT_SOUL = 3
-# '신속' 은 TRAIT_MULS["spd"] 를 쓴다(위 참고). SPD 가 타격 수를 늘리고부터는 turns_to_win 이
-# 값을 재므로 reach() 도 SPD 배분을 고른다. 타격 수에 상한은 없다 — 힘의 유산을 넘지 않게
-# 붙드는 것은 배율 1.20 이고, demo() 가 '신속 도달 <= 힘 도달' 을 검사한다.
+# '신속' 은 SPD_TRAIT 을 쓴다(위 참고). turns_to_win 이 2타 확률을 재므로 reach() 도 SPD 배분을 고른다.
+# demo() 가 '신속 도달 <= 힘 도달' 을 검사한다.
 # TRAIT_CRIT 은 없앴다 — CRIT 은 상한 100%가 있어 영구 특성으로 두면 되팔 수 없는 함정이 된다.
 # 치명타는 토큰(thinking)·배분 포인트·유물로만 오른다.
 
@@ -862,7 +863,7 @@ def boss(g):
     if g < EARLY_G:                       # 초반 램프 — 지수 보간이라 단조 증가가 유지된다
         p *= EARLY_MUL ** ((EARLY_G - g) / (EARLY_G - 1))
     return {"hp": round(B_HP * p), "atk": round(B_ATK * p),
-            "dfn": round(B_DEF * p), "spd": round(B_DEF * p * 0.9)}
+            "dfn": round(B_DEF * p), "spd": max(1, round(BOSS_SPD * g))}
 
 
 def mitigate(atk, dfn):
@@ -878,7 +879,7 @@ def mitigate(atk, dfn):
 
 def spd_extra(spd, bspd):
     """보스보다 빠른 만큼 늘어나는 추가 타격 수. JS 의 xtra() 와 같은 식이어야 한다."""
-    return max(0.0, spd / max(1, bspd) - 1)
+    return min(HITS_MAX - 1.0, max(0.0, spd / max(1, bspd) - 1))
 
 
 def soul_base(g):
@@ -927,7 +928,7 @@ def trait_cost(lv):
 def final_stats(h, alloc=None, tr=None):
     """최종 스탯 = (기본 + 배분) x 환생 특성 배율. JS의 F()와 같은 식."""
     a, t = alloc or {}, tr or {}
-    m = lambda k: tmul_of(k) ** t.get(k, 0)
+    m = lambda k: (1 + SPD_TRAIT * t.get(k, 0)) if k == "spd" else tmul_of(k) ** t.get(k, 0)
     crit = h["crit"] + a.get("crit", 0) * GAIN["crit"]
     return {
         "atk":  (h["atk"] + a.get("atk", 0) * GAIN["atk"]) * m("atk"),
@@ -993,8 +994,7 @@ def reach(h, tr=None, cap=400, res=None, start=0):
 # 환생 시뮬레이션이 특성을 사는 순서. 신속은 없다 — 넣어서 재 봤고(v0.14.10) 층 진입 회차가
 # 사실상 그대로였다. 고정 영웅 여섯과 개발자 영웅에서 한 바퀴에 신속을 한 번 섞으면 어느 층이든
 # 진입이 많아야 1회 밀리거나 당겨지고, 두 번 섞으면 1~4회 늦어진다. 신속은 보스 SPD 의 두 배를
-# 넘기 전까지 아무것도 안 주고, 배율(1.20)이 보스 계단(1.28)보다 낮아 섞어 사는 몫으로는 그 문턱을
-# 못 따라간다 — 몰아 사는 빌드에서만 값을 한다. 그래서 표는 신속 없이 그린다.
+# 넘기 전까지 아무것도 안 주고, v0.19.2 부터는 2타 천장이라 섞어 사도 몫이 작다. 그래서 표는 신속 없이 그린다.
 # selftest 가 '신속을 섞어도 층 진입이 2회 넘게 달라지지 않는다' 를 붙든다. 깨지면 이 순서를 다시 본다.
 SIM_ORDER = ["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt", "soul"]
 
@@ -1053,7 +1053,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
     return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "raid": RAID_BOSSES, "muts": MUTS, "achs": ACHS,
             "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
-            "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF,
+            "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF, "bspd": BOSS_SPD, "hitsMax": HITS_MAX, "spdTrait": SPD_TRAIT,
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "soulLateG": SOUL_LATE_G, "soulLateMul": SOUL_LATE_MUL, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
@@ -1326,7 +1326,7 @@ const STATS  = [["atk","공격력","ATK"],["hp","체력","HP"],["dfn","방어력
 const TRAITS = [["atk","힘의 유산","ATK x"+TM("atk")+"/lv"],["hp","혼의 유산","HP x"+TM("hp")+"/lv"],
                 ["dfn","벽의 유산","DEF x"+TM("dfn")+"/lv"],
                 ["cdmg","파괴의 유산","CDMG x"+TM("cdmg")+"/lv"],
-                ["spd","신속의 유산","SPD x"+TM("spd")+"/lv"],["soul","수확","얻는 혼 +"+K.tsoul+"%/lv"],
+                ["spd","신속의 유산","SPD +"+Math.round(K.spdTrait*100)+"%/lv"],["soul","수확","얻는 혼 +"+K.tsoul+"%/lv"],
                 ["pt","각성","스탯 배분 +"+K.tpt+"pt/lv"]];
 
 const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], souls:0, rebirths:0,
@@ -1420,7 +1420,7 @@ const boss = g => { let p = Math.pow(K.step, g-1);
   if (g < K.earlyG) p *= Math.pow(K.earlyMul, (K.earlyG - g) / (K.earlyG - 1));
   return {
   hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
-  dfn: Math.round(K.bdef*p), spd: Math.round(K.bdef*p*0.9), g }; };
+  dfn: Math.round(K.bdef*p), spd: Math.max(1, Math.round(K.bspd*g)), g }; };
 // ── 변이: 변종 층(6층~)의 보스는 층마다 특수한 능력 하나를 갖는다. 능력치 하나에 배수가 걸린다.
 // 변이 조각으로 내성을 올리면 배수가 줄고, K.mutLv 레벨이면 한 겹이 사라진다. 11층부터는 두 겹이다.
 // 파이썬 mut_of() · mut_power() · turns_to_win() 과 같은 규칙이어야 한다.
@@ -1513,7 +1513,7 @@ const fixCrit = () => { if (save.alloc.crit > critMax()) { save.alloc.crit = cri
 const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? (K.cdmgBase + save.alloc.cdmg*G.cdmg + Math.max(0, critRaw() - K.critCap))
                    * Math.pow(TM("cdmg"), save.traits.cdmg)
-  : (H[k] + save.alloc[k]*G[k]) * Math.pow(TM(k), save.traits[k])
+  : (H[k] + save.alloc[k]*G[k]) * (k === "spd" ? 1 + K.spdTrait*save.traits.spd : Math.pow(TM(k), save.traits[k]))
     * (1 + relicSum(k)/100);
 
 // 카드 접기 — 접어 둔 카드는 이 브라우저(창)에 기억한다. 저장 파일과는 무관
@@ -1542,13 +1542,13 @@ const capNote = k => k === "crit" && critRaw() >= K.critCap
   ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — ${
       H.crit + relicSum("crit") >= K.critCap ? "토큰·유물만으로 찼다, 넘친 %p는 치명타 피해로" : "더 넣을 수 없다"}</small>`
   : k === "spd" ? spdNote() : "";
-// 신속은 문턱을 넘기 전까지 아무것도 안 준다 — 49스테이지에서 첫 추가타까지 39레벨이 든다.
-// 그 구간이 화면에 안 보이면 혼을 부어 놓고 왜 그대로인지 알 수 없다. 숫자로 적어 준다.
+// 다음 보스 기준 2타 확률과, 늘 2타까지 남은 점수. 2타가 천장이라 그 위로 넣은 점수는 버린다.
 function spdNote(){
-  const g = Math.max(1, save.best || 1), b = boss(g), now = 1 + xtra(b);
-  const lv = Math.ceil(Math.log(2 * b.spd / Math.max(1, spdNow())) / Math.log(TM("spd")));
-  return `<small style="color:var(--dim);white-space:normal">보스보다 빠른 만큼 더 친다 · 지금 한 턴 ${now.toFixed(1)}회`
-    + (now < 2 ? ` (2회까지 신속 ${lv}레벨)` : "") + `</small>`;
+  const g = (save.best || 0) + 1, b = boss(g), p = Math.round(xtra(b) * 100);
+  const mul = 1 + K.spdTrait * save.traits.spd;
+  const need = Math.max(0, Math.ceil((2 * b.spd / mul - H.spd) / G.spd) - save.alloc.spd);
+  return `<small style="color:var(--dim);white-space:normal">${g}스테이지 보스 SPD ${n(b.spd)} · 2타 확률 ${p}%`
+    + (need ? ` (늘 2타까지 ${n(need)}pt)` : " — 더 넣어도 소용없다") + `</small>`;
 }
 function drawHero(){
   const lv = lvNow(), e = expNow(), cur = expFor(lv), nxt = expFor(lv + 1), t = tierOf(lv);
@@ -1696,10 +1696,10 @@ $("saveLoad").onclick = () => {
 };
 
 // 추가타 확률 — 보스보다 빠른 만큼 한 번 더 친다. 파이썬 spd_extra() 와 같은 식이어야 한다.
-const xtra = b => Math.max(0, spdNow() / Math.max(1, b.spd) - 1);
+const xtra = b => Math.min(K.hitsMax - 1, Math.max(0, spdNow() / Math.max(1, b.spd) - 1));
 // 한 턴에 치는 횟수. 보스보다 N 배 빠르면 N 번, 소수점은 확률로 한 번 더.
 const hitsOf = b => { const x = 1 + xtra(b); return Math.floor(x) + (Math.random() < x % 1 ? 1 : 0); };
-// 한 턴 피해와 치명타 여부. 신속을 깊이 올리면 타격이 수천 번이 되므로 다 굴리지 않는다 —
+// 한 턴 피해와 치명타 여부. 지금은 2타가 천장이지만, 타격이 많아도 멎지 않게 그대로 둔다 —
 // HIT_ROLL 을 넘으면 한 대를 굴려 기댓값에 곱한다. 안 그러면 자동 도전이 화면을 멎게 한다.
 const HIT_ROLL = 50;
 function turnDmg(a, d, hits, critPct){
@@ -4047,13 +4047,16 @@ def _check_balance(h, ds, strict=True):
     atk20, atk60 = reach(h, {"atk": 20}), reach(h, {"atk": 60})
     assert atk20 > base_r, f"힘의 유산 20레벨이 도달을 못 늘린다 ({base_r} -> {atk20})"
     slack = 0 if strict else 1
-    for k, ko in (("hp", "혼"), ("dfn", "벽"), ("cdmg", "파괴"), ("spd", "신속")):
+    # 신속은 뺀다 — 2타 천장(v0.19.2)이라 레벨당으로는 힘과 나란히 설 수 없다. 대신 값이 아주 싸서
+    # (힘이 수천만 혼일 때 신속은 수백) 배분 점수를 아껴 주는 몫을 한다. 아래에서 '넘지 않는다'만 본다.
+    for k, ko in (("hp", "혼"), ("dfn", "벽"), ("cdmg", "파괴")):
         near, far = reach(h, {k: 20}), reach(h, {k: 60})
         assert (near if strict else far) > base_r, \
             f"{ko}의 유산 {20 if strict else 60}레벨이 도달을 못 늘린다 ({base_r} -> {near if strict else far})" \
             f" — 혼을 버리는 특성이다"
-        assert near >= atk20 - 3, \
-            f"{ko}({near})가 힘({atk20})보다 세 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
+        # 네 칸: v0.19.2 에서 2타가 쉬워지며 힘 20레벨이 한 칸 올랐다(출력만: 벽 16 · 힘 19 -> 20). 벽은 그대로다.
+        assert near >= atk20 - 4, \
+            f"{ko}({near})가 힘({atk20})보다 네 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
         assert near <= atk20 + slack and far <= atk60 + slack, \
             f"{ko}({near}/{far})가 힘({atk20}/{atk60})을 넘어섰다 — 그 빌드만 정답이 된다"
 
@@ -4067,9 +4070,9 @@ def _check_balance(h, ds, strict=True):
         f"추가타가 벽을 {flat} -> {base} 스테이지로 밀었다 — 환생 없이 너무 깊이 간다"
     # 신속의 유산은 사면 더 깊이 가야 하지만 힘의 유산을 넘어서는 안 된다 (파괴의 유산과 같은 기준).
     # 타격 수에 상한이 없으니 TRAIT_MULS["spd"] 를 올리면 넘길 수 있다 — 그래서 여기서 붙든다.
-    spd20 = reach(h, {"spd": 20})
-    assert spd20 > flat, f"신속의 유산 20레벨이 도달을 못 늘린다 ({flat} -> {spd20}) — 혼을 버리는 특성이다"
-    assert spd20 <= atk20 + slack, f"신속({spd20})이 힘({atk20})을 넘어섰다 — 속도 빌드만 정답이 된다"
+    spd20, spd60 = reach(h, {"spd": 20}), reach(h, {"spd": 60})
+    assert spd20 <= atk20 + slack and spd60 <= atk60 + slack, \
+        f"신속({spd20}/{spd60})이 힘({atk20}/{atk60})을 넘어섰다 — 속도 빌드만 정답이 된다"
 
 
 def _demo_rest(rec):
@@ -4104,9 +4107,11 @@ def _demo_rest(rec):
     #      넘긴 1점부터 값이 0 이었다 — 아무도 SPD 에 배분하지 않았다.
     #      (a) 식의 경계 (b) 평균 피해 모델이 실제로 본다 (c) 그래도 층 벽을 밀지 않는다.
     assert spd_extra(50, 100) == 0 and spd_extra(100, 100) == 0, "느린데 추가타가 붙는다"
-    assert spd_extra(300, 100) == 2 and spd_extra(250, 100) == 1.5, "N배 빠르면 N번이 아니다"
-    # 상한이 있으면 신속은 그 천장에 막혀 배율 특성과 영영 못 겨룬다 — 천장이 없어야 한다
-    assert spd_extra(10 ** 6, 1) > 100, "추가 타격 수에 천장이 있다 — 신속이 들러리가 된다"
+    assert spd_extra(150, 100) == 0.5 and spd_extra(200, 100) == 1, "1~2배 구간이 2타 확률이 아니다"
+    # 천장은 2타다 (v0.19.2). 천장이 없으면 보스 SPD 가 덧셈으로 크는 지금 속도만 정답이 된다
+    assert spd_extra(10 ** 6, 1) == HITS_MAX - 1, "추가 타격 수가 천장을 넘는다"
+    # 보스 SPD 는 덧셈으로 오른다 — 배분(1점에 GAIN['spd'])으로 따라잡을 수 있어야 한다
+    assert boss(100)["spd"] == 100 * BOSS_SPD and boss(200)["spd"] == 2 * boss(100)["spd"], "보스 SPD 가 덧셈으로 안 오른다"
     assert tmul_of("dfn") == STEP, "벽 배율이 보스 곡선과 어긋난다 — 한 레벨이 한 스테이지다"
     # DEF 는 비율로 깎는다. 같은 자리수면 절반, 아무리 높아도 0 이 되지 않는다.
     assert abs(mitigate(100, 100) - 50) < 1e-9, mitigate(100, 100)

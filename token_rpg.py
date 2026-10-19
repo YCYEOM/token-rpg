@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.0"
+__version__ = "0.19.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1205,7 +1205,6 @@ margin-top:10px;padding-top:8px}
   <div class="alloc" id="alloc"></div>
   <div style="margin-top:12px;display:flex;gap:8px">
     <button id="reset">전부 되돌리기</button>
-    <span class="dim" style="font-size:11px;align-self:center">환생하면 초기화된다</span>
   </div>
 </details>
 
@@ -1630,12 +1629,9 @@ function drawRebirth(){
   if (can) $("rbBtn").onclick = () => {
     if (!rbArmed) { rbArmed = true; drawRebirth(); return; }
     rbArmed = false;
-    const prev = {...save.alloc};
     save.rbExp = rbBase() + K.rbExp;                        // 기운 하나 소모
     save.souls += gain; save.rebirths++;
-    save.cleared = []; STATS.forEach(([k]) => save.alloc[k] = 0);
-    // 자동 도전 중이면 직전 배분을 다시 건다. 포인트는 레벨·각성에서 오므로 환생해도 줄지 않는다.
-    if (save.auto) STATS.forEach(([k]) => save.alloc[k] = prev[k]);
+    save.cleared = [];   // 배분은 그대로 둔다. 포인트는 레벨·각성에서 오므로 환생해도 줄지 않는다
     put(); drawAll(); window.scrollTo({top:0, behavior:"smooth"});
   };
 }

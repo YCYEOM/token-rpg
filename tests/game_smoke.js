@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, spdMax, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -243,8 +243,8 @@ async function playthrough() {
   await g.click(g.btn("alloc", {k: "atk", d: "max"}));
   ok(t.left() === 0 && t.save.alloc.atk === t.points(), "'최대' 가 남은 포인트를 다 안 넣는다");
   await g.click(g.btn("alloc", {k: "atk", d: "-1"}));
-  await g.click(g.btn("alloc", {k: "spd", d: "1"}));
-  ok(t.left() === 0 && t.save.alloc.spd === 1, "−1 · +1 이 한 점씩 안 옮긴다");
+  await g.click(g.btn("alloc", {k: "hp", d: "1"}));
+  ok(t.left() === 0 && t.save.alloc.hp === 1, "−1 · +1 이 한 점씩 안 옮긴다");
 
   ok(/1층 코드 버그/.test(g.$("floorTitle").text), "층 제목에 테마가 없다: " + g.$("floorTitle").text);
   ok(/2층 첫 보스/.test(g.$("raid").html) && !g.$("raid").querySelectorAll("button").length, "레이드가 2층 전에 열려 있다");
@@ -585,6 +585,19 @@ async function mutations() {
     ok(t.xtra(b) === 1 && t.hitsOf(b) === 2, `보스보다 훨씬 빨라도 2타가 아니다: ${t.xtra(b)} ${t.hitsOf(b)}`);
     t.save.alloc.spd = 0; t.drawAll();
     ok(/2타 확률/.test(g.$("alloc").html), "속도 줄에 2타 확률 안내가 없다"); }
+  // 속도 배분은 다음 보스 기준 늘 2타가 되는 데까지만 (치명타 100% 와 같은 방식)
+  { t.save.alloc = {atk: 0, hp: 0, dfn: 0, crit: 0, cdmg: 0, spd: 0}; t.save.traits.pt = 100; t.drawAll();
+    const sm = t.spdMax(), b = t.boss((t.save.best || 0) + 1), spdBtn = d => g.btn("alloc", {k: "spd", d});
+    await g.click(spdBtn("max"));
+    ok(sm > 0 && t.save.alloc.spd === sm && t.xtra(b) === 1, `속도 최대가 늘 2타에 안 맞는다: ${t.save.alloc.spd}/${sm} → ${t.xtra(b)}`);
+    t.save.alloc.spd = sm - 1; t.drawAll();
+    ok(t.xtra(b) < 1 && !spdBtn("1").disabled, "늘 2타 한 점 앞에서 더 못 넣는다");
+    await g.click(spdBtn("10"));
+    ok(t.save.alloc.spd === sm && spdBtn("1").disabled && spdBtn("max").disabled && !g.btn("alloc", {k: "atk", d: "1"}).disabled,
+       `+10 이 늘 2타를 넘겨 넣었거나 다른 줄까지 막혔다: ${t.save.alloc.spd}/${sm}`);
+    ok(/늘 2타 — 더 넣을 수 없다/.test(g.$("alloc").html), "속도 늘 2타 안내가 없다");
+    t.save.alloc.spd = sm + 30; t.drawAll();
+    ok(t.save.alloc.spd === sm + 30, "이미 넣은 속도 점수를 빼 버린다"); }
   // 유물로 치명타가 오르면 남는 점수는 돌려준다
   t.save.alloc.crit = cm + 40; t.drawAll();
   ok(t.save.alloc.crit === cm, `넘친 치명타 배분을 돌려주지 않는다: ${t.save.alloc.crit}/${cm}`);

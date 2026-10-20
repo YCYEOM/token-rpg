@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.3"
+__version__ = "0.19.4"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1537,7 +1537,18 @@ $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
 
 // 치명타율이 상한이면 배분·특성 줄에 알린다 — 더 올려도 치명타 피해로 간다
 // 이 줄에 더 넣을 수 있는 점수 — 치명타는 100% 가 되는 데까지만
-const roomOf = k => Math.max(0, k === "crit" ? Math.min(left(), critMax() - save.alloc.crit) : left());
+// 속도는 다음 보스(최고 기록 + 1) 기준 늘 2타가 되는 데까지만 받는다. 더 넣은 점수는 버리는 점수였다.
+// 보스 SPD 는 스테이지마다 오르니 상한도 따라 오른다. 이미 넣어 둔 점수는 빼지 않는다 — 더 깊은 보스에선 쓸모가 있다.
+const spdAt = a => Math.round((H.spd + a*G.spd) * (1 + K.spdTrait*save.traits.spd) * (1 + relicSum("spd")/100));
+const spdMax = () => {
+  const t = K.hitsMax * boss((save.best || 0) + 1).spd;
+  let a = Math.max(0, Math.ceil((t / ((1 + K.spdTrait*save.traits.spd) * (1 + relicSum("spd")/100)) - H.spd) / G.spd));
+  while (a > 0 && spdAt(a - 1) >= t) a--;
+  while (spdAt(a) < t) a++;
+  return a;
+};
+const roomOf = k => Math.max(0, k === "crit" ? Math.min(left(), critMax() - save.alloc.crit)
+  : k === "spd" ? Math.min(left(), spdMax() - save.alloc.spd) : left());
 const capNote = k => k === "crit" && critRaw() >= K.critCap
   ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — ${
       H.crit + relicSum("crit") >= K.critCap ? "토큰·유물만으로 찼다, 넘친 %p는 치명타 피해로" : "더 넣을 수 없다"}</small>`
@@ -1545,10 +1556,11 @@ const capNote = k => k === "crit" && critRaw() >= K.critCap
 // 다음 보스 기준 2타 확률과, 늘 2타까지 남은 점수. 2타가 천장이라 그 위로 넣은 점수는 버린다.
 function spdNote(){
   const g = (save.best || 0) + 1, b = boss(g), p = Math.round(xtra(b) * 100);
-  const mul = 1 + K.spdTrait * save.traits.spd;
-  const need = Math.max(0, Math.ceil((2 * b.spd / mul - H.spd) / G.spd) - save.alloc.spd);
+  const need = Math.max(0, spdMax() - save.alloc.spd);
+  if (!need) return `<small style="color:var(--gold);white-space:normal">${g}스테이지 보스 기준 늘 2타 — ${
+    spdMax() ? "더 넣을 수 없다" : "토큰·특성·유물만으로 찼다"}</small>`;
   return `<small style="color:var(--dim);white-space:normal">${g}스테이지 보스 SPD ${n(b.spd)} · 2타 확률 ${p}%`
-    + (need ? ` (늘 2타까지 ${n(need)}pt)` : " — 더 넣어도 소용없다") + `</small>`;
+    + ` (늘 2타까지 ${n(need)}pt)</small>`;
 }
 function drawHero(){
   const lv = lvNow(), e = expNow(), cur = expFor(lv), nxt = expFor(lv + 1), t = tierOf(lv);

@@ -554,7 +554,7 @@ async function mutations() {
   ok(t.newFighters(t.boss(77))[0].div === 3 && !t.newFighters(t.boss(75))[0].div, "철갑이 전투에 안 걸렸다");
   // 벽이 파이썬과 같은 자리에 선다 — 내성이 오르면 벽이 뒤로 밀린다 (beatable 과 turns_to_win 이 같은 규칙)
   const keepSave = JSON.stringify(t.save);
-  for (const build of fx.expect.mutWall) {         // 벽이 6층(철갑)에 서는 빌드와 8층(광폭)에 서는 빌드
+  for (const build of fx.expect.mutWall) {         // 벽이 6층(철갑)에 서는 빌드와 8층(거대화)에 서는 빌드
     const walls = [];
     for (const [res, want] of build.cases) {
       t.save.alloc = {...build.alloc}; t.save.traits = {...t.fresh().traits, ...build.traits}; t.save.res = res;
@@ -631,7 +631,7 @@ async function mutations() {
   t.drawAll();
   // 지운 겹은 안 적는다 — 지금 지우는 겹만. 철갑은 두 겹 다(11층까지), 저주는 둘째 겹(12층)을 지우는 중
   const mh = g.$("muts").html;
-  ok(/11층까지 다 지웠다/.test(mh) && /12층 — 내 SPD ÷3/.test(mh) && !/첫 겹|÷1</.test(mh), "내성 줄이 지운 겹까지 적는다: " + mh.slice(0, 400));
+  ok(/11층까지 다 지웠다/.test(mh) && /12층 — 내 SPD ÷4/.test(mh) && !/첫 겹|÷1</.test(mh), "내성 줄이 지운 겹까지 적는다: " + mh.slice(0, 400));
   t.save = JSON.parse(keepSave); t.drawAll();
   // 내성: 조각으로 한 레벨씩. 값은 12, 14, 16… 이고 배수가 줄어든다
   const btn = id => g.btn("muts", {m: id});
@@ -659,13 +659,13 @@ async function mutations() {
   const f = n => t.newFighters(t.boss(n));
   const plain = t.newFighters(t.boss(75));
   ok(same(f(91)[0].max, plain[0].max), "저주가 아직 내 HP 를 나눈다");
-  ok(same(t.spdVs(t.boss(91)), t.spdNow() / 3) && same(t.spdVs(t.boss(90)), t.spdNow()), "저주가 내 SPD 를 안 나눈다");
+  ok(same(t.spdVs(t.boss(91)), t.spdNow() / 4) && same(t.spdVs(t.boss(90)), t.spdNow()), "저주가 내 SPD 를 안 나눈다");
   { const b = t.boss(91), keep = t.save.alloc.spd;    // 저주로 보스보다 느려지면 선공을 빼앗긴다
     t.save.alloc.spd = 0; while (t.spdNow() < b.spd * 1.5) t.save.alloc.spd += 10;
     ok(t.spdNow() >= b.spd && !t.goesFirst(b), "저주로 느려졌는데 내가 먼저 친다");
     t.save.alloc.spd = keep; }
-  ok(same(f(106)[1].atk, t.boss(106).atk * 1.75), "광폭이 보스 ATK 를 안 올린다");
-  ok(same(f(121)[0].dfn, plain[0].dfn / 4), "관통이 내 DEF 를 안 나눈다");
+  ok(same(f(106)[1].max, t.boss(106).hp * 3) && same(f(106)[1].atk, t.boss(106).atk), "거대화가 보스 HP 를 안 올린다");
+  ok(same(f(121)[0].crit, plain[0].crit / 3) && same(f(121)[0].dfn, plain[0].dfn), "실명이 치명타 확률을 안 나눈다");
   ok(same(f(136)[0].cdmg, Math.max(100, plain[0].cdmg / 3)), "무감각이 치명타 피해를 안 나눈다");
   // 조각은 변종 층에서만 나온다
   g.rand(() => 0);

@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.6"
+__version__ = "0.19.7"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -408,9 +408,11 @@ RAID_BOSSES = [("월요일의 거신", "🗿"), ("분기 마감의 용", "🐲")
 # 세기는 능력치 하나에 곱하는 배수다. 되풀이할 때마다(11층~, 16층~) 한 번씩 더 곱한다.
 MUTS = [
     ("armor",  "철갑",   "🛡️", 3.0,  "내가 주는 피해 ÷{0}"),
-    ("curse",  "저주",   "☠️", 3.0,  "내 SPD ÷{0}"),
-    ("fury",   "광폭",   "💢", 1.75, "보스 ATK x{0}"),
-    ("pierce", "관통",   "🗡️", 4.0,  "내 DEF ÷{0}"),
+    ("curse",  "저주",   "☠️", 4.0,  "내 SPD ÷{0}"),
+    # v0.19.7: 거대화·실명은 예전 광폭(보스 ATK)·관통(내 DEF) 자리다. 6층부터는 서로 한 방이라 보스 공격을
+    # 키우거나 내 방어를 깎아도 결과가 같았다(벽을 0스테이지 당겼다). id 는 그대로 둬 모은 내성을 잇는다.
+    ("fury",   "거대화", "🦣", 3.0,  "보스 HP x{0}"),
+    ("pierce", "실명",   "🕶️", 3.0,  "내 치명타 확률 ÷{0}"),
     ("numb",   "무감각", "🧊", 3.0,  "내 치명타 피해 ÷{0}"),
 ]
 MUT_LV = 10          # 내성 10레벨이면 그 변이 한 겹이 사라진다. 되풀이 층(11층~)의 두 겹째는 11~20레벨이 지운다
@@ -948,11 +950,12 @@ def turns_to_win(h, b, alloc=None, tr=None, mut=None):
     s = final_stats(h, alloc, tr)
     mid, k = mut or (None, 1.0)
     cdmg = max(100.0, s["cdmg"] / k) if mid == "numb" else s["cdmg"]
-    eff = s["atk"] * (1 + s["crit"] / 100 * (cdmg / 100 - 1))
+    crit = s["crit"] / k if mid == "pierce" else s["crit"]      # 실명: 치명타 확률 ÷k
+    eff = s["atk"] * (1 + crit / 100 * (cdmg / 100 - 1))
     spd = s["spd"] / (k if mid == "curse" else 1)   # 저주는 SPD 를 깎는다 — 2타와 선공을 빼앗는다
     hit = 1 + spd_extra(spd, b["spd"])               # 추가타는 '타격 수'를 늘린다
-    kill = b["hp"] / (mitigate(eff, b["dfn"]) / (k if mid == "armor" else 1) * hit)
-    die = s["hp"] / mitigate(b["atk"] * (k if mid == "fury" else 1), s["dfn"] / (k if mid == "pierce" else 1))
+    kill = b["hp"] * (k if mid == "fury" else 1) / (mitigate(eff, b["dfn"]) / (k if mid == "armor" else 1) * hit)
+    die = s["hp"] / mitigate(b["atk"], s["dfn"])
     return kill, die
 
 
@@ -1752,10 +1755,11 @@ const beatable = b => {
   if (gated(b.g)) return false;                  // 관문 — 내성이 모자라면 능력치와 상관없이 못 넘는다
   const id = mutId(b.g), k = mutPow(b.g);        // 변이 — 전투(mutate)와 같은 규칙
   const cd = id === "numb" ? Math.max(100, F("cdmg") / k) : F("cdmg");
-  const eff = F("atk") * (1 + F("crit")/100 * (cd/100 - 1));
+  const cr = id === "pierce" ? F("crit") / k : F("crit");
+  const eff = F("atk") * (1 + cr/100 * (cd/100 - 1));
   const mit = (atk, dfn) => atk * atk / (atk + dfn);
-  const kill = b.hp / (mit(eff, b.dfn) / (id === "armor" ? k : 1) * (1 + xtra(b)));
-  const die = F("hp") / mit(b.atk * (id === "fury" ? k : 1), F("dfn") / (id === "pierce" ? k : 1));
+  const kill = b.hp * (id === "fury" ? k : 1) / (mit(eff, b.dfn) / (id === "armor" ? k : 1) * (1 + xtra(b)));
+  const die = F("hp") / mit(b.atk, F("dfn"));
   const nh = Math.max(1, Math.ceil(kill - 1e-9)), nb = Math.max(1, Math.ceil(die - 1e-9));   // 누구든 한 대는 쳐야 끝난다
   return goesFirst(b) ? nh <= nb : nh < nb;
 };
@@ -2445,8 +2449,8 @@ function mutate(pair, g){
   const [me, foe] = pair, id = mutId(g), k = mutPow(g);
   if (id === "armor") me.div = k;                           // 내가 주는 피해 ÷k
   // 저주(내 SPD ÷k)는 spdVs() 가 맡는다 — 선공과 2타가 그 값을 쓴다
-  if (id === "fury") foe.atk *= k;                          // 보스 ATK xk
-  if (id === "pierce") me.dfn /= k;                         // 내 DEF ÷k
+  if (id === "fury") { foe.hp *= k; foe.max *= k; }         // 거대화: 보스 HP xk
+  if (id === "pierce") me.crit /= k;                        // 실명: 내 치명타 확률 ÷k
   if (id === "numb") me.cdmg = Math.max(100, me.cdmg / k);  // 내 치명타 피해 ÷k
   return pair;
 }
@@ -3542,6 +3546,8 @@ def _check_muts():
             need = 2 * b["spd"] / (1 + SPD_TRAIT * tr.get("spd", 0)) - h["spd"]
             al = {**alloc, "spd": math.ceil(need / GAIN["spd"])}
             assert final_stats(h, al, tr)["spd"] >= 2 * b["spd"]
+        if m[0] == "pierce":                     # 실명은 치명타 확률을 깎는다 — 치명타 100% 빌드에서 잰다
+            al = {**alloc, "crit": math.ceil((CRIT_CAP - h["crit"]) / GAIN["crit"])}
         k0, d0 = turns_to_win(h, b, al, tr)      # 빌드보다 한참 깊은 데서 재면 DEF 가 이미 무의미해 관통이 0 으로 나온다
         seen = []
         for lv in (0, 3, MUT_LV, MUT_LV + 5, 3 * MUT_LV):
@@ -3552,7 +3558,7 @@ def _check_muts():
             seen.append((d / k) / (d0 / k0))
         assert seen == sorted(seen) and abs(seen[2] - 1) < 1e-9 and abs(seen[-1] - 1) < 1e-9, \
             f"{m[1]}: 내성을 올릴수록 약해지다가 {MUT_LV}레벨에서 사라져야 한다 — {seen}"
-        # 광폭(보스 ATK)은 내 DEF 가 보스 ATK 보다 낮은 빌드에서 가볍다 — 그 경우가 0.57 이다. 최적 배분으로는 0.33 안팎
+        # 철갑·거대화는 정확히 1/k, 무감각·실명은 치명타에 기댄 만큼, 저주는 2타를 잃어 1/2 이다
         assert 0.2 <= seen[0] <= 0.6, f"{m[1]}의 무게가 {seen[0]:.2f} — 다섯 변이는 여유를 1/5~3/5 로 줄여야 한다"
     assert mut_power(n * (nt + len(MUTS)) + 1, {MUTS[0][0]: MUT_LV})[1] == MUTS[0][3], "두 겹째는 내성 10레벨로 한 겹만 지워져야 한다"
     for lap, (lo, hi) in enumerate(((1.5, 3), (2.5, 5)), 1):
@@ -3569,7 +3575,7 @@ def _check_muts():
 
 def _mut_walls(h):
     """변이가 걸린 층에서 '어디서 막히는가' 를 화면과 맞대 볼 값. 내성에 따라 벽이 달라져야 한다.
-    두 빌드를 쓴다 — 벽이 6층(철갑)에 서는 것과 8층(광폭)에 서는 것."""
+    두 빌드를 쓴다 — 벽이 6층(철갑)에 서는 것과 8층(거대화)에 서는 것."""
     alloc = {"atk": 20, "hp": 10, "dfn": 10, "crit": 5, "cdmg": 5, "spd": 5}
     out = []
     for tr in ({"atk": 100, "hp": 100, "dfn": 88, "cdmg": 75, "soul": 20, "pt": 10},

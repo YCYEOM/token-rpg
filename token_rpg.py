@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.7"
+__version__ = "0.19.8"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -186,6 +186,12 @@ B_HP, B_ATK, B_DEF = 115, 24, 8          # 1스테이지 보스 기준치
 # 시작조차 안 됐다. EARLY_G 까지는 배율을 눌러 두고 거기서 원래 곡선에 합류시킨다.
 EARLY_G   = 6                            # 여기부터는 원래 곡선 그대로
 EARLY_MUL = 0.12                         # 1스테이지 배율 (EARLY_G 에서 1.0 으로 복귀)
+# v0.19.8: EARLY_G 부터 보스 ATK 는 x1.24, HP 는 x1.325 씩 오른다(DEF 는 STEP 그대로).
+# 셋이 다 x1.28 이던 때는 6층부터 보스 한 대에 누구나 죽어, 먼저 쳐서 한 턴에 잡느냐로만 갈렸다.
+# HP·DEF 배분과 생존·벽의 유산이 아무 일도 안 했다. 보스 공격을 늦추고 HP 를 키우니 싸움이 길어지고
+# 버티는 빌드가 화력 몰빵과 나란히 선다. 값은 테스트 캐릭터 다섯으로 계산해 TypeSafe 판정과 함께 골랐다
+# (특성 배율 조정과 함께 진행은 캐릭터 중앙값 -14~+10%, 벽의 유산 +20 이 힘의 유산 +20 과 같은 칸을 민다). `.studio/bal_grid.py`
+B_ATK_STEP, B_HP_STEP = 1.24, 1.325
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
 # 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD(스테이지당 +BOSS_SPD)와 같은 걸음이다 —
 # 1점이 보스 한 스테이지분이다.
@@ -202,7 +208,7 @@ CDMG_BASE = 200      # 치명타 피해 기본값(%) = 예전 고정 2배
 
 # 환생: 클리어 기록과 배분을 버리고 '혼'을 얻어 영구 특성을 산다.
 # 특성 효과는 배율(지수), 비용도 지수 -> 층 벽을 넘으려면 환생을 거듭해야 한다.
-TRAIT_MUL  = 1.12    # 특성 1레벨당 스탯 배율 (기본값)
+TRAIT_MUL  = 1.135   # 특성 1레벨당 스탯 배율 (기본값). v0.19.8 에서 1.12 -> 1.135 (아래 TRAIT_MULS 참고)
 # 배율은 그 스탯이 '무엇과 겨루는지'에 맞춘다. 전부 x1.12 이던 시절엔 벽과 신속이 죽어 있었다 —
 # 혼을 얼마를 부어도 도달 스테이지가 그대로라, 사면 손해인 특성이었다.
 #   힘·파괴  피해에 곱으로 붙는다. x1.12 로 충분하다.
@@ -211,7 +217,10 @@ TRAIT_MUL  = 1.12    # 특성 1레벨당 스탯 배율 (기본값)
 #   신속     배율이 아니라 덧셈(SPD_TRAIT). 2타 천장이라 힘과 나란히 서지 않는다 — 싸게 배분 점수를 아껴 준다.
 #   혼(HP)   피해를 견디는 쪽. 벽과 함께 크므로 그 사이 값이면 된다.
 # 다섯이 도달 스테이지에서 서로 두 칸 안에 서고 힘을 넘지 않는 값이다 (demo() 가 붙든다).
-TRAIT_MULS = {"dfn": STEP, "hp": 1.16}
+# v0.19.8: 보스 ATK 가 x1.24 로 늦춰지며 벽(x1.28)이 힘의 두 배 칸을 밀었다. 사용자 조건은 '특성이 한쪽으로
+# 지나치게 기울면 안 된다'. 벽 1.25 · 힘/파괴 1.135 에서 +20레벨 효과가 공격·방어 같아진다(비율 중앙 1.0).
+# 후보는 코드로 계산하고 TypeSafe 판정으로 골랐다(`.studio/trait_tune.py`, `trait_ts.py`).
+TRAIT_MULS = {"dfn": 1.25, "hp": 1.16}
 # 속도 (v0.19.2): 보스 SPD 는 스테이지마다 BOSS_SPD 씩만 오른다(다른 능력치는 STEP 배). 그래서 배분으로 따라잡을 수 있다.
 # 보스보다 1~2배 빠르면 그 비율만큼 확률로 2타, 2배부터 늘 2타 — 3타는 없다(HITS_MAX).
 # 신속의 유산은 레벨당 SPD +SPD_TRAIT(덧셈). 곱셈(1.2/lv)이면 2타가 금방 공짜가 된다.
@@ -407,13 +416,15 @@ RAID_BOSSES = [("월요일의 거신", "🗿"), ("분기 마감의 용", "🐲")
 # (id, 이름, 이모지, 세기, 설명틀) — 6층부터 차례로 붙고 다섯 층마다 되풀이한다.
 # 세기는 능력치 하나에 곱하는 배수다. 되풀이할 때마다(11층~, 16층~) 한 번씩 더 곱한다.
 MUTS = [
-    ("armor",  "철갑",   "🛡️", 3.0,  "내가 주는 피해 ÷{0}"),
-    ("curse",  "저주",   "☠️", 4.0,  "내 SPD ÷{0}"),
+    # v0.19.8: 세기를 3 -> 5(저주 4 -> 8)로 올렸다. 보스 HP 가 스테이지마다 더 가파르게 오르며 같은 배수가
+    # 덜 깊은 칸에 해당하게 돼, 그대로면 한 겹이 1~2스테이지밖에 안 막았다. 지금 값이 2~5스테이지다.
+    ("armor",  "철갑",   "🛡️", 5.0,  "내가 주는 피해 ÷{0}"),
+    ("curse",  "저주",   "☠️", 8.0,  "내 SPD ÷{0}"),
     # v0.19.7: 거대화·실명은 예전 광폭(보스 ATK)·관통(내 DEF) 자리다. 6층부터는 서로 한 방이라 보스 공격을
     # 키우거나 내 방어를 깎아도 결과가 같았다(벽을 0스테이지 당겼다). id 는 그대로 둬 모은 내성을 잇는다.
-    ("fury",   "거대화", "🦣", 3.0,  "보스 HP x{0}"),
-    ("pierce", "실명",   "🕶️", 3.0,  "내 치명타 확률 ÷{0}"),
-    ("numb",   "무감각", "🧊", 3.0,  "내 치명타 피해 ÷{0}"),
+    ("fury",   "거대화", "🦣", 5.0,  "보스 HP x{0}"),
+    ("pierce", "실명",   "🕶️", 5.0,  "내 치명타 확률 ÷{0}"),
+    ("numb",   "무감각", "🧊", 5.0,  "내 치명타 피해 ÷{0}"),
 ]
 MUT_LV = 10          # 내성 10레벨이면 그 변이 한 겹이 사라진다. 되풀이 층(11층~)의 두 겹째는 11~20레벨이 지운다
 SHARD_RATE = 0.02    # 변종 층의 보스를 반복 전투로 이길 때 조각이 나올 확률
@@ -864,6 +875,10 @@ def boss(g):
     p = STEP ** (g - 1)
     if g < EARLY_G:                       # 초반 램프 — 지수 보간이라 단조 증가가 유지된다
         p *= EARLY_MUL ** ((EARLY_G - g) / (EARLY_G - 1))
+    if g >= EARLY_G:
+        p0 = STEP ** (EARLY_G - 1)
+        return {"hp": round(B_HP * p0 * B_HP_STEP ** (g - EARLY_G)), "atk": round(B_ATK * p0 * B_ATK_STEP ** (g - EARLY_G)),
+                "dfn": round(B_DEF * p), "spd": max(1, round(BOSS_SPD * g))}
     return {"hp": round(B_HP * p), "atk": round(B_ATK * p),
             "dfn": round(B_DEF * p), "spd": max(1, round(BOSS_SPD * g))}
 
@@ -1068,7 +1083,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
     return {"hero": hero(agg), "dungeons": dungeons(), "themes": THEMES, "raid": RAID_BOSSES, "muts": MUTS, "achs": ACHS,
             "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
-            "k": {"step": STEP, "bhp": B_HP, "batk": B_ATK, "bdef": B_DEF, "bspd": BOSS_SPD, "hitsMax": HITS_MAX, "spdTrait": SPD_TRAIT,
+            "k": {"step": STEP, "bhp": B_HP, "atkStep": B_ATK_STEP, "hpStep": B_HP_STEP, "batk": B_ATK, "bdef": B_DEF, "bspd": BOSS_SPD, "hitsMax": HITS_MAX, "spdTrait": SPD_TRAIT,
                   "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "soulLateG": SOUL_LATE_G, "soulLateMul": SOUL_LATE_MUL, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
@@ -1433,8 +1448,10 @@ const put = () => {
 // 보스: 전역 스테이지 번호의 지수 곡선. 층이 바뀌어도 난이도가 끊기지 않는다.
 const boss = g => { let p = Math.pow(K.step, g-1);
   if (g < K.earlyG) p *= Math.pow(K.earlyMul, (K.earlyG - g) / (K.earlyG - 1));
+  const p0 = Math.pow(K.step, K.earlyG - 1), late = g >= K.earlyG;   // 파이썬 boss() 와 같은 식
   return {
-  hp: Math.round(K.bhp*p), atk: Math.round(K.batk*p),
+  hp: Math.round(late ? K.bhp*p0*Math.pow(K.hpStep, g - K.earlyG) : K.bhp*p),
+  atk: Math.round(late ? K.batk*p0*Math.pow(K.atkStep, g - K.earlyG) : K.batk*p),
   dfn: Math.round(K.bdef*p), spd: Math.max(1, Math.round(K.bspd*g)), g }; };
 // ── 변이: 변종 층(6층~)의 보스는 층마다 특수한 능력 하나를 갖는다. 능력치 하나에 배수가 걸린다.
 // 변이 조각으로 내성을 올리면 배수가 줄고, K.mutLv 레벨이면 한 겹이 사라진다. 11층부터는 두 겹이다.
@@ -3559,7 +3576,8 @@ def _check_muts():
         assert seen == sorted(seen) and abs(seen[2] - 1) < 1e-9 and abs(seen[-1] - 1) < 1e-9, \
             f"{m[1]}: 내성을 올릴수록 약해지다가 {MUT_LV}레벨에서 사라져야 한다 — {seen}"
         # 철갑·거대화는 정확히 1/k, 무감각·실명은 치명타에 기댄 만큼, 저주는 2타를 잃어 1/2 이다
-        assert 0.2 <= seen[0] <= 0.6, f"{m[1]}의 무게가 {seen[0]:.2f} — 다섯 변이는 여유를 1/5~3/5 로 줄여야 한다"
+        # v0.19.8 에서 세기를 5 로 올려 철갑·거대화는 정확히 1/5 다. 아래로 1/7 까지 둔다
+        assert 0.14 <= seen[0] <= 0.6, f"{m[1]}의 무게가 {seen[0]:.2f} — 다섯 변이는 여유를 1/7~3/5 로 줄여야 한다"
     assert mut_power(n * (nt + len(MUTS)) + 1, {MUTS[0][0]: MUT_LV})[1] == MUTS[0][3], "두 겹째는 내성 10레벨로 한 겹만 지워져야 한다"
     for lap, (lo, hi) in enumerate(((1.5, 3), (2.5, 5)), 1):
         hours = sum(shard_cost(l) for l in range((lap - 1) * MUT_LV, lap * MUT_LV)) / SHARD_RATE / 3600
@@ -4184,7 +4202,8 @@ def _demo_rest(rec):
     assert spd_extra(10 ** 6, 1) == HITS_MAX - 1, "추가 타격 수가 천장을 넘는다"
     # 보스 SPD 는 덧셈으로 오른다 — 배분(1점에 GAIN['spd'])으로 따라잡을 수 있어야 한다
     assert boss(100)["spd"] == 100 * BOSS_SPD and boss(200)["spd"] == 2 * boss(100)["spd"], "보스 SPD 가 덧셈으로 안 오른다"
-    assert tmul_of("dfn") == STEP, "벽 배율이 보스 곡선과 어긋난다 — 한 레벨이 한 스테이지다"
+    # v0.19.8: 벽은 보스 ATK(x1.24) 와 힘(x1.135) 사이에 둔다 — 보스 ATK 보다 느리면 벽이 죽고, 1.28 이면 힘의 두 배를 민다
+    assert B_ATK_STEP <= tmul_of("dfn") < STEP and tmul_of("atk") < tmul_of("dfn"), "벽 배율이 보스 ATK 성장과 힘 사이를 벗어났다"
     # DEF 는 비율로 깎는다. 같은 자리수면 절반, 아무리 높아도 0 이 되지 않는다.
     assert abs(mitigate(100, 100) - 50) < 1e-9, mitigate(100, 100)
     assert mitigate(1000, 0) == 1000 and 0 < mitigate(1000, 10 ** 9) <= 1, "DEF 가 피해를 전부 지운다"

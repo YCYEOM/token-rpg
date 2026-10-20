@@ -4,11 +4,11 @@
 설계: 내 스탯은 토큰에 선형으로, 보스 능력치는 토큰의 거듭제곱근(<1)으로 커진다.
 따라서 막힌 스테이지는 토큰을 더 쓰면 반드시 넘을 수 있다.
 """
-import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, socket, subprocess, sys, webbrowser
+import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shutil, socket, subprocess, sys, webbrowser
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.5"
+__version__ = "0.19.6"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -408,7 +408,7 @@ RAID_BOSSES = [("월요일의 거신", "🗿"), ("분기 마감의 용", "🐲")
 # 세기는 능력치 하나에 곱하는 배수다. 되풀이할 때마다(11층~, 16층~) 한 번씩 더 곱한다.
 MUTS = [
     ("armor",  "철갑",   "🛡️", 3.0,  "내가 주는 피해 ÷{0}"),
-    ("curse",  "저주",   "☠️", 3.0,  "내 최대 HP ÷{0}"),
+    ("curse",  "저주",   "☠️", 3.0,  "내 SPD ÷{0}"),
     ("fury",   "광폭",   "💢", 1.75, "보스 ATK x{0}"),
     ("pierce", "관통",   "🗡️", 4.0,  "내 DEF ÷{0}"),
     ("numb",   "무감각", "🧊", 3.0,  "내 치명타 피해 ÷{0}"),
@@ -949,11 +949,23 @@ def turns_to_win(h, b, alloc=None, tr=None, mut=None):
     mid, k = mut or (None, 1.0)
     cdmg = max(100.0, s["cdmg"] / k) if mid == "numb" else s["cdmg"]
     eff = s["atk"] * (1 + s["crit"] / 100 * (cdmg / 100 - 1))
-    hit = 1 + spd_extra(s["spd"], b["spd"])      # 추가타는 '타격 수'를 늘린다
+    spd = s["spd"] / (k if mid == "curse" else 1)   # 저주는 SPD 를 깎는다 — 2타와 선공을 빼앗는다
+    hit = 1 + spd_extra(spd, b["spd"])               # 추가타는 '타격 수'를 늘린다
     kill = b["hp"] / (mitigate(eff, b["dfn"]) / (k if mid == "armor" else 1) * hit)
-    die = (s["hp"] / (k if mid == "curse" else 1)
-           / mitigate(b["atk"] * (k if mid == "fury" else 1), s["dfn"] / (k if mid == "pierce" else 1)))
+    die = s["hp"] / mitigate(b["atk"] * (k if mid == "fury" else 1), s["dfn"] / (k if mid == "pierce" else 1))
     return kill, die
+
+
+def wins(h, b, alloc=None, tr=None, mut=None):
+    """실제 전투(quickFight)와 같은 판정. 턴은 정수다 — 내가 n_h 턴, 보스가 n_b 대를 쳐야 끝난다.
+    내 SPD(저주 반영)가 보스 이상이면 내가 먼저 친다: n_h <= n_b 면 이긴다. 보스가 먼저면 n_h < n_b.
+    예전 판정(격파 턴 < 생존 턴, 소수)은 선공을 세지 않았다. 깊은 층은 서로 한 방이라 먼저 치는 쪽이
+    이기는데, 그 판정으로는 자동 도전이 수동으로 이기는 곳 앞에서 멈췄다(v0.19.6). JS 의 beatable() 과 같은 식."""
+    kill, die = turns_to_win(h, b, alloc, tr, mut)
+    mid, k = mut or (None, 1.0)
+    first = final_stats(h, alloc, tr)["spd"] / (k if mid == "curse" else 1) >= b["spd"]
+    nh, nb = max(1, math.ceil(kill - 1e-9)), max(1, math.ceil(die - 1e-9))   # 누구든 한 대는 쳐야 끝난다
+    return nh <= nb if first else nh < nb
 
 
 def _splits(pts):
@@ -983,20 +995,18 @@ def reach(h, tr=None, cap=400, res=None, start=0):
         grew = False
         for alloc in _splits(pts):
             while best < cap:
-                kill, die = turns_to_win(h, boss(best + 1), alloc, tr, mut_power(best + 1, res))
-                if kill >= die:
+                if not wins(h, boss(best + 1), alloc, tr, mut_power(best + 1, res)):
                     break
                 best += 1
                 grew = True
     return best
 
 
-# 환생 시뮬레이션이 특성을 사는 순서. 신속은 없다 — 넣어서 재 봤고(v0.14.10) 층 진입 회차가
-# 사실상 그대로였다. 고정 영웅 여섯과 개발자 영웅에서 한 바퀴에 신속을 한 번 섞으면 어느 층이든
-# 진입이 많아야 1회 밀리거나 당겨지고, 두 번 섞으면 1~4회 늦어진다. 신속은 보스 SPD 의 두 배를
-# 넘기 전까지 아무것도 안 주고, v0.19.2 부터는 2타 천장이라 섞어 사도 몫이 작다. 그래서 표는 신속 없이 그린다.
-# selftest 가 '신속을 섞어도 층 진입이 2회 넘게 달라지지 않는다' 를 붙든다. 깨지면 이 순서를 다시 본다.
-SIM_ORDER = ["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt", "soul"]
+# 환생 시뮬레이션이 특성을 사는 순서. v0.19.6 부터 신속을 한 바퀴에 한 번 산다 — 승패 판정이 선공을 세자
+# 신속이 값을 하게 됐다(먼저 쳐서 한 턴에 잡으면 이긴다). 한 번 섞으면 보통 캐릭터의 6층이 30회에서 26회로
+# 당겨지고, 두 번 섞으면 다시 늦어진다. 그래서 한 번이 기준이다.
+# selftest 가 '신속을 더 섞어도 층 진입이 2회 넘게 당겨지지 않는다' 를 붙든다. 깨지면 이 순서를 다시 본다.
+SIM_ORDER = ["atk", "hp", "dfn", "atk", "hp", "dfn", "cdmg", "cdmg", "pt", "soul", "spd"]
 
 
 def simulate(h, n_slots, rebirths=40, order=None):
@@ -1030,10 +1040,12 @@ def balance(h, ds):
     for g in range(1, n * 2 + 1):
         b, d = boss(g), slot_of(g)
         best = min(_splits(pts), key=lambda a: turns_to_win(h, b, a)[0] - turns_to_win(h, b, a)[1])
+        best = next((a for a in _splits(pts) if wins(h, b, a)), best)
         kill, die = turns_to_win(h, b, best)
+        ok = wins(h, b, best)
         print(f"{g:>3} {(g-1)//n+1:>2} {d['name'][:20]:20} {b['hp']:>8} {b['atk']:>6} {b['dfn']:>5}"
-              f" {kill:>7.1f} {die:>7.1f}  {'승' if kill < die else '패 <- 벽'}")
-        if kill >= die and g > n:
+              f" {kill:>7.1f} {die:>7.1f}  {'승' if ok else '패 <- 벽'}")
+        if not ok and g > n:
             break
     print(f"\n[환생 진행] 특성 비용 {COST_K}x{COST_MUL}^lv, 효과 x{TRAIT_MUL}/lv"
           f" ({' · '.join(f'{k} x{v}' for k, v in TRAIT_MULS.items())})")
@@ -1541,7 +1553,8 @@ $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
 // 보스 SPD 는 스테이지마다 오르니 상한도 따라 오른다. 이미 넣어 둔 점수는 빼지 않는다 — 더 깊은 보스에선 쓸모가 있다.
 const spdAt = a => Math.round((H.spd + a*G.spd) * (1 + K.spdTrait*save.traits.spd) * (1 + relicSum("spd")/100));
 const spdMax = () => {
-  const t = K.hitsMax * boss((save.best || 0) + 1).spd;
+  const g = (save.best || 0) + 1;                // 저주가 붙은 보스면 깎이는 만큼 더 받는다
+  const t = K.hitsMax * boss(g).spd * (mutId(g) === "curse" ? mutPow(g) : 1);
   let a = Math.max(0, Math.ceil((t / ((1 + K.spdTrait*save.traits.spd) * (1 + relicSum("spd")/100)) - H.spd) / G.spd));
   while (a > 0 && spdAt(a - 1) >= t) a--;
   while (spdAt(a) < t) a++;
@@ -1709,7 +1722,10 @@ $("saveLoad").onclick = () => {
 };
 
 // 추가타 확률 — 보스보다 빠른 만큼 한 번 더 친다. 파이썬 spd_extra() 와 같은 식이어야 한다.
-const xtra = b => Math.min(K.hitsMax - 1, Math.max(0, spdNow() / Math.max(1, b.spd) - 1));
+// 저주는 이 보스 앞에서 내 SPD 를 깎는다 — 2타 확률과 선공이 모두 이 값을 쓴다. 파이썬 turns_to_win() 과 같은 식
+const spdVs = b => spdNow() / (b.g && mutId(b.g) === "curse" ? mutPow(b.g) : 1);
+const goesFirst = b => spdVs(b) >= b.spd;          // 내가 먼저 친다
+const xtra = b => Math.min(K.hitsMax - 1, Math.max(0, spdVs(b) / Math.max(1, b.spd) - 1));
 // 한 턴에 치는 횟수. 보스보다 N 배 빠르면 N 번, 소수점은 확률로 한 번 더.
 const hitsOf = b => { const x = 1 + xtra(b); return Math.floor(x) + (Math.random() < x % 1 ? 1 : 0); };
 // 한 턴 피해와 치명타 여부. 지금은 2타가 천장이지만, 타격이 많아도 멎지 않게 그대로 둔다 —
@@ -1728,15 +1744,20 @@ function turnDmg(a, d, hits, critPct){
   return [Math.round(hits * one), critPct > 0];
 }
 
-// 평균 피해로 따져 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다
+// 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다. 실제 전투처럼 턴을 정수로 세고 선공을 따진다:
+// 내가 먼저 치면 '내가 잡는 턴 <= 보스가 나를 잡는 대수', 보스가 먼저면 '<'. 피해는 평균값이다.
+// 예전엔 소수 턴끼리 비교해 선공을 세지 않았다 — 서로 한 방인 깊은 층에서 수동으로는 이기는 곳 앞에서
+// 자동 도전이 멈췄다(v0.19.6). 파이썬 wins() 와 같은 식이어야 한다.
 const beatable = b => {
   if (gated(b.g)) return false;                  // 관문 — 내성이 모자라면 능력치와 상관없이 못 넘는다
   const id = mutId(b.g), k = mutPow(b.g);        // 변이 — 전투(mutate)와 같은 규칙
   const cd = id === "numb" ? Math.max(100, F("cdmg") / k) : F("cdmg");
   const eff = F("atk") * (1 + F("crit")/100 * (cd/100 - 1));
   const mit = (atk, dfn) => atk * atk / (atk + dfn);
-  return b.hp / (mit(eff, b.dfn) / (id === "armor" ? k : 1) * (1 + xtra(b)))
-       < F("hp") / (id === "curse" ? k : 1) / mit(b.atk * (id === "fury" ? k : 1), F("dfn") / (id === "pierce" ? k : 1));
+  const kill = b.hp / (mit(eff, b.dfn) / (id === "armor" ? k : 1) * (1 + xtra(b)));
+  const die = F("hp") / mit(b.atk * (id === "fury" ? k : 1), F("dfn") / (id === "pierce" ? k : 1));
+  const nh = Math.max(1, Math.ceil(kill - 1e-9)), nb = Math.max(1, Math.ceil(die - 1e-9));   // 누구든 한 대는 쳐야 끝난다
+  return goesFirst(b) ? nh <= nb : nh < nb;
 };
 
 // ── 자동 도전: 첫 환생 후 해금. 1초에 한 판씩 연출 없이 같은 규칙으로 싸운다.
@@ -1881,7 +1902,7 @@ function drawStages(){
       <div class="n"><b class="nm" title="${slot.name}">${done?"✓ ":""}${g}. ${slot.name}</b>
       <small>${
         [seg("HP", b.hp), seg("ATK", b.atk), seg("DEF", b.dfn), seg("SPD", b.spd)].join(" · ")}${
-        spdNow() < b.spd ? " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"
+        !goesFirst(b) ? " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"
         : xtra(b) ? ` · <span style="color:var(--on);white-space:nowrap">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""}
       <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}</small></div>`;
     const btn = document.createElement("button");
@@ -2423,7 +2444,7 @@ const newFighters = b => mutate([{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("
 function mutate(pair, g){
   const [me, foe] = pair, id = mutId(g), k = mutPow(g);
   if (id === "armor") me.div = k;                           // 내가 주는 피해 ÷k
-  if (id === "curse") { me.hp /= k; me.max /= k; }          // 내 최대 HP ÷k
+  // 저주(내 SPD ÷k)는 spdVs() 가 맡는다 — 선공과 2타가 그 값을 쓴다
   if (id === "fury") foe.atk *= k;                          // 보스 ATK xk
   if (id === "pierce") me.dfn /= k;                         // 내 DEF ÷k
   if (id === "numb") me.cdmg = Math.max(100, me.cdmg / k);  // 내 치명타 피해 ÷k
@@ -2451,7 +2472,7 @@ const winStage = g => {
 // 연출 없는 즉시 전투 (자동 도전용). 규칙은 fightStart 와 같다.
 function quickFight(b){
   const [me, foe] = newFighters(b);
-  let myTurn = spdNow() >= b.spd;
+  let myTurn = goesFirst(b);
   for (let turn = 1; turn <= 200; turn++) {
     if (myTurn) foe.hp -= turnDmg(me, foe, hitsOf(b), me.crit)[0];
     else me.hp -= dmgOf(foe, me, false);
@@ -2472,7 +2493,7 @@ function fightStart(g, slot, b){
   $("fh").textContent = tierOf(lvNow())[1]; $("fb").textContent = slot.emoji; $("fbn").textContent = slot.name;
   $("log").innerHTML = ""; $("close").disabled = true; $("close").textContent = "전투 중…";
   $("fight").classList.add("on");
-  let turn = 0, myTurn = spdNow() >= b.spd;
+  let turn = 0, myTurn = goesFirst(b);
   say(`${slot.emoji} ${g}스테이지 — ${slot.name} 등장!`
       + (xtra(b) ? ` <span class="dim">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""));
   if (fightRare) say(`<span class="gold">황금 개체다 — 이기면 도감에 오른다.</span>`);
@@ -3516,12 +3537,17 @@ def _check_muts():
     for i, m in enumerate(MUTS):
         g = n * (nt + i) + 5                     # 이 변이가 붙는 층 — 배수는 여기서 읽는다
         b = boss(80)                             # 무게는 이 빌드가 막히는 깊이(80스테이지 언저리)에서 잰다.
-        k0, d0 = turns_to_win(h, b, alloc, tr)   # 빌드보다 한참 깊은 데서 재면 DEF 가 이미 무의미해 관통이 0 으로 나온다
+        al = alloc
+        if m[0] == "curse":                      # 저주는 SPD 를 깎는다 — 보스의 두 배로 빠른(늘 2타) 빌드에서 잰다
+            need = 2 * b["spd"] / (1 + SPD_TRAIT * tr.get("spd", 0)) - h["spd"]
+            al = {**alloc, "spd": math.ceil(need / GAIN["spd"])}
+            assert final_stats(h, al, tr)["spd"] >= 2 * b["spd"]
+        k0, d0 = turns_to_win(h, b, al, tr)      # 빌드보다 한참 깊은 데서 재면 DEF 가 이미 무의미해 관통이 0 으로 나온다
         seen = []
         for lv in (0, 3, MUT_LV, MUT_LV + 5, 3 * MUT_LV):
             mid, power = mut_power(g, {m[0]: lv})
             assert power >= 1, f"{m[1]} 내성 {lv}레벨: 배수 {power} — 1 아래면 변이가 덤이 된다"
-            k, d = turns_to_win(h, b, alloc, tr, (mid, power))
+            k, d = turns_to_win(h, b, al, tr, (mid, power))
             assert k >= k0 - 1e-9 and d <= d0 + 1e-9, f"{m[1]} 내성 {lv}레벨에서 변이가 없을 때보다 쉽다"
             seen.append((d / k) / (d0 / k0))
         assert seen == sorted(seen) and abs(seen[2] - 1) < 1e-9 and abs(seen[-1] - 1) < 1e-9, \
@@ -3552,8 +3578,7 @@ def _mut_walls(h):
         for res in ({}, {"armor": 4}, {m[0]: MUT_LV for m in MUTS}, {m[0]: 2 * MUT_LV for m in MUTS}):
             g = 1
             while g < 400:
-                kill, die = turns_to_win(h, boss(g), alloc, tr, mut_power(g, res))
-                if kill >= die or gated(g, res):
+                if not wins(h, boss(g), alloc, tr, mut_power(g, res)) or gated(g, res):
                     break
                 g += 1
             cases.append([res, g])
@@ -3603,8 +3628,7 @@ def _check_js():
                       ({"spd": 60}, {"spd": 40, "hp": 20})):
         g = 1
         while g < 400:
-            kill, die = turns_to_win(h, boss(g), alloc, tr)
-            if kill >= die:
+            if not wins(h, boss(g), alloc, tr):
                 break
             g += 1
         builds.append({"alloc": alloc, "traits": tr, "stats": final_stats(h, alloc, tr), "wall": g})
@@ -4001,7 +4025,8 @@ def _check_full_pace(h, n):
     assert max(fl) >= 10, f"전부 넣은 모델이 환생 80회에 {max(fl)}층이다"
     for f in range(6, 10):
         need = fl[f] - fl[f - 1]
-        assert 3 <= need <= 12, \
+        # 하한 2: v0.19.6 에서 승패가 선공을 세며 깊은 층이 빨라졌다(출력만 7층 2회). 위 환생 표와 같은 이유다.
+        assert 2 <= need <= 12, \
             f"보조 수입과 황금 개체를 다 챙기면 {f}층이 환생 {need}회에 열린다 — 보조 수입이 과하다"
     # 깊은 층(7~10층)에서 보조 수입은 환생보다 작되 죽지 않아야 한다.
     #   1 을 넘으면 환생이 주 수입이 아니다 — v0.14.11 은 후반 배율을 그대로 붙여 2.0 까지 갔다.
@@ -4061,19 +4086,21 @@ def _check_balance(h, ds, strict=True):
         for fl in range(5, 10):
             need = late[fl] - late[fl - 1]
             assert need <= 16, f"{fl}층에 환생 {need}회가 든다 — 후반이 다시 느려졌다 (SOUL_LATE_MUL 이 낮다)"
-            assert need >= 4, f"{fl}층이 환생 {need}회에 열린다 — 후반이 폭주한다 (SOUL_LATE_MUL 이 높다)"
+            # 하한 3: v0.19.6 에서 승패가 선공을 세며 깊은 층이 빨라졌다(출력만 9층 3회). 보스를 키워 되돌리지
+            # 않기로 했다 — 수동으로는 이미 그만큼 갔고, 자동이 거기에 맞춘 것이다.
+            assert need >= 3, f"{fl}층이 환생 {need}회에 열린다 — 후반이 폭주한다 (SOUL_LATE_MUL 이 높다)"
 
         _check_full_pace(h, n)
 
-    # 위 회차는 신속을 안 사는 순서(SIM_ORDER)로 잰 값이다. 신속을 섞어도 그 회차가 흔들리지 않아야
-    # 표를 믿을 수 있다 — 흔들리면 신속이 섞어 사도 값을 하게 됐다는 뜻이고, 순서를 다시 봐야 한다.
+    # 위 회차는 SIM_ORDER(신속 한 번)로 잰 값이다. 신속을 더 사도 그 회차보다 빨라지면 안 된다 —
+    # 빨라지면 표가 실제로 갈 수 있는 길보다 느리다는 뜻이고, 순서를 다시 봐야 한다. 늦어지는 건 괜찮다.
     mixed = {}
     for r, g, fl, _, _ in simulate(h, n, rebirths=32, order=SIM_ORDER + ["spd"]):
         mixed.setdefault(fl, r)
     for fl in set(floors) | set(mixed):
         a, b = floors.get(fl, 33), mixed.get(fl, 33)        # 33 = 32회 안에 못 닿았다
-        assert abs(a - b) <= 2, \
-            f"신속을 섞어 사면 {fl}층 진입이 {a}회에서 {b}회로 바뀐다 — 환생 표(SIM_ORDER)가 낡았다"
+        assert b >= a - 2, \
+            f"신속을 더 섞어 사면 {fl}층 진입이 {a}회에서 {b}회로 바뀐다 — 환생 표(SIM_ORDER)가 낡았다"
 
     # 3-2) 파괴의 유산이 혼을 깊이로 바꾸는가. 가산이던 시절엔 어떤 레벨을 사도 도달이
     #      그대로여서, 사면 손해인 특성이었다. 절대 스테이지는 사용자마다 다르니
@@ -4092,9 +4119,10 @@ def _check_balance(h, ds, strict=True):
         assert (near if strict else far) > base_r, \
             f"{ko}의 유산 {20 if strict else 60}레벨이 도달을 못 늘린다 ({base_r} -> {near if strict else far})" \
             f" — 혼을 버리는 특성이다"
-        # 네 칸: v0.19.2 에서 2타가 쉬워지며 힘 20레벨이 한 칸 올랐다(출력만: 벽 16 · 힘 19 -> 20). 벽은 그대로다.
-        assert near >= atk20 - 4, \
-            f"{ko}({near})가 힘({atk20})보다 네 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
+        # 다섯 칸: v0.19.2 에서 2타가 쉬워지며 힘 20레벨이 한 칸 올랐고(출력만: 벽 16 · 힘 19 -> 20),
+        # v0.19.6 에서 승패가 선공을 세며 또 한 칸 올랐다(힘 21). 먼저 쳐서 잡는 싸움이라 공격 쪽이 앞선다. 벽은 그대로다.
+        assert near >= atk20 - 5, \
+            f"{ko}({near})가 힘({atk20})보다 다섯 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
         assert near <= atk20 + slack and far <= atk60 + slack, \
             f"{ko}({near}/{far})가 힘({atk20}/{atk60})을 넘어섰다 — 그 빌드만 정답이 된다"
 

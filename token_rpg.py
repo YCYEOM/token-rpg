@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.4"
+__version__ = "0.19.5"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1549,6 +1549,7 @@ const spdMax = () => {
 };
 const roomOf = k => Math.max(0, k === "crit" ? Math.min(left(), critMax() - save.alloc.crit)
   : k === "spd" ? Math.min(left(), spdMax() - save.alloc.spd) : left());
+// 상한은 스탯 배분에만 있다. 영구 특성(신속의 유산)은 늘 살 수 있으니 특성 줄에는 이 안내를 달지 않는다.
 const capNote = k => k === "crit" && critRaw() >= K.critCap
   ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — ${
       H.crit + relicSum("crit") >= K.critCap ? "토큰·유물만으로 찼다, 넘친 %p는 치명타 피해로" : "더 넣을 수 없다"}</small>`
@@ -1607,7 +1608,7 @@ function drawHero(){
   // 줄마다 구입(1레벨) · 최대(혼이 되는 만큼)
   $("traits").innerHTML = TRAITS.map(([k,ko,eff]) => {
     const all = buyable(k, 1e9);
-    return `<span>${ko}<small>${eff}</small>${capNote(k)}</span>
+    return `<span>${ko}<small>${eff}</small>${k === "spd" ? "" : capNote(k)}</span>
       <b class="soul">Lv.${save.traits[k]}</b>
       <span class="dim" style="font-size:11px;text-align:right;white-space:nowrap">${n(costOf(save.traits[k]))}혼</span>
       <button data-t="${k}" data-c="1" ${all<=0?"disabled":""}>구입</button>

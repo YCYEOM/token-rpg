@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, os, shutil, soc
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.2"
+__version__ = "0.19.3"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1736,6 +1736,10 @@ let picksOpen = false;   // 다시 그려도 펼친 상태는 유지한다 — �
 let floorsOpen = null;
 // 능력치가 그대로면 진 스테이지로 다시 오르지 않는다 (치명타 운으로 벽을 넘는 반복 방지)
 const statSig = () => STATS.map(([k]) => F(k)).join();
+// 밀린 전투를 몰아 칠 때(quiet)는 저장·다시 그리기를 끝에 한 번만 한다
+let quiet = false, dirty = false;
+const aput = () => { if (quiet) dirty = true; else put(); };
+const adraw = () => { if (!quiet) drawAll(); };
 const autoReset = () => { autoFailSig = ""; autoMsg = ""; farmW = farmL = farmI = 0; };
 // 반복할 스테이지들. 옛 저장은 숫자 하나였다 — 읽을 때 배열로 맞춘다.
 // 비어 있으면 예전처럼 끝까지 오르고 이길 수 있는 가장 깊은 곳을 돈다.
@@ -1811,9 +1815,9 @@ function autoStep(){
     const rare = rollRare();
     if (quickFight(boss(next))) {
       winStage(next); autoMsg = `${next}. ${slotOf(next).name} 격파`;
-      if (rare) { dexNews = catchRare(next); put(); }
-      if (rollShard(next)) put();
-      drawAll();
+      if (rare) { dexNews = catchRare(next); aput(); }
+      if (rollShard(next)) aput();
+      adraw();
     } else {
       autoFailSig = statSig() + "@" + next; tally("losses");
       autoSay(`${next}스테이지 패배 — 능력치가 바뀌면 다시 오른다`);
@@ -1840,7 +1844,7 @@ function autoStep(){
     if (drop) relicNews = drop;
     if (rare) dexNews = catchRare(g);
     const shard = rollShard(g);
-    if (drop || rare || shard) { put(); drawAll(); }
+    if (drop || rare || shard) { aput(); adraw(); }
   } else { farmL++; tally("losses"); }
   autoSay(`${g}스테이지 반복 중${ps.length > 1 ? ` (고른 ${ps.length}곳 순회)` : ""}`
     + ` · 승 ${farmW} 패 ${farmL}${next <= tgt ? ` · ${next}스테이지는 아직 무리` : ""}`);
@@ -2445,10 +2449,10 @@ function quickFight(b){
   return false;
 }
 
-let timer = null;
+let timer = null, fighting = false;
 function fightStart(g, slot, b){
   if (gated(g)) return;
-  clearInterval(timer);
+  clearInterval(timer); fighting = true;
   fightRare = rollRare();                        // 황금 개체가 대신 나왔다 — 이름과 이모지만 다르다
   if (fightRare) slot = rareOf(slot);
   const [me, foe] = newFighters(b);
@@ -2489,7 +2493,7 @@ function say(html, cls){
   $("log").scrollTop = 1e6;
 }
 function end(won, me, foe, g, slot, why){
-  clearInterval(timer); paint(me, foe);
+  clearInterval(timer); fighting = false; paint(me, foe);
   if (won) {
     say(`<span class="win">승리! ${slot.name} 정복. 혼 ${n(soulOf(g))} 예약.</span>`);
     const drop = winStage(g);
@@ -2557,8 +2561,29 @@ if (SERVED) fetch("update", {cache: "no-store"}).then(r => r.json()).then(u => {
   };
 }).catch(() => {});
 
-// 보고 있는 동안에도 계속 쌓인다
-setInterval(() => { if (!$("fight").classList.contains("on")) { drawExped(); autoStep(); } }, 1000);
+// 자동 전투는 1초에 한 판이다. 메뉴 막대 창을 닫거나 Mac 이 잠들면 macOS 가 이 타이머를 멈춘다.
+// 그래서 지난 판 이후 흐른 시간만큼 밀린 판을 친다 — 한 번에 AUTO_BATCH 판씩, 원정대와 같은 상한까지.
+// 수동 전투가 연출 중일 때만 쉬고, 그동안 밀린 판도 끝나면 따라잡는다.
+const AUTO_BATCH = 600;
+let autoAt = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  if (!save.auto || !save.rebirths) autoAt = now;              // 꺼 둔 시간은 쌓지 않는다
+  autoAt = Math.max(autoAt, now - CAP_S * 1000);
+  if (!fighting) {
+    const k = Math.min(AUTO_BATCH, Math.floor((now - autoAt) / 1000));
+    if (k > 1) {
+      quiet = true;
+      try { for (let i = 0; i < k; i++) autoStep(); } finally { quiet = false; }
+      if (dirty) { dirty = false; put(); }
+      drawAll();
+      const left = Math.floor((now - autoAt) / 1000) - k;
+      if (left > 0) autoSay(`밀린 전투 ${n(left)}판 따라잡는 중`);
+    } else if (k === 1) autoStep();
+    autoAt += k * 1000;
+  }
+  if (!$("fight").classList.contains("on")) drawExped();
+}, 1000);
 
 // 다른 창에서 진행했을 수 있다 -> 이 창으로 돌아올 때 최신 저장을 받는다 (전투 중에는 건드리지 않는다)
 window.addEventListener("focus", () => {

@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.0"
+__version__ = "0.20.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1171,10 +1171,11 @@ button.rb{border-color:var(--soul);color:var(--soul)}
 .pane.off{display:none}
 button.on{border-color:var(--on);color:var(--on);background:#1c2531}
 button.chip{padding:1px 2px;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}
+i.mk{font-style:normal;font-size:9px;color:var(--dim);margin-left:1px}
 #picksBox{flex-basis:100%}
 #picksBox summary{font-size:12px;cursor:pointer;padding:6px 10px;background:#21262d;
 border:1px solid var(--line);border-radius:6px}#picksBox summary:hover{border-color:var(--on)}
-#picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:4px;max-height:34vh;overflow-y:auto;padding-top:4px}
+#picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(58px,1fr));gap:4px;max-height:34vh;overflow-y:auto;padding-top:4px}
 #picks .flrow{grid-column:1/-1;display:flex;gap:4px;margin-top:4px}#picks .flrow:first-child{margin-top:0}
 #picks button.fl{flex:1;min-width:0;text-align:left;font-size:11px;padding:3px 8px;
 display:flex;justify-content:space-between;gap:8px}
@@ -1242,16 +1243,16 @@ margin-top:10px;padding-top:8px}
   <button data-tab="collect">📚 수집<i class="dot" id="dot-collect"></i></button>
 </nav>
 <div class="pane" data-pane="fight">
-<details class="card" data-k="rebirth" open>
-  <summary><h2>환생 <span class="soul" id="rbHead"></span></h2></summary>
-  <div id="rbBox"></div>
-</details>
 <details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
   <div id="mutNote"></div>
   <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
   <div id="stages"></div><div id="wall"></div></details>
 </div>
 <div class="pane" data-pane="grow">
+<details class="card" data-k="rebirth" open>
+  <summary><h2>환생 <span class="soul" id="rbHead"></span></h2></summary>
+  <div id="rbBox"></div>
+</details>
 <details class="card" data-k="alloc" open>
   <summary><h2>스탯 배분 <span class="gold" id="left"></span></h2></summary>
   <div class="alloc" id="alloc"></div>
@@ -1818,6 +1819,32 @@ const autoSay = m => { if (m !== autoMsg) { autoMsg = m; drawAuto(); } };
 const floorStages = f => { const out = [];
   for (let g = (f - 1) * N + 1; g <= Math.min(f * N, save.best || 0); g++) out.push(g);
   return out; };
+// ── 반복으로 아직 모을 것 (v0.20.1). 도감 두 장과 칸을 비교해 가며 골랐다 — 칸에 직접 찍는다.
+// 유물은 칸 번호(1~15)마다 하나라 층이 달라도 같은 것을 모은다. 황금은 테마 줄(1~5층) 칸마다 하나다.
+const relicLeft = g => { const r = (save.relics || {})[relicKey(slotOf(g))]; return !relicOk(r) || r.r < RARITY.length - 1; };
+const goldLeft = g => dexOf(save)[dexKey(g)] !== 2;
+const wantSig = () => SLOTS.map(s => { const r = (save.relics || {})[relicKey(s)]; return relicOk(r) ? r.r : "-"; }).join("")
+  + "|" + dexRareAll(save);
+// 모을 것이 남은 유물 칸·황금 칸마다 깬 스테이지 하나씩 — 이길 수 있는 가장 깊은 곳(혼이 많다).
+// 같은 유물을 주는 칸을 층마다 다 고르면 같은 확률을 여러 번 도는 것뿐이라 하나만 고른다.
+function wantPicks(){
+  const best = save.best || 0, seen = new Set(), out = [];
+  for (const [left, key] of [[relicLeft, g => "r" + slotOf(g).slot], [goldLeft, g => "d" + dexKey(g)]]) {
+    const deep = {};
+    for (let g = best; g >= 1; g--) {
+      if (!left(g)) continue;
+      const k = key(g);
+      if (!(k in deep)) deep[k] = g;                       // 못 이겨도 일단 가장 깊은 곳
+      if (deep[k] !== true && beatable(boss(g)) && !gated(g)) { if (!seen.has(g)) { seen.add(g); out.push(g); } deep[k] = true; }
+    }
+    for (const k in deep) if (deep[k] !== true && !seen.has(deep[k])) { seen.add(deep[k]); out.push(deep[k]); }
+  }
+  return out.sort((a, b) => a - b);
+}
+// 칸 표시: ◆ = 유물을 더 올릴 수 있다(색 = 지금 등급, 없으면 회색 ◇) · ★ = 황금을 아직 못 잡았다
+const wantMarks = g => (relicLeft(g) ? (() => { const r = (save.relics || {})[relicKey(slotOf(g))];
+    return relicOk(r) ? `<i class="mk" style="color:${RARITY[r.r][2]}">◆</i>` : `<i class="mk">◇</i>`; })() : "")
+  + (goldLeft(g) ? `<i class="mk" style="color:var(--gold)">★</i>` : "");
 function drawAuto(){
   if (!save.rebirths) {
     autoKey = "";
@@ -1828,7 +1855,8 @@ function drawAuto(){
   const ps = picks(), on = new Set(ps), best = save.best || 0;
   const top = Math.max(1, Math.ceil(best / N));
   if (!floorsOpen) floorsOpen = new Set([top]);
-  const key = `${save.auto}|${ps.join()}|${best}|${[...floorsOpen].join()}`;
+  const want = wantPicks();
+  const key = `${save.auto}|${ps.join()}|${best}|${[...floorsOpen].join()}|${wantSig()}`;
   if (key !== autoKey || !$("autoMsg")) {
     autoKey = key;
     // 스테이지마다 유물 속성이 다르다 — 여러 곳을 골라 돌려야 속성이 골고루 모인다
@@ -1839,23 +1867,30 @@ function drawAuto(){
       const f = Math.floor((g - 1) / N) + 1, open = floorsOpen.has(f);
       if ((g - 1) % N === 0) {
         const all = floorStages(f), cnt = all.filter(x => on.has(x)).length;
+        const gl = all.filter(goldLeft).length;
         chips.push(`<div class="flrow"><button class="fx" data-x="${f}" title="${open ? "접기" : "펼치기"}">${open ? "▾" : "▸"}</button>
           <button class="fl${cnt === all.length ? " on" : ""}" data-f="${f}"
-          title="이 층을 통째로 고르거나 뺀다">${f}층 ${slotOf(g).theme}
+          title="이 층을 통째로 고르거나 뺀다">${f}층 ${slotOf(g).theme}${gl ? ` <i class="mk" style="color:var(--gold)">★${gl}</i>` : ""}
           <span>${cnt === all.length ? "전부 고름 — 눌러서 빼기" : `${cnt}/${all.length} — 눌러서 층 전체 고르기`}</span></button></div>`);
       }
       if (open) chips.push(`<button class="chip${on.has(g) ? " on" : ""}" data-g="${g}"
-        title="${g}. ${slotOf(g).name}">${slotOf(g).emoji}${g}</button>`);
+        title="${g}. ${slotOf(g).name}${relicLeft(g) ? " · 유물을 더 올릴 수 있다" : ""}${goldLeft(g) ? " · 황금 미포획" : ""}">${slotOf(g).emoji}${g}${wantMarks(g)}</button>`);
     }
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
       <button id="pickAll">${ps.length === best && best ? "전체 해제" : "전체 반복"}</button>
+      <button id="pickWant" ${want.length ? "" : "disabled"} class="${want.length && want.join() === ps.join() ? "on" : ""}"
+        title="유물을 더 올릴 수 있거나 황금을 못 잡은 칸마다, 이길 수 있는 가장 깊은 스테이지 하나씩">${
+        want.length ? `못 모은 곳만 (${want.length})` : "다 모았다"}</button>
       <details id="picksBox" ${picksOpen ? "open" : ""}><summary>${ps.length
         ? `고른 ${ps.length}곳을 차례로 반복` : "끝까지 오르고 가장 깊은 곳 반복"} — 눌러서 고르기</summary>
+        <div class="dim" style="font-size:11px;margin:4px 0 2px">◆ 유물을 더 올릴 수 있다(색 = 지금 등급, ◇ = 없음) ·
+          <span class="gold">★</span> 황금 미포획. 유물은 칸 번호가 같으면 층이 달라도 같은 유물이다.</div>
         <div id="picks">${chips.join("")}</div></details>
       <span class="dim" id="autoMsg" style="font-size:11px;flex-basis:100%"></span>`;
     $("autoBtn").onclick = () => { save.auto = !save.auto; autoReset(); put(); drawAuto(); };
     $("pickAll").onclick = () => setPicks(ps.length === best
       ? [] : Array.from({length: best}, (_, i) => i + 1));
+    $("pickWant").onclick = () => setPicks(want);
     $("picksBox").ontoggle = e => { picksOpen = e.target.open; };
     $("picks").onclick = e => {                       // 칸 하나하나가 아니라 묶어서 듣는다
       // 머리줄 안의 글자(span)를 눌러도 머리줄로 친다
@@ -1937,7 +1972,10 @@ function drawStages(){
         [seg("HP", b.hp), seg("ATK", b.atk), seg("DEF", b.dfn), seg("SPD", b.spd)].join(" · ")}${
         !goesFirst(b) ? " · <span style='color:var(--hp);white-space:nowrap'>보스 선공</span>"
         : xtra(b) ? ` · <span style="color:var(--on);white-space:nowrap">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""}
-      <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}</small></div>`;
+      <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}${(() => {
+        const r = (save.relics || {})[relicKey(slot)];
+        return relicOk(r) ? ` <span style="color:${RARITY[r.r][2]}">(${RARITY[r.r][0]})</span>` : ' <span class="dim">(없음)</span>'; })()}${
+        goldLeft(g) ? ' · <span class="gold">★ 황금 미포획</span>' : ""}</small></div>`;
     const btn = document.createElement("button");
     const shut = gated(g);                       // 관문 — 내성을 채우기 전에는 도전도 못 한다
     btn.textContent = !open ? "잠김" : shut ? "내성 부족" : done ? "재도전" : "도전";
@@ -2475,7 +2513,8 @@ function drawAch(){
 const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawTabs(); };
 
 // ── 탭 (v0.20.0): 카드 열넷을 한 줄로 늘어놓던 때는 메뉴 막대 창(640px)으로 13화면이었고, 던전이 9화면 아래였다.
-// 자주 쓰는 순서로 넷으로 나눈다 — 전투(환생·던전) · 성장(배분·특성·내성) · 일과(미션·레이드·슬롯·원정) · 수집.
+// 자주 쓰는 순서로 넷으로 나눈다 — 전투(던전) · 성장(환생·배분·특성·내성)
+// 환생은 v0.20.0 에 전투 탭에 두었다가 v0.20.1 에 성장으로 옮겼다 — 혼을 받아 바로 특성을 사는 흐름이라 한 탭이 맞다 · 일과(미션·레이드·슬롯·원정) · 수집.
 // 받을 것·쓸 것이 있으면 탭에 점을 찍는다. 마지막으로 본 탭은 이 창에 기억한다(저장 파일과는 무관).
 const TAB = "trpg.tab";
 let tabNow = "fight";
@@ -2489,8 +2528,9 @@ function showTab(t){
 document.querySelectorAll("button[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 // 점을 찍는 조건 — '지금 눌러야 손해를 안 보는 것' 만. 혼으로 특성을 살 수 있다는 늘 참이라 넣지 않는다
 const tabTodo = () => ({
-  fight: save.cleared.length > 0 && rbCharges() >= K.rbCap,                       // 환생 기운이 가득 차 더 안 쌓인다
-  grow: left() > 0 || (mutLaps() > 0 && MUTS.some(m => resOf(m[0]) < mutCap() && (save.shards | 0) >= shardCost(resOf(m[0])))),
+  fight: false,
+  grow: (save.cleared.length > 0 && rbCharges() >= K.rbCap)                      // 환생 기운이 가득 차 더 안 쌓인다
+     || left() > 0 || (mutLaps() > 0 && MUTS.some(m => resOf(m[0]) < mutCap() && (save.shards | 0) >= shardCost(resOf(m[0])))),
   daily: missions().some(m => m.cur >= m.goal && !(save.claimed || {})[m.key])
       || (raidOpen() && [0, 1, 2, 3].some(i => !raidGot().includes(i) && weekSum(0) >= raidHp() * (i + 1) / 4))
       || (!!save.best && slotLeft() > 0)

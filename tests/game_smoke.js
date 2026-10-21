@@ -85,7 +85,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
   n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, spdMax, spdVs, spdNow, goesFirst, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
-  encodeSave, decodeSave, validSave, left, points, picks, missions, transOf, maxCleared };`;
+  encodeSave, decodeSave, validSave, left, points, picks, wantPicks, relicLeft, goldLeft, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
 const NOON = new Date(Y, M - 1, DAY, 12).getTime();     // 현지 정오 — 어느 시간대에서도 같은 날짜가 나온다
@@ -337,6 +337,13 @@ async function playthrough() {
   ok(t.picks().length === t.save.best && t.save.best < 15 && /전부 고름/.test(g.$("auto").html), "층 머리줄이 깬 스테이지를 다 고르지 않는다: " + t.picks());
   await g.click(g.$("picks"), {target: head(1)});
   ok(!t.picks().length, "층 머리줄을 다시 눌러도 안 빠진다");
+  // 못 모은 곳만: 유물을 더 올릴 수 있거나 황금이 없는 칸마다 하나씩. 칸에는 ◆·★ 가 찍힌다
+  const want = t.wantPicks();
+  ok(want.length > 0 && want.every(x => t.relicLeft(x) || t.goldLeft(x)), "'못 모은 곳만' 이 다 모은 칸을 고른다: " + want);
+  await g.click(g.$("pickWant"));
+  ok(t.picks().join() === want.join(), "'못 모은 곳만' 버튼이 그 칸들을 안 고른다");
+  ok(/★/.test(g.$("auto").html), "반복 칸에 황금 미포획 표시가 없다");
+  await g.click(g.$("pickAll")); await g.click(g.$("pickAll"));
   await g.advance(3000);
   g.clean("자동 도전");
   // 이번 판에 나온 유물은 떨어뜨린 스테이지를 적어 둔다 — 도감이 그 보스 이름을 보여 준다

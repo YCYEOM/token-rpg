@@ -343,6 +343,7 @@ async function playthrough() {
   await g.click(g.$("pickWant"));
   ok(t.picks().join() === want.join(), "'못 모은 곳만' 버튼이 그 칸들을 안 고른다");
   ok(/★/.test(g.$("auto").html), "반복 칸에 황금 미포획 표시가 없다");
+  ok(/유물 승급 \d+|황금 \d+/.test(g.$("auto").html), "모으기 버튼이 무엇을 모으는지 안 적는다");
   await g.click(g.$("pickAll")); await g.click(g.$("pickAll"));
   await g.advance(3000);
   g.clean("자동 도전");

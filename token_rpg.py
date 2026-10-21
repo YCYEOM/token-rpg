@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.1"
+__version__ = "0.20.2"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1841,6 +1841,14 @@ function wantPicks(){
   }
   return out.sort((a, b) => a - b);
 }
+// 버튼 글자: '못 모은 곳' 은 무엇을 못 모았는지 몰랐다 — 유물 승급과 황금을 따로 센다
+function wantLabel(want){
+  if (!want.length) return "유물·황금 다 모음";
+  const best = save.best || 0;
+  const r = SLOTS.filter(s => s.slot <= best && relicLeft(s.slot)).length;
+  const d = new Set(Array.from({length: best}, (_, i) => i + 1).filter(goldLeft).map(dexKey)).size;
+  return [r ? `유물 승급 ${r}` : "", d ? `황금 ${d}` : ""].filter(Boolean).join(" · ") + " 모으기";
+}
 // 칸 표시: ◆ = 유물을 더 올릴 수 있다(색 = 지금 등급, 없으면 회색 ◇) · ★ = 황금을 아직 못 잡았다
 const wantMarks = g => (relicLeft(g) ? (() => { const r = (save.relics || {})[relicKey(slotOf(g))];
     return relicOk(r) ? `<i class="mk" style="color:${RARITY[r.r][2]}">◆</i>` : `<i class="mk">◇</i>`; })() : "")
@@ -1879,12 +1887,12 @@ function drawAuto(){
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
       <button id="pickAll">${ps.length === best && best ? "전체 해제" : "전체 반복"}</button>
       <button id="pickWant" ${want.length ? "" : "disabled"} class="${want.length && want.join() === ps.join() ? "on" : ""}"
-        title="유물을 더 올릴 수 있거나 황금을 못 잡은 칸마다, 이길 수 있는 가장 깊은 스테이지 하나씩">${
-        want.length ? `못 모은 곳만 (${want.length})` : "다 모았다"}</button>
+        title="유물 승급: 아직 신화가 아닌 유물 칸 · 황금: 아직 못 잡은 황금 개체. 칸마다 이길 수 있는 가장 깊은 스테이지 하나씩 골라 반복한다">${
+        wantLabel(want)}</button>
       <details id="picksBox" ${picksOpen ? "open" : ""}><summary>${ps.length
         ? `고른 ${ps.length}곳을 차례로 반복` : "끝까지 오르고 가장 깊은 곳 반복"} — 눌러서 고르기</summary>
-        <div class="dim" style="font-size:11px;margin:4px 0 2px">◆ 유물을 더 올릴 수 있다(색 = 지금 등급, ◇ = 없음) ·
-          <span class="gold">★</span> 황금 미포획. 유물은 칸 번호가 같으면 층이 달라도 같은 유물이다.</div>
+        <div class="dim" style="font-size:11px;margin:4px 0 2px">◆ 유물이 아직 신화가 아니다(색 = 지금 등급, ◇ = 유물 없음) ·
+          <span class="gold">★</span> 황금 개체를 아직 못 잡았다. 유물은 칸 번호가 같으면 층이 달라도 같은 유물이다.</div>
         <div id="picks">${chips.join("")}</div></details>
       <span class="dim" id="autoMsg" style="font-size:11px;flex-basis:100%"></span>`;
     $("autoBtn").onclick = () => { save.auto = !save.auto; autoReset(); put(); drawAuto(); };

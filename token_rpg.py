@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.19.8"
+__version__ = "0.20.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1164,6 +1164,11 @@ border-radius:6px;padding:2px 9px;cursor:pointer}
 button:hover:not(:disabled){border-color:var(--on)}button:disabled{opacity:.35;cursor:default}
 button.big{padding:7px 14px;width:100%}
 button.rb{border-color:var(--soul);color:var(--soul)}
+.tabs{position:sticky;top:0;z-index:5;display:flex;gap:6px;background:var(--bg);padding:6px 0 10px;margin-top:-4px}
+.tabs button{flex:1;padding:7px 4px;position:relative;white-space:nowrap}
+.tabs .dot{position:absolute;top:3px;right:5px;width:7px;height:7px;border-radius:50%;background:var(--hp);display:none}
+.tabs .dot.on{display:block}
+.pane.off{display:none}
 button.on{border-color:var(--on);color:var(--on);background:#1c2531}
 button.chip{padding:1px 2px;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}
 #picksBox{flex-basis:100%}
@@ -1230,6 +1235,23 @@ margin-top:10px;padding-top:8px}
   </div>
 </div>
 
+<nav class="tabs" id="tabs">
+  <button data-tab="fight">⚔️ 전투<i class="dot" id="dot-fight"></i></button>
+  <button data-tab="grow">📈 성장<i class="dot" id="dot-grow"></i></button>
+  <button data-tab="daily">📅 일과<i class="dot" id="dot-daily"></i></button>
+  <button data-tab="collect">📚 수집<i class="dot" id="dot-collect"></i></button>
+</nav>
+<div class="pane" data-pane="fight">
+<details class="card" data-k="rebirth" open>
+  <summary><h2>환생 <span class="soul" id="rbHead"></span></h2></summary>
+  <div id="rbBox"></div>
+</details>
+<details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
+  <div id="mutNote"></div>
+  <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
+  <div id="stages"></div><div id="wall"></div></details>
+</div>
+<div class="pane" data-pane="grow">
 <details class="card" data-k="alloc" open>
   <summary><h2>스탯 배분 <span class="gold" id="left"></span></h2></summary>
   <div class="alloc" id="alloc"></div>
@@ -1237,51 +1259,40 @@ margin-top:10px;padding-top:8px}
     <button id="reset">전부 되돌리기</button>
   </div>
 </details>
-
+<details class="card" data-k="traits" open>
+  <summary><h2>영구 특성 <span class="soul" id="soulsHave"></span></h2></summary>
+  <div class="alloc" id="traits"></div>
+</details>
+<details class="card" data-k="mut" id="mutCard" open><summary><h2>변이 내성 <span class="gold" id="mutHead"></span></h2></summary>
+  <div id="mutNews"></div><div class="alloc" id="muts" style="grid-template-columns:minmax(0,1fr) auto auto auto"></div>
+  <div id="mutHelp"></div></details>
+</div>
+<div class="pane" data-pane="daily">
 <details class="card" data-k="missions" open>
   <summary><h2>미션 <span class="gold" id="streak"></span></h2></summary>
   <div id="missions"></div>
 </details>
-
 <details class="card" data-k="raid" open>
   <summary><h2>주간 레이드 <span class="gold" id="raidHead"></span></h2></summary>
   <div id="raid"></div>
 </details>
-
 <details class="card" data-k="slot" open>
   <summary><h2>슬롯 <span class="gold" id="slotHead"></span></h2></summary>
   <div id="slot"></div>
 </details>
-
 <details class="card" data-k="exped" open>
   <summary><h2>원정 <span class="soul" id="expedRate"></span></h2></summary>
   <div id="expedBanner"></div>
   <div id="exped"></div>
 </details>
-
-<details class="card" data-k="traits" open>
-  <summary><h2>영구 특성 <span class="soul" id="soulsHave"></span></h2></summary>
-  <div class="alloc" id="traits"></div>
-  <div id="rbBox" style="margin-top:14px"></div>
-</details>
-
+</div>
+<div class="pane" data-pane="collect">
 <details class="card" data-k="relics" open><summary><h2>유물 도감 <span class="gold" id="relicCount"></span></h2></summary>
   <div id="relicNews"></div><div id="relicOdds"></div><div id="relics"></div></details>
-
 <details class="card" data-k="dex" open><summary><h2>보스 도감 <span class="gold" id="dexCount"></span></h2></summary>
   <div id="dexNews"></div><div id="dex"></div></details>
-
 <details class="card" data-k="ach" open><summary><h2>업적 <span class="gold" id="achHead"></span></h2></summary>
   <div id="achNews"></div><div id="ach"></div></details>
-
-<details class="card" data-k="mut" open><summary><h2>변이 내성 <span class="gold" id="mutHead"></span></h2></summary>
-  <div id="mutNews"></div><div class="alloc" id="muts" style="grid-template-columns:minmax(0,1fr) auto auto auto"></div>
-  <div id="mutHelp"></div></details>
-
-<details class="card" data-k="dungeon" open><summary><h2 id="floorTitle">던전</h2></summary>
-  <div id="mutNote"></div>
-  <div id="auto" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
-  <div id="stages"></div><div id="wall"></div></details>
 <details class="card" data-k="hosts" open><summary><h2>합산된 기기</h2></summary><div id="hosts" style="font-size:12px"></div>
   <div id="provs" style="font-size:12px;margin-top:10px"></div></details>
 <details class="card" data-k="code" open><summary><h2>저장 코드 — 백업·옮기기</h2></summary>
@@ -1291,6 +1302,7 @@ margin-top:10px;padding-top:8px}
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
     <button id="saveShow">현재 저장 표시</button><button id="saveLoad">가져오기</button>
     <span class="dim" id="saveMsg" style="font-size:11px"></span></div></details>
+</div>
 </div>
 
 <div id="fight"><div class="arena">
@@ -2350,8 +2362,10 @@ function drawMuts(){
   // 던전 카드 맨 위: 지금 층의 변이. 사라졌으면 사라졌다고 적는다
   $("mutNote").innerHTML = !cur ? "" : mutPow((here - 1) * N + 1) > 1
     ? `<div class="wall" style="margin:0 0 8px">${cur.emoji} 변이 <b>${cur.name}</b> — ${mutText(cur, mutPow((here - 1) * N + 1))}.
-       조각으로 내성을 올리면 약해진다.</div>`
+       조각으로 내성을 올리면 약해진다. <button id="toMut" style="margin-left:4px">내성 보기</button></div>`
     : `<div class="banner" style="margin:0 0 8px">${cur.emoji} 변이 ${cur.name} — 내성으로 지웠다.</div>`;
+  const tm = $("toMut");
+  if (tm) tm.onclick = () => { showTab("grow"); const c = $("mutCard"); if (c && c.scrollIntoView) c.scrollIntoView({behavior: "smooth"}); };
   $("mutHead").textContent = mutLaps() || (save.shards | 0) ? `조각 ${n(save.shards | 0)}` : "";
   $("mutNews").innerHTML = shardNews ? `<div class="banner">${shardNews}</div>` : "";
   if (!mutLaps()) {
@@ -2428,6 +2442,7 @@ function checkAch(){
   achNews = `업적 달성 — 칭호 ${now.map(x => `「${x}」`).join(" ")} · 얻는 혼 +${+(K.achSoul * now.length).toFixed(1)}%`;
   return true;
 }
+let achDoneOpen = false;   // 다시 그려도 펼친 상태는 유지한다
 function drawAch(){
   const got = achOf(save), done = ACH.filter(a => got[a[0]]).length;
   $("achHead").textContent = `${done}/${ACH.length} · 혼 +${+achSoul().toFixed(1)}%`;
@@ -2435,22 +2450,63 @@ function drawAch(){
   $("achTitle").textContent = ti ? `「${ti[4]}」` : "";
   $("achNews").innerHTML = achNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${achNews}</div>` : "";
   const groups = [...new Set(ACH.map(a => a[1]))];
-  $("ach").innerHTML = groups.map(gr => `<div class="dim" style="font-size:11px;margin:10px 0 2px">${gr}</div>` +
-    ACH.filter(a => a[1] === gr).map(([id, , kind, goal, title, desc, hidden]) => {
+  // 업적 카드가 1,500px 이었다. 진행 중인 것만 펼쳐 두고, 달성한 것은 접힌 칸 안에 둔다(칭호는 거기서 고른다)
+  const list = only => groups.map(gr => {
+    const rows = ACH.filter(a => a[1] === gr && (only === "done") === !!got[a[0]]);
+    return !rows.length ? "" : `<div class="dim" style="font-size:11px;margin:10px 0 2px">${gr}</div>` + rows.map(([id, , kind, goal, title, desc, hidden]) => {
       const ok = !!got[id], cur = Math.min(achCur(kind), goal);
       if (hidden && !ok) return `<div class="row" style="font-size:12px;padding:3px 0"><span class="dim">🔒 ??? — 숨은 업적</span></div>`;
       return `<div class="row" style="font-size:12px;padding:3px 0;align-items:center;gap:8px">
         <span style="flex:1;min-width:0">${ok ? "🏅" : "▫️"} <b${ok ? ' class="gold"' : ""}>${title}</b>
           <small class="dim" style="display:block">${desc}${ok ? ` · ${got[id]}` : goal > 1 ? ` · ${n(cur)}/${n(goal)}` : ""}</small></span>
         ${ok ? `<button data-t="${id}" class="${save.title === id ? "on" : ""}">${save.title === id ? "칭호 해제" : "칭호로"}</button>` : ""}</div>`;
-    }).join("")).join("") +
+    }).join("");
+  }).join("");
+  $("ach").innerHTML = (done < ACH.length ? list("todo") : `<div class="dim">업적을 모두 달성했다.</div>`) +
+    (done ? `<details id="achDone" ${achDoneOpen ? "open" : ""} style="margin-top:10px"><summary class="dim" style="cursor:pointer;font-size:12px">달성한 업적 ${done}개 · 칭호 고르기</summary>${list("done")}</details>` : "") +
     `<div class="dim" style="font-size:11px;margin-top:8px">업적 하나마다 얻는 혼 +${K.achSoul}%. 칭호는 하나 골라 이름 위에 단다.</div>`;
+  const ad = $("achDone");
+  if (ad) ad.ontoggle = e => { achDoneOpen = e.target.open; };
   $("ach").querySelectorAll("button[data-t]").forEach(b => b.onclick = () => {
     save.title = save.title === b.dataset.t ? "" : b.dataset.t; put(); drawAch();
   });
 }
 
-const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); };
+const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawTabs(); };
+
+// ── 탭 (v0.20.0): 카드 열넷을 한 줄로 늘어놓던 때는 메뉴 막대 창(640px)으로 13화면이었고, 던전이 9화면 아래였다.
+// 자주 쓰는 순서로 넷으로 나눈다 — 전투(환생·던전) · 성장(배분·특성·내성) · 일과(미션·레이드·슬롯·원정) · 수집.
+// 받을 것·쓸 것이 있으면 탭에 점을 찍는다. 마지막으로 본 탭은 이 창에 기억한다(저장 파일과는 무관).
+const TAB = "trpg.tab";
+let tabNow = "fight";
+try { tabNow = localStorage.getItem(TAB) || "fight"; } catch(e) {}
+function showTab(t){
+  tabNow = t;
+  try { localStorage.setItem(TAB, t); } catch(e) {}
+  document.querySelectorAll("div[data-pane]").forEach(p => p.dataset.pane === t ? p.classList.remove("off") : p.classList.add("off"));
+  document.querySelectorAll("button[data-tab]").forEach(b => b.dataset.tab === t ? b.classList.add("on") : b.classList.remove("on"));
+}
+document.querySelectorAll("button[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+// 점을 찍는 조건 — '지금 눌러야 손해를 안 보는 것' 만. 혼으로 특성을 살 수 있다는 늘 참이라 넣지 않는다
+const tabTodo = () => ({
+  fight: save.cleared.length > 0 && rbCharges() >= K.rbCap,                       // 환생 기운이 가득 차 더 안 쌓인다
+  grow: left() > 0 || (mutLaps() > 0 && MUTS.some(m => resOf(m[0]) < mutCap() && (save.shards | 0) >= shardCost(resOf(m[0])))),
+  daily: missions().some(m => m.cur >= m.goal && !(save.claimed || {})[m.key])
+      || (raidOpen() && [0, 1, 2, 3].some(i => !raidGot().includes(i) && weekSum(0) >= raidHp() * (i + 1) / 4))
+      || (!!save.best && slotLeft() > 0)
+      || (!!save.best && idleSecs() >= CAP_S),
+  collect: false,
+});
+function drawTabs(){
+  const todo = tabTodo();
+  for (const t of ["fight", "grow", "daily", "collect"]) {
+    const d = $("dot-" + t);
+    if (d) todo[t] ? d.classList.add("on") : d.classList.remove("on");
+  }
+  const ch = rbCharges();
+  $("rbHead").textContent = `기운 ${ch}/${K.rbCap}`;
+}
+showTab(tabNow);
 
 // ── 전투: 턴제 자동. 선공은 SPD, 치명타는 thinking 토큰에서 온다.
 // DEF 는 비율로 깎는다 — 같은 자리수면 절반이다. 빼기이던 시절엔 보스 ATK 가 백만 단위라

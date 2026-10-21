@@ -90,6 +90,10 @@ const TAIL = `
 const [Y, M, DAY] = fx.today.split("-").map(Number);
 const NOON = new Date(Y, M - 1, DAY, 12).getTime();     // 현지 정오 — 어느 시간대에서도 같은 날짜가 나온다
 
+// 탭 칸(div[data-pane])을 찾는다
+const doc_pane = (g, k) => g.doc.querySelectorAll("div[data-pane]").find(p => p.dataset.pane === k);
+// 가짜 DOM 은 페이지 뼈대를 납작하게 읽는다 — 탭 버튼은 nav 의 자식이 아니라 문서에서 찾는다
+const tab_btn = (g, k) => g.doc.querySelectorAll("button[data-tab]").find(b => b.dataset.tab === k);
 async function boot(name, {page = "base", served = true, save, rev = 0, local = {}, seed = 1} = {}) {
   const html = fx.pages[page];
   const cut = html.indexOf("<script>"), end = html.lastIndexOf("</script>");
@@ -241,8 +245,17 @@ async function playthrough() {
   await g.click(g.$("updBtn"));
   ok(g.$("updMsg").text === "올렸다", "업데이트 버튼이 결과를 안 적는다");
 
+  // 탭: 처음엔 전투 탭. 배분 점수가 남으면 성장 탭에 점이 뜨고, 다 쓰면 사라진다
+  const pane = k => g.$("tabs") && doc_pane(g, k);
+  ok(!pane("fight").classList.contains("off") && pane("grow").classList.contains("off"), "처음 탭이 전투가 아니다");
+  ok(t.left() > 0 && g.$("dot-grow").classList.contains("on"), "배분 점수가 남았는데 성장 탭에 점이 없다");
+  await g.click(tab_btn(g, "grow"));
+  ok(pane("fight").classList.contains("off") && !pane("grow").classList.contains("off") && tab_btn(g, "grow").classList.contains("on"),
+     "성장 탭을 눌러도 안 바뀐다");
   await g.click(g.btn("alloc", {k: "atk", d: "max"}));
   ok(t.left() === 0 && t.save.alloc.atk === t.points(), "'최대' 가 남은 포인트를 다 안 넣는다");
+  ok(!g.$("dot-grow").classList.contains("on"), "배분을 다 했는데 성장 탭의 점이 안 꺼진다");
+  await g.click(tab_btn(g, "fight"));
   await g.click(g.btn("alloc", {k: "atk", d: "-1"}));
   await g.click(g.btn("alloc", {k: "hp", d: "1"}));
   ok(t.left() === 0 && t.save.alloc.hp === 1, "−1 · +1 이 한 점씩 안 옮긴다");

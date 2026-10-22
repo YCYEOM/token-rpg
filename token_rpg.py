@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.6"
+__version__ = "0.20.7"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -2361,6 +2361,7 @@ function rollRelic(g, slot, first, sure){       // sure = 확률 문을 건너�
     + (relicOk(old) ? ` · 전: ${RARITY[old.r][0]} ${relicFloor(old)}층 +${relicVal(old)}${AFFIX[a][2]}` : "");
 }
 function drawRelics(){
+  drawRelicOdds();
   const rs = save.relics || {};
   $("relicCount").textContent = `${SLOTS.filter(s => relicOk(rs[relicKey(s)])).length}/${N}`;
   const sum = Object.keys(AFFIX).map(a => [a, relicSum(a)]).filter(([, v]) => v)
@@ -2387,21 +2388,29 @@ function drawRelics(){
   }).join("");
 }
 
-// 등급·확률표 — 한 번만 그린다 (drawRelics 가 매 판 다시 그리면 열어 둔 표가 닫힌다).
+// 등급·확률표 — 가장 깊은 층이 바뀔 때만 다시 그린다 (매 판 다시 그리면 열어 둔 표가 닫힌다).
 // 접어 두면 못 찾으니 펼친 채로 시작한다 — 접으면 그대로 접혀 있다.
-{
+// v0.20.7: 스탯 칸이 1층 기준이라 실제로 나오는 유물과 달랐다. 가장 깊은 층에서 나올 때의 수치를 1층 옆에 적는다.
+let oddsOpen = true, oddsKey = "";
+function drawRelicOdds(){
+  const fl = Math.max(1, Math.ceil((save.best || 0) / N)), d = 1 + K.relicDepth * (fl - 1);
+  if (oddsKey === String(fl) && $("oddsBox")) return;
+  oddsKey = String(fl);
   const pct = v => +v.toPrecision(2) + "%";
   const cell = (s, c) => `<span${c ? ` style="color:${c}"` : ""}>${s}</span>`;
-  $("relicOdds").innerHTML = `<details open style="margin-bottom:8px;font-size:11px">
+  const deep = fl > 1;
+  $("relicOdds").innerHTML = `<details id="oddsBox" ${oddsOpen ? "open" : ""} style="margin-bottom:8px;font-size:11px">
     <summary style="cursor:pointer">등급·확률표 — 어느 보스를 파밍할지 정할 때 본다</summary>
-    <div style="display:grid;grid-template-columns:repeat(6,auto);gap:2px 12px;justify-content:start;margin-top:6px;white-space:nowrap">
-      ${["등급", "등급 확률", "첫 격파", "재격파", "스탯·혼", "CRIT"].map(h => cell(h, "var(--dim)")).join("")}
-      ${RARITY.map(([nm, p, c], r) => [cell(nm, c), cell(p + "%"), cell(pct(RELIC_FIRST * p)),
-          cell(pct(RELIC_AGAIN * p)), cell("+" + AFFIX.atk[1] * 2 ** r + "%"),
-          cell("+" + AFFIX.crit[1] * 2 ** r + "%p")].join("")).join("")}
+    <div style="display:grid;grid-template-columns:repeat(${deep ? 7 : 6},auto);gap:2px 10px;justify-content:start;margin-top:6px;white-space:nowrap">
+      ${["등급", "확률", "첫 격파", "재격파", deep ? `${fl}층 스탯` : "스탯", deep ? `${fl}층 CRIT` : "CRIT", ...(deep ? ["혼"] : [])].map(h => cell(h, "var(--dim)")).join("")}
+      ${RARITY.map(([nm, p, c], r) => [cell(nm, c), cell(p + "%"), cell(pct(RELIC_FIRST * p)), cell(pct(RELIC_AGAIN * p)),
+          cell("+" + +(AFFIX.atk[1] * 2 ** r * d).toFixed(1) + "%"), cell("+" + +(AFFIX.crit[1] * 2 ** r * d).toFixed(1) + "%p"),
+          ...(deep ? [cell("+" + AFFIX.soul[1] * 2 ** r + "%")] : [])].join("")).join("")}
     </div>
-    <div class="dim" style="margin-top:4px">능력치는 보스마다 정해져 있고 등급만 무작위다. 표의 스탯은 1층 기준이고
-      떨어진 층마다 +${K.relicDepth * 100}% 씩 커진다(혼 제외). 지금 것보다 센 유물이 나와야 바뀌고, 아니면 혼이 된다.</div></details>`;
+    <div class="dim" style="margin-top:4px">능력치는 보스마다 정해져 있고 등급만 무작위다. 스탯은 떨어진 층마다 +${K.relicDepth * 100}% 씩 커진다
+      ${deep ? `— 표는 지금 가장 깊은 ${fl}층에서 나올 때(1층의 x${+d.toFixed(2)}). ` : ""}혼 유물은 층과 상관없다.
+      지금 것보다 센 유물이 나와야 바뀌고, 아니면 혼이 된다.</div></details>`;
+  $("oddsBox").ontoggle = e => { oddsOpen = e.target.open; };
 }
 
 // ── 황금 개체를 잡았다. 처음이면 도감에 찍고 혼을 준다. 이미 잡은 칸은 혼을 주지 않는다 —

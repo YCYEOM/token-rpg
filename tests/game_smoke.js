@@ -85,7 +85,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
   n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, spdMax, spdVs, spdNow, goesFirst, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
-  encodeSave, decodeSave, validSave, left, points, picks, wantPicks, relicLeft, goldLeft, missions, transOf, maxCleared };`;
+  encodeSave, decodeSave, validSave, left, points, picks, relicVal, wantPicks, relicLeft, goldLeft, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
 const NOON = new Date(Y, M - 1, DAY, 12).getTime();     // 현지 정오 — 어느 시간대에서도 같은 날짜가 나온다
@@ -338,12 +338,15 @@ async function playthrough() {
   await g.click(g.$("picks"), {target: head(1)});
   ok(!t.picks().length, "층 머리줄을 다시 눌러도 안 빠진다");
   // 못 모은 곳만: 유물을 더 올릴 수 있거나 황금이 없는 칸마다 하나씩. 칸에는 ◆·★ 가 찍힌다
+  // 유물 깊이 (v0.20.4): 떨어진 층마다 +25%. 13층 신화 ATK = 48 x 4. 혼 유물은 깊이와 상관없다. g 없는 옛 유물은 1층
+  ok(t.relicVal({r: 4, a: "atk", g: 181}) === 192 && t.relicVal({r: 4, a: "soul", g: 181}) === 48 && t.relicVal({r: 4, a: "atk"}) === 48,
+     "유물 깊이 배율이 틀렸다: " + [t.relicVal({r: 4, a: "atk", g: 181}), t.relicVal({r: 4, a: "soul", g: 181}), t.relicVal({r: 4, a: "atk"})]);
   const want = t.wantPicks();
   ok(want.length > 0 && want.every(x => t.relicLeft(x) || t.goldLeft(x)), "'못 모은 곳만' 이 다 모은 칸을 고른다: " + want);
   await g.click(g.$("pickWant"));
   ok(t.picks().join() === want.join(), "'못 모은 곳만' 버튼이 그 칸들을 안 고른다");
   ok(/★/.test(g.$("auto").html), "반복 칸에 황금 미포획 표시가 없다");
-  ok(/유물 승급 \d+|황금 \d+/.test(g.$("auto").html), "모으기 버튼이 무엇을 모으는지 안 적는다");
+  ok(/유물 강화 \d+|황금 \d+/.test(g.$("auto").html), "모으기 버튼이 무엇을 모으는지 안 적는다");
   await g.click(g.$("pickAll")); await g.click(g.$("pickAll"));
   await g.advance(3000);
   g.clean("자동 도전");
@@ -499,7 +502,7 @@ async function raid(g) {
   ok(t.save.relics.boss3.r === 2 && t.save.relics.boss3.a === "dfn" && t.save.relics.boss3.g === 33,
      "격파했는데 유물이 한 등급 안 올랐다: " + JSON.stringify(t.save.relics.boss3));
   ok(Object.values(t.save.relics).filter(r => r.r === 4).length === 14, "올릴 수 없는 유물(신화)을 건드렸다");
-  ok(/격파 — 혼/.test(g.$("raid").html) && /48\. 문서 없음 안개의 유물 승급: 희귀 → 영웅 — DEF \+12%/.test(g.$("raid").html), "격파 알림에 승급이 없다: " + g.$("raid").html.slice(0, 200));
+  ok(/격파 — 혼/.test(g.$("raid").html) && /48\. 문서 없음 안개의 유물 승급: 희귀 → 영웅 — DEF \+18%/.test(g.$("raid").html), "격파 알림에 승급이 없다: " + g.$("raid").html.slice(0, 200));
   // 올릴 것이 없을 때도 버려지지 않는다 — 유물이 없으면 하나를 주고, 전부 신화면 혼을 준다
   t.save.relics = {};
   ok(/유물/.test(t.raidRelic()) && Object.keys(t.save.relics).length === 1, "유물이 하나도 없을 때 하나를 주지 않는다");

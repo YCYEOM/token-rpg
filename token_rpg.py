@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.3"
+__version__ = "0.20.4"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -191,7 +191,13 @@ EARLY_MUL = 0.12                         # 1스테이지 배율 (EARLY_G 에서 
 # HP·DEF 배분과 생존·벽의 유산이 아무 일도 안 했다. 보스 공격을 늦추고 HP 를 키우니 싸움이 길어지고
 # 버티는 빌드가 화력 몰빵과 나란히 선다. 값은 테스트 캐릭터 다섯으로 계산해 TypeSafe 판정과 함께 골랐다
 # (특성 배율 조정과 함께 진행은 캐릭터 중앙값 -14~+10%, 벽의 유산 +20 이 힘의 유산 +20 과 같은 칸을 민다). `.studio/bal_grid.py`
-B_ATK_STEP, B_HP_STEP = 1.24, 1.325
+# v0.20.4: 유물이 떨어진 층만큼 세지며(RELIC_DEPTH) 후반 벽이 3칸 -> 7칸 밀렸다. 진행 속도를 지키려고 보스를
+# 조금 세게 했다(ATK 1.24 -> 1.245, HP 1.325 -> 1.331). 같이 벽의 유산이 앞서 나가 1.25 -> 1.245 로 맞췄다.
+# 층 진입은 지금과 -6~0%, 특성 +20 방어/공격 비율 중앙 1.0. TypeSafe 판정으로 골랐다(`.studio/relic_comp.py`·`relic_trait.py`·`relic_final_ts.py`).
+B_ATK_STEP, B_HP_STEP = 1.245, 1.331
+# 유물 깊이 배율: 유물 수치 x (1 + RELIC_DEPTH x (떨어진 층 - 1)). 혼 유물은 빼고(혼 배수는 따로 곱해져 이미 값이 유지된다).
+# 고정 % 이던 때는 유물이 처음부터 끝까지 3~4스테이지를 밀었다 — 초반엔 진행의 15%, 13층에서는 1.6%였다.
+RELIC_DEPTH = 0.25
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
 # 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD(스테이지당 +BOSS_SPD)와 같은 걸음이다 —
 # 1점이 보스 한 스테이지분이다.
@@ -220,7 +226,7 @@ TRAIT_MUL  = 1.135   # 특성 1레벨당 스탯 배율 (기본값). v0.19.8 에�
 # v0.19.8: 보스 ATK 가 x1.24 로 늦춰지며 벽(x1.28)이 힘의 두 배 칸을 밀었다. 사용자 조건은 '특성이 한쪽으로
 # 지나치게 기울면 안 된다'. 벽 1.25 · 힘/파괴 1.135 에서 +20레벨 효과가 공격·방어 같아진다(비율 중앙 1.0).
 # 후보는 코드로 계산하고 TypeSafe 판정으로 골랐다(`.studio/trait_tune.py`, `trait_ts.py`).
-TRAIT_MULS = {"dfn": 1.25, "hp": 1.16}
+TRAIT_MULS = {"dfn": 1.245, "hp": 1.16}     # v0.20.4: 벽 1.25 -> 1.245 (위 B_ATK_STEP 주석)
 # 속도 (v0.19.2): 보스 SPD 는 스테이지마다 BOSS_SPD 씩만 오른다(다른 능력치는 STEP 배). 그래서 배분으로 따라잡을 수 있다.
 # 보스보다 1~2배 빠르면 그 비율만큼 확률로 2타, 2배부터 늘 2타 — 3타는 없다(HITS_MAX).
 # 신속의 유산은 레벨당 SPD +SPD_TRAIT(덧셈). 곱셈(1.2/lv)이면 2타가 금방 공짜가 된다.
@@ -1083,7 +1089,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
             "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "atkStep": B_ATK_STEP, "hpStep": B_HP_STEP, "batk": B_ATK, "bdef": B_DEF, "bspd": BOSS_SPD, "hitsMax": HITS_MAX, "spdTrait": SPD_TRAIT,
-                  "earlyG": EARLY_G, "earlyMul": EARLY_MUL,
+                  "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "relicDepth": RELIC_DEPTH,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "soulLateG": SOUL_LATE_G, "soulLateMul": SOUL_LATE_MUL, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
@@ -1820,9 +1826,11 @@ const floorStages = f => { const out = [];
   return out; };
 // ── 반복으로 아직 모을 것 (v0.20.1). 도감 두 장과 칸을 비교해 가며 골랐다 — 칸에 직접 찍는다.
 // 유물은 칸 번호(1~15)마다 하나라 층이 달라도 같은 것을 모은다. 황금은 테마 줄(1~5층) 칸마다 하나다.
-const relicLeft = g => { const r = (save.relics || {})[relicKey(slotOf(g))]; return !relicOk(r) || r.r < RARITY.length - 1; };
+// v0.20.4: 유물이 떨어진 층만큼 세져서 '신화가 아니다' 가 아니라 '여기서 신화가 나오면 지금 것보다 세다' 로 본다
+const relicLeft = g => { const s = slotOf(g), r = (save.relics || {})[relicKey(s)];
+  return !relicOk(r) || relicVal({r: RARITY.length - 1, a: s.affix, g}) > relicVal(r); };
 const goldLeft = g => dexOf(save)[dexKey(g)] !== 2;
-const wantSig = () => SLOTS.map(s => { const r = (save.relics || {})[relicKey(s)]; return relicOk(r) ? r.r : "-"; }).join("")
+const wantSig = () => SLOTS.map(s => { const r = (save.relics || {})[relicKey(s)]; return relicOk(r) ? relicVal(r) : "-"; }).join()
   + "|" + dexRareAll(save);
 // 모을 것이 남은 유물 칸·황금 칸마다 깬 스테이지 하나씩 — 이길 수 있는 가장 깊은 곳(혼이 많다).
 // 같은 유물을 주는 칸을 층마다 다 고르면 같은 확률을 여러 번 도는 것뿐이라 하나만 고른다.
@@ -1840,13 +1848,13 @@ function wantPicks(){
   }
   return out.sort((a, b) => a - b);
 }
-// 버튼 글자: '못 모은 곳' 은 무엇을 못 모았는지 몰랐다 — 유물 승급과 황금을 따로 센다
+// 버튼 글자: '못 모은 곳' 은 무엇을 못 모았는지 몰랐다 — 유물 강화와 황금을 따로 센다
 function wantLabel(want){
   if (!want.length) return "유물·황금 다 모음";
   const best = save.best || 0;
-  const r = SLOTS.filter(s => s.slot <= best && relicLeft(s.slot)).length;
+  const r = SLOTS.filter(s => s.slot <= best && relicLeft(Math.floor((best - s.slot) / N) * N + s.slot)).length;   // 그 칸의 가장 깊은 스테이지로 본다
   const d = new Set(Array.from({length: best}, (_, i) => i + 1).filter(goldLeft).map(dexKey)).size;
-  return [r ? `유물 승급 ${r}` : "", d ? `황금 ${d}` : ""].filter(Boolean).join(" · ") + " 모으기";
+  return [r ? `유물 강화 ${r}` : "", d ? `황금 ${d}` : ""].filter(Boolean).join(" · ") + " 모으기";
 }
 // 칸 표시: ◆ = 유물을 더 올릴 수 있다(색 = 지금 등급, 없으면 회색 ◇) · ★ = 황금을 아직 못 잡았다
 const wantMarks = g => (relicLeft(g) ? (() => { const r = (save.relics || {})[relicKey(slotOf(g))];
@@ -1881,17 +1889,17 @@ function drawAuto(){
           <span>${cnt === all.length ? "전부 고름 — 눌러서 빼기" : `${cnt}/${all.length} — 눌러서 층 전체 고르기`}</span></button></div>`);
       }
       if (open) chips.push(`<button class="chip${on.has(g) ? " on" : ""}" data-g="${g}"
-        title="${g}. ${slotOf(g).name}${relicLeft(g) ? " · 유물을 더 올릴 수 있다" : ""}${goldLeft(g) ? " · 황금 미포획" : ""}">${slotOf(g).emoji}${g}${wantMarks(g)}</button>`);
+        title="${g}. ${slotOf(g).name}${relicLeft(g) ? " · 여기서 지금보다 센 유물이 나올 수 있다" : ""}${goldLeft(g) ? " · 황금 미포획" : ""}">${slotOf(g).emoji}${g}${wantMarks(g)}</button>`);
     }
     $("auto").innerHTML = `<button id="autoBtn" class="${save.auto?"on":""}">자동 ${save.auto?"켜짐":"꺼짐"}</button>
       <button id="pickAll">${ps.length === best && best ? "전체 해제" : "전체 반복"}</button>
       <button id="pickWant" ${want.length ? "" : "disabled"} class="${want.length && want.join() === ps.join() ? "on" : ""}"
-        title="유물 승급: 아직 신화가 아닌 유물 칸 · 황금: 아직 못 잡은 황금 개체. 칸마다 이길 수 있는 가장 깊은 스테이지 하나씩 골라 반복한다">${
+        title="유물 강화: 여기서 지금보다 센 유물이 나올 수 있는 칸(깊은 층 유물일수록 세다) · 황금: 아직 못 잡은 황금 개체. 칸마다 이길 수 있는 가장 깊은 스테이지 하나씩 골라 반복한다">${
         wantLabel(want)}</button>
       <details id="picksBox" ${picksOpen ? "open" : ""}><summary>${ps.length
         ? `고른 ${ps.length}곳을 차례로 반복` : "끝까지 오르고 가장 깊은 곳 반복"} — 눌러서 고르기</summary>
-        <div class="dim" style="font-size:11px;margin:4px 0 2px">◆ 유물이 아직 신화가 아니다(색 = 지금 등급, ◇ = 유물 없음) ·
-          <span class="gold">★</span> 황금 개체를 아직 못 잡았다. 유물은 칸 번호가 같으면 층이 달라도 같은 유물이다.</div>
+        <div class="dim" style="font-size:11px;margin:4px 0 2px">◆ 여기서 지금보다 센 유물이 나올 수 있다(색 = 지금 등급, ◇ = 유물 없음) ·
+          <span class="gold">★</span> 황금 개체를 아직 못 잡았다. 유물은 칸 번호마다 하나고, 깊은 층에서 나올수록 세다.</div>
         <div id="picks">${chips.join("")}</div></details>
       <span class="dim" id="autoMsg" style="font-size:11px;flex-basis:100%"></span>`;
     $("autoBtn").onclick = () => { save.auto = !save.auto; autoReset(); put(); drawAuto(); };
@@ -1981,7 +1989,7 @@ function drawStages(){
         : xtra(b) ? ` · <span style="color:var(--on);white-space:nowrap">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""}
       <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}${(() => {
         const r = (save.relics || {})[relicKey(slot)];
-        return relicOk(r) ? ` <span style="color:${RARITY[r.r][2]}">(${RARITY[r.r][0]})</span>` : ' <span class="dim">(없음)</span>'; })()}${
+        return relicOk(r) ? ` <span style="color:${RARITY[r.r][2]}">(${RARITY[r.r][0]}${r.a === "soul" ? "" : ` ${relicFloor(r)}층`})</span>` : ' <span class="dim">(없음)</span>'; })()}${
         goldLeft(g) ? ' · <span class="gold">★ 황금 미포획</span>' : ""}</small></div>`;
     const btn = document.createElement("button");
     const shut = gated(g);                       // 관문 — 내성을 채우기 전에는 도전도 못 한다
@@ -2280,7 +2288,10 @@ const RARITY = [["일반", 60, "var(--dim)"], ["희귀", 28, "var(--on)"], ["영
 const AFFIX = {atk: ["ATK", 3, "%"], hp: ["HP", 3, "%"], dfn: ["DEF", 3, "%"], crit: ["CRIT", 0.5, "%p"], soul: ["혼", 3, "%"]};
 const relicKey = slot => "boss" + slot.slot;                    // 고정 보스라 칸 번호로 충분하다
 const relicOk = r => !!r && !!RARITY[r.r] && !!AFFIX[r.a];      // 고친 저장의 이상한 값은 무시
-const relicVal = r => AFFIX[r.a][1] * Math.pow(2, r.r);
+// 유물이 떨어진 층(g 로 센다). g 가 없는 옛 유물은 1층으로 친다
+const relicFloor = r => Math.max(1, Math.ceil((r.g | 0) / N));
+const relicDepth = r => r.a === "soul" ? 1 : 1 + K.relicDepth * (relicFloor(r) - 1);
+const relicVal = r => +(AFFIX[r.a][1] * Math.pow(2, r.r) * relicDepth(r)).toFixed(1);
 const relicSum = a => Object.values(save.relics || {}).filter(relicOk)
   .reduce((s, r) => s + (r.a === a ? relicVal(r) : 0), 0);
 let relicNews = "", refundMsg = "";
@@ -2298,14 +2309,16 @@ function rollRelic(g, slot, first, sure){       // sure = 확률 문을 건너�
   const a = slot.affix;                           // 능력치는 보스가 정한다 — 무작위는 등급뿐
   save.relics = save.relics || {};
   const k = relicKey(slot), old = save.relics[k];
-  if (relicOk(old) && old.r >= r) {               // 같거나 낮은 등급 중복 -> 혼으로
+  // v0.20.4: 등급만이 아니라 깊이까지 친 수치로 견준다 — 깊은 층의 낮은 등급이 얕은 층의 신화를 이길 수 있다
+  if (relicOk(old) && relicVal(old) >= relicVal({r, a, g})) {   // 같거나 약한 유물 -> 혼으로
     // 반복 파밍 중복은 1/RELIC_DUP — 켜 두기만 해도 혼이 쏟아져 환생 기운(토큰) 제한을 우회하지 않게
     const s = first ? sideSoul(g) : Math.round(sideSoul(g) / RELIC_DUP); save.souls += s;
     // 획득 메시지처럼 보스 이름을 밝힌다 — 능력치가 보스마다 고정이라 어디서 나왔는지가 정보다
-    return `${slot.name} — ${RARITY[r][0]} 유물 중복, 혼 ${n(s)}로 바꿨다`;
+    return `${slot.name} — ${RARITY[r][0]} ${relicFloor({g})}층 유물(+${relicVal({r, a, g})}${AFFIX[a][2]})이 지금 것보다 약해 혼 ${n(s)}로 바꿨다`;
   }
   save.relics[k] = {r, a, g};                     // g = 떨어뜨린 스테이지. 도감이 그 보스 이름을 보여 준다
-  return `${RARITY[r][0]} 유물 획득! ${slot.name} — ${AFFIX[a][0]} +${relicVal({r, a})}${AFFIX[a][2]}`;
+  return `${RARITY[r][0]} 유물 획득! ${slot.name} (${relicFloor({g})}층) — ${AFFIX[a][0]} +${relicVal({r, a, g})}${AFFIX[a][2]}`
+    + (relicOk(old) ? ` · 전: ${RARITY[old.r][0]} ${relicFloor(old)}층 +${relicVal(old)}${AFFIX[a][2]}` : "");
 }
 function drawRelics(){
   const rs = save.relics || {};
@@ -2316,7 +2329,9 @@ function drawRelics(){
     (relicNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${relicNews}</div>` : "") +
     `<div class="dim" style="font-size:11px;margin-bottom:6px">보스를 이기면 가끔 유물이 나온다
      (처음 이길 때 ${RELIC_FIRST*100}%, 다시 이길 때 ${RELIC_AGAIN*100}%).${sum ? " 합계: " + sum : ""}
-     <br>이름은 <b>지금 ${floorNow()}층</b> 보스 기준이다. 다른 층에서도 같은 자리 보스가 같은 유물을 준다.</div>`;
+     <br>이름은 <b>지금 ${floorNow()}층</b> 보스 기준이다. 다른 층에서도 같은 자리 보스가 같은 능력치 유물을 준다.
+     <br><b>깊은 층에서 나온 유물일수록 세다</b> — 층마다 +${K.relicDepth * 100}% (지금 ${floorNow()}층이면 x${+(1 + K.relicDepth * (floorNow() - 1)).toFixed(2)}).
+     더 센 유물이 나와야 바뀐다. 혼 유물은 깊이와 상관없다.</div>`;
   $("relics").innerHTML = SLOTS.map(slot => {
     const r = rs[relicKey(slot)];
     // 유물은 칸마다 하나인데 보스 이름은 층마다 다르다. 늘 지금 층에서 그 칸을 지키는 보스로 적는다 —
@@ -2327,7 +2342,7 @@ function drawRelics(){
     // 긴 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게
     return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
         text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${from}. ${s.name}</span>${relicOk(r)
-      ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
+      ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]}${r.a === "soul" ? "" : ` ${relicFloor(r)}층`} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
       : `<span class="dim" style="white-space:nowrap">? · ${AFFIX[s.affix][0]}</span>`}</div>`;
   }).join("");
 }
@@ -2345,8 +2360,8 @@ function drawRelics(){
           cell(pct(RELIC_AGAIN * p)), cell("+" + AFFIX.atk[1] * 2 ** r + "%"),
           cell("+" + AFFIX.crit[1] * 2 ** r + "%p")].join("")).join("")}
     </div>
-    <div class="dim" style="margin-top:4px">능력치는 보스마다 정해져 있고 등급만 무작위다.
-      더 높은 등급이 나와야 바뀌고, 같거나 낮으면 혼이 된다.</div></details>`;
+    <div class="dim" style="margin-top:4px">능력치는 보스마다 정해져 있고 등급만 무작위다. 표의 스탯은 1층 기준이고
+      떨어진 층마다 +${K.relicDepth * 100}% 씩 커진다(혼 제외). 지금 것보다 센 유물이 나와야 바뀌고, 아니면 혼이 된다.</div></details>`;
 }
 
 // ── 황금 개체를 잡았다. 처음이면 도감에 찍고 혼을 준다. 이미 잡은 칸은 혼을 주지 않는다 —

@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.2"
+__version__ = "0.20.3"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -475,18 +475,17 @@ def slot_of(g):
             "affix": AFFIXES[i], "theme": pre + theme}
 
 
-# 레벨 곡선 = LV_EXP * x^3/(x+LV_EASE), x = lv-1. 예전 제곱 곡선(LV_EXP 5만)을 저렙 쪽만
-# 완만하게 눌러 놓은 모양이다 — Lv.2 가 9배 빠르고, Lv.32 에서 1.18배, Lv.70 위로는 사실상 같다.
-# LV_EXP 54,600 은 Lv.99 총량(=초월 비용)을 예전 4.8억에 맞춰 고른 값이다. 후반과 초월은 그대로 두고
-# 극초반만 손본다. level_of 는 이 식의 역함수를 닫힌 꼴로 못 구해 훑어서 찾는다(최대 99칸).
-LV_EXP  = 54_600                         # 레벨 1칸의 EXP 기울기
-LV_EASE = 9                              # 저렙 완만화. 0 이면 예전 제곱 곡선 그대로
+# 레벨 곡선 (v0.20.3): 모든 레벨이 같은 EXP(LV_EXP)를 요구한다. 초월 비용 = LV_EXP x (MAX_LV-1).
+# 예전 곡선(LV_EXP 54,600 * x^3/(x+9))은 Lv.99 가 4.8억이었다. 하루 166만 토큰을 쓰는 개발자도 252일이 걸렸고,
+# Lv.38 에서 한 칸이 360만, Lv.98 에서 1,000만이라 뒤로 갈수록 레벨이 멈춘 듯했다.
+# 사용자 요청: '레벨별 구간을 동일하게, 한 달을 꽉 채우면 1초월'. 꽉 채운 하루를 200만 토큰으로 잡았다
+# (개발자 실제 사용일 평균 211만 · 최근 2주 258만). 30일 = 6,000만 -> 한 칸 60만, 초월 5,880만.
+LV_EXP  = 600_000                        # 레벨 한 칸의 EXP (모든 레벨이 같다)
 MAX_LV  = 99                             # 여기서 막힌다 — 넘기려면 초월한다
 
 
 def exp_for(lv):
-    x = lv - 1
-    return int(LV_EXP * x ** 3 / (x + LV_EASE))
+    return LV_EXP * (lv - 1)
 
 def level_of(exp):
     exp, lv = max(exp, 0), 1
@@ -1084,7 +1083,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
             "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "atkStep": B_ATK_STEP, "hpStep": B_HP_STEP, "batk": B_ATK, "bdef": B_DEF, "bspd": BOSS_SPD, "hitsMax": HITS_MAX, "spdTrait": SPD_TRAIT,
-                  "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "lvEase": LV_EASE,
+                  "earlyG": EARLY_G, "earlyMul": EARLY_MUL,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "soulLateG": SOUL_LATE_G, "soulLateMul": SOUL_LATE_MUL, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
@@ -1383,7 +1382,7 @@ const fresh = () => ({alloc:{atk:0,hp:0,dfn:0,crit:0,cdmg:0,spd:0}, cleared:[], 
 // 초월이 손해가 되면 아무도 안 누른다.
 // 레벨 곡선·보스 곡선은 파이썬 exp_for()/level_of()/boss() 와 같은 식이어야 한다 —
 // 한쪽만 고치면 화면과 메뉴 막대 배지가 어긋난다 (selftest 의 _check_trans 가 붙들고 있다)
-const expFor  = lv => Math.floor(K.lvExp * Math.pow(lv-1, 3) / (lv - 1 + K.lvEase));
+const expFor  = lv => K.lvExp * (lv - 1);
 const levelOf = e => { let lv = 1, x = Math.max(e, 0);
                        while (lv < K.maxLv && expFor(lv + 1) <= x) lv++; return lv; };
 const TRANS_EXP = expFor(K.maxLv);
@@ -3819,9 +3818,9 @@ def _demo():
     _check_muts()
     _check_js()
     assert level_of(0) == 1 and level_of(exp_for(2)) == 2 and level_of(exp_for(2) - 1) == 1
-    assert [level_of(e) for e in (5_460, 268_800, 2_211_300)] == [2, 5, 10]   # 저렙 완만 구간
-    assert exp_for(MAX_LV) == TRANS_EXP and abs(TRANS_EXP / 480_200_000 - 1) < 0.01, \
-        "초월 비용이 예전 4.8억에서 벗어났다 — 저렙만 손보기로 한 약속이 깨진다"
+    assert len({exp_for(lv + 1) - exp_for(lv) for lv in range(1, MAX_LV)}) == 1, "레벨 구간이 같지 않다"
+    assert exp_for(MAX_LV) == TRANS_EXP and 55_000_000 <= TRANS_EXP <= 65_000_000, \
+        "초월 비용이 '하루 200만 x 한 달' 에서 벗어났다"
     assert all(exp_for(lv) < exp_for(lv + 1) for lv in range(1, MAX_LV)), "레벨 곡선이 뒤집혔다"
     assert tier_of(1)[2] == "토큰 알" and tier_of(99)[2] == "토큰 드래곤"
     _check_early()
@@ -4251,7 +4250,11 @@ def _check_balance(h, ds, strict=True):
         # v0.19.6 에서 승패가 선공을 세며 또 한 칸 올랐다(힘 21). 먼저 쳐서 잡는 싸움이라 공격 쪽이 앞선다. 벽은 그대로다.
         assert near >= atk20 - 5, \
             f"{ko}({near})가 힘({atk20})보다 다섯 칸 넘게 뒤진다 — 선택이 아니라 들러리다"
-        assert near <= atk20 + slack and far <= atk60 + slack, \
+        # 60레벨 비교는 Lv.10 아래에선 뺀다(v0.20.3). 레벨 구간이 같아지며 '첫 주'(190만 토큰)가 Lv.9 에서 Lv.4 가 됐다.
+        # 배분 8점에 ATK 7 이라 60레벨이면 혼(14)이 힘(11)을 앞선다. 하지만 첫 주의 혼으로 60레벨(약 93만 혼)은
+        # 살 수 없고, 살 수 있는 20레벨에서는 둘이 같다(5/5). 실제로 고를 수 없는 갈림길이다.
+        far_ok = far <= atk60 + slack or h["level"] < 10
+        assert near <= atk20 + slack and far_ok, \
             f"{ko}({near}/{far})가 힘({atk20}/{atk60})을 넘어섰다 — 그 빌드만 정답이 된다"
 
     _sx = spd_extra

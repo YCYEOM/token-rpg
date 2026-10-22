@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.4"
+__version__ = "0.20.5"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -408,7 +408,7 @@ THEMES = [
 # RAID_MIN_BEST: 2층 첫 보스를 깨야 열린다. 1층에서는 주간 보조 수입이 이미 상한(환생의 2배)에 닿아 있어
 #   레이드 몫을 얹을 자리가 없다. 16스테이지부터는 상한 안이다 (demo() 가 16스테이지부터 전부 본다).
 # RAID_MIN_HP: 갓 깔았거나 쉬던 주에도 보스가 서도록 두는 HP 하한.
-# 격파 보상은 가진 유물 하나를 한 등급 올리는 것이다(v0.17.1). 등급을 새로 굴리던 v0.17.0 은 열에 여섯이
+# 격파 보상은 가장 약한 유물 하나를 강화한다(v0.20.5, raidPlan). 그 전(v0.17.1)엔 무작위 등급 +1 이었다. 등급을 새로 굴리던 v0.17.0 은 열에 여섯이
 # 일반이라 유물을 모은 뒤로는 빈손이었다. 천장(신화)은 그대로고, 15칸 전부 신화까지 많아야 60주다.
 # 자동 반복으로도 신화는 나온다(한 보스에 7시간쯤) — 레이드는 켜 두지 않는 사람의 길이다.
 # 보스 HP 는 지난 4주의 주간 사용량 평균이다 (쓴 주만 센다) — 평소대로 쓰면 주말쯤 잡는다.
@@ -2140,7 +2140,7 @@ function raidClaim(i){
     t.raidRunMax = Math.max(t.raidRunMax | 0, t.raidRun);
     const drop = raidRelic();
     relicNews = drop;
-    raidNews = `${raidBoss()[0]} 격파 — 혼 +${n(pay)} · ${drop}`;
+    raidNews = `${raidBoss()[0]} 격파 — 혼 +${n(pay)}<br>${drop}`;
   }
   put(); drawAll();
 }
@@ -2148,25 +2148,57 @@ function raidClaim(i){
 // 유물을 모은 뒤로는 거의 혼으로 바뀌었다 — 한 주를 채워 잡은 보상이 빈손이었다.
 // 올릴 것이 없으면 버려지지 않게 다른 것을 준다: 유물이 하나도 없으면 하나를 주고, 전부 신화면 혼을 준다.
 // 등급의 천장(신화)은 그대로다. 빨라지는 것은 거기까지 가는 길뿐이다 — 15칸 전부 신화까지 많아야 60주.
+// v0.20.5: 유물이 떨어진 층만큼 세지며(v0.20.4) 무작위 등급 승급이 헛돌았다 — 레이드가 올린 얕은 층 신화가
+// 깊은 층 영웅에게 밀려 사라졌다. 이제 '가장 약한 유물' 하나를 고르고, 등급 +1 과 '지금 층으로 옮기기' 중 더 세지는 쪽을 준다.
+// 약함은 그 칸이 닿을 수 있는 최고치(가장 깊은 층 신화) 대비 몇 % 인가로 잰다 — 능력치마다 기본 수치가 달라 % 를 그대로 못 견준다.
+// 빈 칸이 있으면 그 칸이 가장 약하다(0%). 15칸 모두 가장 깊은 층 신화면 혼을 준다.
+const deepG = slot => Math.floor(Math.max(0, (save.best || 0) - slot.slot) / N) * N + slot.slot;   // 그 칸의 가장 깊은 스테이지
+function raidPlan(){
+  const rs = save.relics || {}, top = RARITY.length - 1;
+  const cand = [];
+  for (const slot of SLOTS) {
+    const k = relicKey(slot), old = rs[k], g = deepG(slot);
+    const max = {r: top, a: slot.affix, g}, maxV = relicVal(max);
+    if (!relicOk(old)) { cand.push({slot, k, old: null, ratio: 0, max}); continue; }
+    const ratio = relicVal(old) / maxV;
+    if (ratio >= 1 - 1e-9) continue;
+    const up = old.r < top ? {...old, r: old.r + 1} : null;
+    const move = relicFloor({g}) > relicFloor(old) ? {...old, g} : null;
+    const nu = [up, move].filter(Boolean).sort((a, b) => relicVal(b) - relicVal(a))[0];
+    if (nu) cand.push({slot, k, old, nu, ratio, max, up, move, kind: nu === move ? "move" : "up"});
+  }
+  cand.sort((a, b) => a.ratio - b.ratio || a.slot.slot - b.slot.slot);
+  return cand.length ? {...cand[0], next: cand[1] || null} : null;
+}
+// 레이드 강화 설명 — 무엇이(지금) · 어떻게 바뀌고(강화 후) · 왜 이것인지. 카드 미리보기와 격파 알림이 같은 글을 쓴다
+const relicTag = r => `${RARITY[r.r][0]}${r.a === "soul" ? "" : " · " + relicFloor(r) + "층"} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}`;
+const relicName = slot => { const from = (floorNow() - 1) * N + slot.slot; return `${slotOf(from).emoji} ${from}. ${slotOf(from).name}`; };
+function raidPlanText(p){
+  if (!p) return "유물 15칸이 모두 가장 깊은 층 신화다 — 강화 대신 혼을 준다.";
+  const pct = x => Math.round(x * 100) + "%";
+  if (!p.old) return `${relicName(p.slot)} — 빈 칸이다. 이 칸의 유물을 하나 준다(등급은 무작위).
+    <br><small class="dim">왜: 빈 칸이 가장 약하다.</small>`;
+  const how = p.kind === "move"
+    ? `지금 층(${relicFloor(p.nu)}층)으로 옮긴다 — 등급은 그대로${p.up ? `. 등급 +1(${relicVal(p.up)}${AFFIX[p.old.a][2]})보다 세다` : ", 이미 신화라 등급은 못 올린다"}`
+    : `등급 +1${p.move ? `. 지금 층으로 옮기기(${relicVal(p.move)}${AFFIX[p.old.a][2]})보다 세다` : " — 이미 가장 깊은 층이다"}`;
+  return `${relicName(p.slot)}
+    <br>지금: ${relicTag(p.old)} → 강화 후: <b>${relicTag(p.nu)}</b>
+    <br><small class="dim">어떻게: ${how}.
+    <br>왜: 15칸 중 가장 약하다 — 이 칸 최고치(${relicTag(p.max)})의 ${pct(p.ratio)}${
+      p.next ? `. 다음으로 약한 것은 ${relicName(p.next.slot)} ${pct(p.next.ratio)}` : ""}.</small>`;
+}
 function raidRelic(){
-  const rs = save.relics = save.relics || {};
-  const owned = SLOTS.filter(s => relicOk(rs[relicKey(s)]));
-  const up = owned.filter(s => rs[relicKey(s)].r < RARITY.length - 1);
-  if (up.length) {
-    const slot = up[Math.floor(Math.random() * up.length)], k = relicKey(slot), old = rs[k];
-    rs[k] = {...old, r: old.r + 1};
-    const from = (floorNow() - 1) * N + slot.slot;      // 도감과 같은 이름 — 지금 층에서 그 칸을 지키는 보스
-    return `${from}. ${slotOf(from).name}의 유물 승급: ${RARITY[old.r][0]} → ${RARITY[old.r + 1][0]} — `
-         + `${AFFIX[old.a][0]} +${relicVal(rs[k])}${AFFIX[old.a][2]}`;
+  save.relics = save.relics || {};
+  const p = raidPlan();
+  if (!p) {
+    const pay = sideSoul(Math.max(1, save.best));  // 전부 가장 깊은 층 신화다 — 최고 스테이지 한 판치 혼
+    save.souls += pay;
+    return `유물이 모두 가장 깊은 층 ${RARITY[RARITY.length - 1][0]}다 — 혼 +${n(pay)}`;
   }
-  if (!owned.length) {                           // 올릴 유물이 없다 — 이번 주 칸의 유물을 하나 준다
-    const slot = SLOTS[raidIdx(raidWk()) % N];
-    const g = Math.floor(Math.max(0, save.best - slot.slot) / N) * N + slot.slot;
-    return rollRelic(g, slotOf(g), false, true);
-  }
-  const pay = sideSoul(Math.max(1, save.best));  // 전부 신화다 — 최고 스테이지 한 판치 혼
-  save.souls += pay;
-  return `유물이 모두 ${RARITY[RARITY.length - 1][0]}다 — 혼 +${n(pay)}`;
+  if (!p.old) { const g = deepG(p.slot); return rollRelic(g, slotOf(g), false, true); }
+  const txt = raidPlanText(p);
+  save.relics[p.k] = p.nu;
+  return `가장 약한 유물 강화 — ${txt}`;
 }
 function drawRaid(){
   if (!raidOpen()) {
@@ -2178,7 +2210,7 @@ function drawRaid(){
   const left = Math.max(0, hp - dealt);
   $("raidHead").textContent = left ? `${Math.floor(100 * dealt / hp)}%` : "격파";
   $("raid").innerHTML =
-    (raidNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold)">${raidNews}</div>` : "") +
+    (raidNews ? `<div class="banner" style="color:var(--gold);border-color:var(--gold);text-align:left">${raidNews}</div>` : "") +
     `<div class="st" style="border-top:0"><div class="e">${emoji}</div>
        <div class="n"><b class="nm" title="${name}">${left ? "" : "✓ "}${name}</b>
        <div class="bar hpb"><i style="width:${100 * left / hp}%"></i></div>
@@ -2186,11 +2218,13 @@ function drawRaid(){
     [0, 1, 2, 3].map(i => {
       const need = hp * (i + 1) / 4, done = dealt >= need, had = got.includes(i);
       return `<div class="st"><div class="n"><b>${had ? "✓ " : ""}${(i + 1) * 25}% ${i === 3 ? "격파" : "돌파"}</b>
-        <small style="display:block">토큰 ${n(need)} · 보상 혼 ${n(raidPay())}${i === 3 ? " · 유물 한 등급 승급" : ""}</small></div>
+        <small style="display:block">토큰 ${n(need)} · 보상 혼 ${n(raidPay())}${i === 3 ? " · 가장 약한 유물 강화" : ""}</small></div>
         <button data-r="${i}" ${done && !had ? "" : "disabled"}>${had ? "받음" : done ? "받기" : "진행 중"}</button></div>`;
     }).join("") +
     `<div class="dim" style="font-size:11px;margin-top:6px">매주 월요일에 새 보스가 나온다. 이번 주에 쓴 토큰만큼 HP가 깎인다.
-     평소대로 쓰면 주말쯤 잡는다. 격파하면 유물 하나가 한 등급 오른다. 받지 않은 보상은 다음 주에 사라진다.</div>`;
+     평소대로 쓰면 주말쯤 잡는다. 격파하면 가장 약한 유물 하나를 강화한다 — 등급 +1 과 지금 층으로 옮기기 중 더 세지는 쪽.
+     받지 않은 보상은 다음 주에 사라진다.</div>
+     ${got.includes(3) ? "" : `<div class="banner" style="margin-top:8px;font-size:12px;text-align:left"><b class="gold">격파하면 강화할 유물</b><br>${raidPlanText(raidPlan())}</div>`}`;
   $("raid").querySelectorAll("button[data-r]").forEach(b => b.onclick = () => raidClaim(+b.dataset.r));
 }
 

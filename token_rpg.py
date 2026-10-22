@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.5"
+__version__ = "0.20.6"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -2152,6 +2152,7 @@ function raidClaim(i){
 // 깊은 층 영웅에게 밀려 사라졌다. 이제 '가장 약한 유물' 하나를 고르고, 등급 +1 과 '지금 층으로 옮기기' 중 더 세지는 쪽을 준다.
 // 약함은 그 칸이 닿을 수 있는 최고치(가장 깊은 층 신화) 대비 몇 % 인가로 잰다 — 능력치마다 기본 수치가 달라 % 를 그대로 못 견준다.
 // 빈 칸이 있으면 그 칸이 가장 약하다(0%). 15칸 모두 가장 깊은 층 신화면 혼을 준다.
+// v0.20.6: 강화는 '가장 깊은 층으로 옮기기' 가 먼저, 가장 깊은 층과 한 층 안이면 등급 +1 (raidPlan 안 주석).
 const deepG = slot => Math.floor(Math.max(0, (save.best || 0) - slot.slot) / N) * N + slot.slot;   // 그 칸의 가장 깊은 스테이지
 function raidPlan(){
   const rs = save.relics || {}, top = RARITY.length - 1;
@@ -2162,10 +2163,13 @@ function raidPlan(){
     if (!relicOk(old)) { cand.push({slot, k, old: null, ratio: 0, max}); continue; }
     const ratio = relicVal(old) / maxV;
     if (ratio >= 1 - 1e-9) continue;
-    const up = old.r < top ? {...old, r: old.r + 1} : null;
-    const move = relicFloor({g}) > relicFloor(old) ? {...old, g} : null;
-    const nu = [up, move].filter(Boolean).sort((a, b) => relicVal(b) - relicVal(a))[0];
-    if (nu) cand.push({slot, k, old, nu, ratio, max, up, move, kind: nu === move ? "move" : "up"});
+    // v0.20.6: 먼저 그 유물을 얻을 수 있는 가장 깊은 층으로 옮긴다(등급 그대로). 이미 거기면 등급 +1.
+    // 혼 유물은 층과 상관없어 늘 등급 +1 이다. (v0.20.5 는 둘 중 센 쪽을 골랐다 — 사용자: '기본은 가장 깊은 층으로')
+    // 한 층만 깊어지면 수치가 거의 안 오른다(12층 -> 13층 DEF +90 -> +96%). 그때는 등급 +1 — 단 이미 신화면 옮긴다.
+    const gap = old.a === "soul" ? 0 : relicFloor({g}) - relicFloor(old);
+    const move = gap >= 2 || (gap === 1 && old.r >= top) ? {...old, g} : null;
+    const nu = move || (old.r < top ? {...old, r: old.r + 1} : null);
+    if (nu) cand.push({slot, k, old, nu, ratio, max, gap, kind: move ? "move" : "up"});
   }
   cand.sort((a, b) => a.ratio - b.ratio || a.slot.slot - b.slot.slot);
   return cand.length ? {...cand[0], next: cand[1] || null} : null;
@@ -2179,8 +2183,10 @@ function raidPlanText(p){
   if (!p.old) return `${relicName(p.slot)} — 빈 칸이다. 이 칸의 유물을 하나 준다(등급은 무작위).
     <br><small class="dim">왜: 빈 칸이 가장 약하다.</small>`;
   const how = p.kind === "move"
-    ? `지금 층(${relicFloor(p.nu)}층)으로 옮긴다 — 등급은 그대로${p.up ? `. 등급 +1(${relicVal(p.up)}${AFFIX[p.old.a][2]})보다 세다` : ", 이미 신화라 등급은 못 올린다"}`
-    : `등급 +1${p.move ? `. 지금 층으로 옮기기(${relicVal(p.move)}${AFFIX[p.old.a][2]})보다 세다` : " — 이미 가장 깊은 층이다"}`;
+    ? `이 유물을 얻을 수 있는 가장 깊은 층(${relicFloor(p.nu)}층)으로 옮긴다 — 등급은 그대로`
+    : p.old.a === "soul" ? "등급 +1 — 혼 유물은 층과 상관없다"
+    : p.gap === 1 ? `등급 +1 — 가장 깊은 층(${relicFloor(p.max)}층)과 한 층 차이라 옮겨도 거의 안 오른다`
+    : `등급 +1 — 이미 가장 깊은 층(${relicFloor(p.old)}층)이다`;
   return `${relicName(p.slot)}
     <br>지금: ${relicTag(p.old)} → 강화 후: <b>${relicTag(p.nu)}</b>
     <br><small class="dim">어떻게: ${how}.
@@ -2222,7 +2228,7 @@ function drawRaid(){
         <button data-r="${i}" ${done && !had ? "" : "disabled"}>${had ? "받음" : done ? "받기" : "진행 중"}</button></div>`;
     }).join("") +
     `<div class="dim" style="font-size:11px;margin-top:6px">매주 월요일에 새 보스가 나온다. 이번 주에 쓴 토큰만큼 HP가 깎인다.
-     평소대로 쓰면 주말쯤 잡는다. 격파하면 가장 약한 유물 하나를 강화한다 — 등급 +1 과 지금 층으로 옮기기 중 더 세지는 쪽.
+     평소대로 쓰면 주말쯤 잡는다. 격파하면 가장 약한 유물 하나를 강화한다 — 얻을 수 있는 가장 깊은 층으로 옮기고, 거기서 한 층 안이면 등급 +1.
      받지 않은 보상은 다음 주에 사라진다.</div>
      ${got.includes(3) ? "" : `<div class="banner" style="margin-top:8px;font-size:12px;text-align:left"><b class="gold">격파하면 강화할 유물</b><br>${raidPlanText(raidPlan())}</div>`}`;
   $("raid").querySelectorAll("button[data-r]").forEach(b => b.onclick = () => raidClaim(+b.dataset.r));

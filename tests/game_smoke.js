@@ -498,22 +498,32 @@ async function raid(g) {
   t.save.relics = {...maxed, boss3: {r: 1, a: "dfn", g: 33}};
   t.drawAll();
   const card = g.$("raid").html;
-  ok(/격파하면 강화할 유물/.test(card) && /48\. 문서 없음 안개/.test(card) && /지금: 희귀 · 3층 · DEF \+9% → 강화 후: <b>영웅 · 3층 · DEF \+18%<\/b>/.test(card)
-     && /어떻게: 등급 \+1\. 지금 층으로 옮기기\(16\.5%\)보다 세다/.test(card) && /왜: 15칸 중 가장 약하다 — 이 칸 최고치\(신화 · 8층 · DEF \+132%\)의 7%/.test(card),
+  ok(/격파하면 강화할 유물/.test(card) && /48\. 문서 없음 안개/.test(card) && /지금: 희귀 · 3층 · DEF \+9% → 강화 후: <b>희귀 · 8층 · DEF \+16\.5%<\/b>/.test(card)
+     && /어떻게: 이 유물을 얻을 수 있는 가장 깊은 층\(8층\)으로 옮긴다 — 등급은 그대로/.test(card) && /왜: 15칸 중 가장 약하다 — 이 칸 최고치\(신화 · 8층 · DEF \+132%\)의 7%/.test(card),
      "레이드 카드에 강화 대상·전후·이유가 안 보인다: " + card.slice(-700));
   for (let i = 0; i < 4; i++) {
     const had = t.save.souls;
     await g.click(g.btn("raid", {r: String(i)}));
     ok(t.save.raid.got.includes(i) && t.save.souls === had + pay, `레이드 ${i + 1}단계 보상이 적힌 것과 다르다`);
   }
-  // 3층 희귀 DEF(+9%): 등급 +1 이면 3층 영웅 +18%, 8층으로 옮기면 희귀 +16.5% — 등급 쪽이 세다
-  ok(t.save.relics.boss3.r === 2 && t.save.relics.boss3.a === "dfn" && t.save.relics.boss3.g === 33,
+  // 3층 희귀 DEF(+9%) -> 먼저 가장 깊은 층(8층)으로 옮긴다: 희귀 +16.5% (v0.20.6)
+  ok(t.save.relics.boss3.r === 1 && t.save.relics.boss3.a === "dfn" && t.save.relics.boss3.g === deep(3),
      "격파했는데 가장 약한 유물이 강화되지 않았다: " + JSON.stringify(t.save.relics.boss3));
   ok(Object.entries(t.save.relics).filter(([k]) => k !== "boss3").every(([k, r]) => r.r === 4 && r.g === deep(+k.slice(4))), "다른 유물을 건드렸다");
-  ok(/격파 — 혼/.test(g.$("raid").html) && /가장 약한 유물 강화 — .*48\. 문서 없음 안개[\s\S]*지금: 희귀 · 3층 · DEF \+9% → 강화 후: <b>영웅 · 3층 · DEF \+18%/.test(g.$("raid").html) && !/격파하면 강화할 유물/.test(g.$("raid").html), "격파 알림에 강화가 없다: " + g.$("raid").html.slice(0, 300));
+  ok(/격파 — 혼/.test(g.$("raid").html) && /가장 약한 유물 강화 — .*48\. 문서 없음 안개[\s\S]*지금: 희귀 · 3층 · DEF \+9% → 강화 후: <b>희귀 · 8층 · DEF \+16\.5%/.test(g.$("raid").html) && !/격파하면 강화할 유물/.test(g.$("raid").html), "격파 알림에 강화가 없다: " + g.$("raid").html.slice(0, 300));
   // 얕은 층 신화는 등급을 못 올리니 지금 층으로 옮긴다 — 깊은 층 유물에 밀려 사라지지 않게
   t.save.relics = {...maxed, boss3: {r: 4, a: "dfn", g: 3}};
-  ok(/지금: 신화 · 1층 · DEF \+48% → 강화 후: <b>신화 · 8층 · DEF \+132%<\/b>[\s\S]*지금 층\(8층\)으로 옮긴다 — 등급은 그대로, 이미 신화라/.test(t.raidRelic()) && t.save.relics.boss3.r === 4 && t.save.relics.boss3.g === deep(3), "얕은 신화를 지금 층으로 옮기지 않는다: " + JSON.stringify(t.save.relics.boss3));
+  ok(/지금: 신화 · 1층 · DEF \+48% → 강화 후: <b>신화 · 8층 · DEF \+132%<\/b>[\s\S]*가장 깊은 층\(8층\)으로 옮긴다 — 등급은 그대로/.test(t.raidRelic()) && t.save.relics.boss3.r === 4 && t.save.relics.boss3.g === deep(3), "얕은 신화를 지금 층으로 옮기지 않는다: " + JSON.stringify(t.save.relics.boss3));
+  // 이미 가장 깊은 층이면 등급 +1
+  t.save.relics = {...maxed, boss3: {r: 1, a: "dfn", g: deep(3)}};
+  ok(/희귀 · 8층 · DEF \+16\.5% → 강화 후: <b>영웅 · 8층 · DEF \+33%<\/b>[\s\S]*등급 \+1 — 이미 가장 깊은 층\(8층\)이다/.test(t.raidRelic()) && t.save.relics.boss3.r === 2,
+     "가장 깊은 층 유물의 등급을 안 올린다: " + JSON.stringify(t.save.relics.boss3));
+  // 가장 깊은 층(8층)과 한 층 차이(7층)면 옮기지 않고 등급 +1. 이미 신화면 한 층이라도 옮긴다
+  t.save.relics = {...maxed, boss3: {r: 1, a: "dfn", g: 93}};
+  ok(/희귀 · 7층 · DEF \+15% → 강화 후: <b>영웅 · 7층 · DEF \+30%<\/b>[\s\S]*한 층 차이라/.test(t.raidRelic()) && t.save.relics.boss3.g === 93,
+     "한 층 차이인데 등급 대신 옮겼다: " + JSON.stringify(t.save.relics.boss3));
+  t.save.relics = {...maxed, boss3: {r: 4, a: "dfn", g: 93}};
+  ok(/신화 · 7층 · DEF \+120% → 강화 후: <b>신화 · 8층/.test(t.raidRelic()) && t.save.relics.boss3.g === deep(3), "한 층 차이 신화를 안 옮긴다");
   // 빈 칸이 가장 약하다 — 유물이 없으면 하나를 준다. 전부 가장 깊은 층 신화면 혼을 준다
   t.save.relics = {};
   ok(/유물/.test(t.raidRelic()) && Object.keys(t.save.relics).length === 1, "유물이 하나도 없을 때 하나를 주지 않는다");

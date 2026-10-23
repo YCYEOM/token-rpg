@@ -643,15 +643,20 @@ async function mutations() {
     ok(t.save.alloc.spd === sm && spdBtn("1").disabled && spdBtn("max").disabled && !g.btn("alloc", {k: "atk", d: "1"}).disabled,
        `+10 이 늘 2타를 넘겨 넣었거나 다른 줄까지 막혔다: ${t.save.alloc.spd}/${sm}`);
     ok(/늘 2타 — 더 넣을 수 없다/.test(g.$("alloc").html), "속도 늘 2타 안내가 없다");
+    // 늘 2타를 넘겨 넣어 둔 점수는 돌려준다 — 치명타 100% 와 같다 (v0.20.8)
     t.save.alloc.spd = sm + 30; t.drawAll();
-    ok(t.save.alloc.spd === sm + 30, "이미 넣은 속도 점수를 빼 버린다");
+    ok(t.save.alloc.spd === sm, `넘친 속도 배분을 돌려주지 않는다: ${t.save.alloc.spd}/${sm}`);
     // 상한은 배분에만 — 늘 2타여도 신속의 유산은 산다
     t.save.alloc.spd = sm; t.save.souls = 1e12; t.drawAll();
     const lv = t.save.traits.spd, tb = g.$("traits").querySelectorAll("button").find(x => x.dataset.t === "spd" && x.dataset.c === "1");
     ok(!/더 넣을 수 없다|늘 2타/.test(g.$("traits").html), "특성 줄에 속도 상한 안내가 붙었다");
     ok(tb && !tb.disabled, "늘 2타라고 신속의 유산 구입이 막혔다");
     await g.click(tb);
-    ok(t.save.traits.spd === lv + 1, `신속의 유산을 못 샀다: ${lv} → ${t.save.traits.spd}`); }
+    ok(t.save.traits.spd === lv + 1, `신속의 유산을 못 샀다: ${lv} → ${t.save.traits.spd}`);
+    // 신속의 유산을 사서 늘 2타에 드는 점수가 줄면 그만큼 배분으로 돌아온다
+    for (let i = 0; i < 40; i++) t.save.traits.spd++;
+    t.drawAll();
+    ok(t.spdMax() < sm && t.save.alloc.spd === t.spdMax(), `특성으로 줄어든 만큼 속도 배분을 돌려주지 않는다: ${t.save.alloc.spd}/${t.spdMax()}`); }
   // 유물로 치명타가 오르면 남는 점수는 돌려준다
   t.save.alloc.crit = cm + 40; t.drawAll();
   ok(t.save.alloc.crit === cm, `넘친 치명타 배분을 돌려주지 않는다: ${t.save.alloc.crit}/${cm}`);

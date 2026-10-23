@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.7"
+__version__ = "0.20.8"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1598,6 +1598,9 @@ const spdMax = () => {
   while (spdAt(a) < t) a++;
   return a;
 };
+// v0.20.8: 속도도 치명타처럼 넘친 배분을 돌려준다. 신속의 유산을 사거나 유물·SPD 가 올라 '다음 보스 늘 2타' 에
+// 필요한 점수가 줄면, 그 위로 넣어 둔 점수는 아무 일도 안 했다 — 배분에 다시 쓸 수 있게 풀어 준다.
+const fixSpd = () => { const m = spdMax(); if (save.alloc.spd > m) { save.alloc.spd = m; return true; } return false; };
 const roomOf = k => Math.max(0, k === "crit" ? Math.min(left(), critMax() - save.alloc.crit)
   : k === "spd" ? Math.min(left(), spdMax() - save.alloc.spd) : left());
 // 상한은 스탯 배분에만 있다. 영구 특성(신속의 유산)은 늘 살 수 있으니 특성 줄에는 이 안내를 달지 않는다.
@@ -2581,7 +2584,7 @@ function drawAch(){
   });
 }
 
-const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawTabs(); };
+const drawAll = () => { if (fixCrit() | fixSpd()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawTabs(); };
 
 // ── 탭 (v0.20.0): 카드 열넷을 한 줄로 늘어놓던 때는 메뉴 막대 창(640px)으로 13화면이었고, 던전이 9화면 아래였다.
 // 자주 쓰는 순서로 넷으로 나눈다 — 전투(던전) · 성장(환생·배분·특성·내성)

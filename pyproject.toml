@@ -30,3 +30,7 @@ path = "token_rpg.py"
 
 [tool.hatch.build.targets.wheel]
 only-include = ["token_rpg.py", "token_rpg_tray.py"]
+
+# 다운로드 사이트(홍보 영상 포함)는 패키지에 넣지 않는다
+[tool.hatch.build.targets.sdist]
+exclude = ["site", "promo.mp4", "references", ".studio"]

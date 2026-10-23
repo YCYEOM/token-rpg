@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Token RPG — AI 코딩에 쓴 토큰이 캐릭터가 된다</title>
+<meta name="description" content="Claude Code·Codex·Gemini CLI 에 쓴 토큰으로 성장하는 턴제 RPG. macOS 메뉴 막대와 윈도우 트레이에서 바로 플레이합니다.">
+<meta property="og:title" content="Token RPG — AI 코딩에 쓴 토큰이 캐릭터가 된다">
+<meta property="og:description" content="출력 토큰은 공격력, 캐시는 방어력, thinking 은 치명타. 쓴 만큼 강해지는 턴제 RPG.">
+<meta property="og:image" content="https://ycyeom.github.io/token-rpg/img/hero.jpg">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧙</text></svg>">
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--fg:#e6edf3;--dim:#8b949e;--gold:#e3b341;--on:#58a6ff;--soul:#bc8cff;--hp:#f85149;--ok:#3fb950}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;overflow-x:hidden;background:var(--bg);color:var(--fg);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Segoe UI","Malgun Gothic",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--on);text-decoration:none}a:hover{text-decoration:underline}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+nav{position:sticky;top:0;z-index:10;background:#0d1117e6;backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:20px;height:56px}
+nav .logo{font-weight:800;letter-spacing:.03em;color:var(--fg);font-size:17px}
+nav .sp{flex:1}
+nav a.l{color:var(--dim);font-size:14px}nav a.l:hover{color:var(--fg);text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:10px;font-weight:700;font-size:16px;border:1px solid var(--line);color:var(--fg);background:var(--card)}
+.btn:hover{text-decoration:none;border-color:var(--on)}
+.btn.main{background:var(--gold);border-color:var(--gold);color:#1a1300}
+.btn.main:hover{filter:brightness(1.08);border-color:var(--gold)}
+.btn.sm{padding:6px 12px;font-size:13px;font-weight:600}
+.hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center;padding:64px 20px 56px}
+.hero>*,.stats>*,.feat>*,.dl>*,.cols>*{min-width:0}
+.hero h1{font-size:46px;line-height:1.2;margin:0 0 18px;letter-spacing:-.01em}
+.hero h1 .g{color:var(--gold)}
+.hero p.lead{font-size:19px;color:var(--dim);margin:0 0 28px}
+.hero .ctas{display:flex;gap:12px;flex-wrap:wrap}
+.hero .ver{margin-top:14px;font-size:13px;color:var(--dim)}
+.phone{justify-self:center;width:300px;aspect-ratio:9/16;border-radius:28px;border:1px solid var(--line);overflow:hidden;background:#000;box-shadow:0 24px 64px #000c}
+.phone video{width:100%;height:100%;display:block;object-fit:cover}
+section{padding:56px 0;border-top:1px solid var(--line)}
+section h2{font-size:30px;margin:0 0 10px}
+section p.sub{color:var(--dim);margin:0 0 30px}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.stat .k{font-size:13px;color:var(--dim)}
+.stat .v{font-size:22px;font-weight:800;margin:4px 0}
+.stat .d{font-size:13px;color:var(--dim)}
+.feat{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.f{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+.f img{width:100%;aspect-ratio:9/12;object-fit:cover;object-position:top;display:block;border-bottom:1px solid var(--line)}
+.f div{padding:16px 18px 18px}
+.f h3{margin:0 0 6px;font-size:18px}
+.f p{margin:0;color:var(--dim);font-size:14.5px}
+.dl{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.os{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;display:flex;flex-direction:column;gap:12px}
+.os h3{margin:0;font-size:20px}
+.os .note{font-size:13.5px;color:var(--dim)}
+.cmd{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 8px 8px 12px}
+.cmd code{flex:1;font-size:13.5px;white-space:nowrap;overflow-x:auto}
+.cmd button{flex:none;background:var(--card);color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:4px 9px;font-size:12px;cursor:pointer}
+.cmd button:hover{color:var(--fg);border-color:var(--on)}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+.box h3{margin:0 0 10px;font-size:18px}
+.box ul{margin:0;padding-left:20px;color:var(--dim)}.box li{margin:4px 0}
+.box li b{color:var(--fg);font-weight:600}
+.prov{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.prov span{border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:14px;background:var(--bg)}
+details.q{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-bottom:10px}
+details.q summary{cursor:pointer;font-weight:700}
+details.q p{margin:10px 0 0;color:var(--dim)}
+footer{border-top:1px solid var(--line);padding:30px 0 50px;color:var(--dim);font-size:14px}
+footer .wrap{display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+@media (max-width:860px){
+  .hero{grid-template-columns:1fr;gap:36px;padding-top:40px}
+  .phone{width:min(300px,80vw)}
+  .hero h1{font-size:34px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .feat,.dl,.cols{grid-template-columns:1fr}
+  nav a.l.hide{display:none}
+}
+</style>
+</head>
+<body>
+<nav><div class="wrap">
+  <a class="logo" href="#">🧙 TOKEN RPG</a><span class="sp"></span>
+  <a class="l hide" href="#how">어떻게 크나</a><a class="l hide" href="#play">놀 거리</a><a class="l" href="#download">다운로드</a>
+  <a class="l" href="https://github.com/YCYEOM/token-rpg">GitHub</a>
+</div></nav>
+
+<header class="wrap hero">
+  <div>
+    <h1>AI 코딩에 쓴 토큰이<br><span class="g">캐릭터</span>가 됩니다</h1>
+    <p class="lead">Claude Code·Codex·Gemini CLI 에 쓴 토큰으로 자라는 턴제 RPG입니다.
+      출력 토큰은 공격력, 캐시는 방어력, thinking 은 치명타가 됩니다. 코딩한 만큼 강해집니다.</p>
+    <div class="ctas">
+      <a class="btn main" href="https://github.com/YCYEOM/token-rpg/releases/latest/download/Token-RPG-macOS.dmg">macOS 다운로드</a>
+      <a class="btn" href="#download">윈도우 · 리눅스</a>
+    </div>
+    <div class="ver" id="ver">무료 · 오픈소스(MIT) · 의존성 없음</div>
+  </div>
+  <div class="phone"><video src="promo.mp4" poster="img/poster.jpg" autoplay muted loop playsinline controls preload="metadata"></video></div>
+</header>
+
+<section id="how"><div class="wrap">
+  <h2>쓴 토큰이 그대로 스탯입니다</h2>
+  <p class="sub">로컬 사용 기록의 토큰 수만 읽습니다. 쓰는 방식이 곧 빌드입니다.</p>
+  <div class="stats">
+    <div class="stat"><div class="k">입력 + 출력</div><div class="v">EXP</div><div class="d">레벨이 오르면 배분 포인트를 받습니다</div></div>
+    <div class="stat"><div class="k">출력 토큰</div><div class="v" style="color:var(--hp)">ATK · HP</div><div class="d">많이 쓰게 할수록 세게 칩니다</div></div>
+    <div class="stat"><div class="k">캐시 재사용</div><div class="v" style="color:var(--on)">DEF</div><div class="d">긴 세션일수록 단단해집니다</div></div>
+    <div class="stat"><div class="k">thinking 토큰</div><div class="v" style="color:var(--gold)">CRIT</div><div class="d">깊게 생각할수록 치명타가 납니다</div></div>
+    <div class="stat"><div class="k">API 호출 수</div><div class="v" style="color:var(--soul)">SPD</div><div class="d">빠르면 먼저 치고 두 번 칩니다</div></div>
+  </div>
+</div></section>
+
+<section id="play"><div class="wrap">
+  <h2>놀 거리</h2>
+  <p class="sub">버그 벌레부터 루트 권한의 군주까지, 개발자의 적 75종이 던전 보스입니다.</p>
+  <div class="feat">
+    <div class="f"><img src="img/battle.jpg" alt="턴제 전투 화면" loading="lazy"><div><h3>턴제 자동 전투</h3>
+      <p>스테이지를 고르면 자동으로 싸웁니다. 속도가 빠르면 먼저 치고, 치명타는 thinking 토큰에서 나옵니다.</p></div></div>
+    <div class="f"><img src="img/alloc.jpg" alt="스탯 배분 화면" loading="lazy"><div><h3>스탯 배분</h3>
+      <p>레벨마다 받은 포인트를 공격·체력·방어·치명타·속도에 나눕니다. 화력 몰빵도, 버티는 빌드도 됩니다.</p></div></div>
+    <div class="f"><img src="img/traits.jpg" alt="환생과 영구 특성 화면" loading="lazy"><div><h3>환생과 영구 특성</h3>
+      <p>벽에 막히면 환생합니다. 모은 혼으로 영구 특성을 사서 다음 판에 더 깊이 내려갑니다.</p></div></div>
+    <div class="f"><img src="img/relics.jpg" alt="유물 도감 화면" loading="lazy"><div><h3>유물</h3>
+      <p>보스가 가끔 유물을 떨어뜨립니다. 일반부터 신화까지 다섯 등급이고, 깊은 층에서 나올수록 셉니다.</p></div></div>
+    <div class="f"><img src="img/auto.jpg" alt="자동 반복 화면" loading="lazy"><div><h3>자동 반복</h3>
+      <p>알아서 오르고, 막히면 그 자리에서 유물을 캡니다. 아직 못 모은 곳은 칸에 ◆·★ 로 표시됩니다.</p></div></div>
+    <div class="f"><img src="img/daily.jpg" alt="미션과 일과 화면" loading="lazy"><div><h3>미션 · 주간 레이드 · 원정</h3>
+      <p>미션과 레이드는 실제로 쓴 토큰으로 찹니다. 저장을 고쳐도 진행도는 바뀌지 않습니다.</p></div></div>
+  </div>
+</div></section>
+
+<section id="download"><div class="wrap">
+  <h2>다운로드</h2>
+  <p class="sub">Python 3.9 이상만 있으면 됩니다. 표준 라이브러리만 씁니다.</p>
+  <div class="dl">
+    <div class="os">
+      <h3>🍎 macOS</h3>
+      <div class="note">메뉴 막대에 상주합니다. 아이콘 옆에 레벨과 진행률이 뜨고, 누르면 팝오버에서 바로 플레이합니다.</div>
+      <a class="btn main" href="https://github.com/YCYEOM/token-rpg/releases/latest/download/Token-RPG-macOS.dmg">DMG 받기</a>
+      <div class="note">DMG 안의 <b>Token RPG.app</b> 을 응용 프로그램 폴더로 옮깁니다.
+        서명하지 않은 빌드라 처음 한 번은 앱을 <b>우클릭 → 열기</b> 로 엽니다.</div>
+    </div>
+    <div class="os">
+      <h3>🪟 윈도우</h3>
+      <div class="note">알림 영역(트레이)에 상주합니다. 아이콘을 누르면 게임 창이 열립니다.</div>
+      <div class="cmd"><code>pipx install token-rpg</code><button data-copy>복사</button></div>
+      <div class="cmd"><code>token-rpg-tray --startup on</code><button data-copy>복사</button></div>
+      <div class="note">두 번째 줄은 로그인할 때 자동으로 켜 둡니다.</div>
+    </div>
+    <div class="os">
+      <h3>🐧 리눅스 · 터미널</h3>
+      <div class="note">브라우저에서 엽니다. macOS·윈도우에서도 같은 명령으로 됩니다.</div>
+      <div class="cmd"><code>pipx install token-rpg</code><button data-copy>복사</button></div>
+      <div class="cmd"><code>token-rpg open</code><button data-copy>복사</button></div>
+      <div class="note"><code>uv tool install token-rpg</code>·<code>pip install token-rpg</code> 도 됩니다.</div>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap cols">
+  <div class="box">
+    <h3>지원하는 AI 툴</h3>
+    <div class="prov"><span>Claude Code</span><span>Codex CLI</span><span>Gemini CLI</span></div>
+    <ul style="margin-top:14px">
+      <li>여러 툴의 사용량을 한 캐릭터로 합칩니다.</li>
+      <li>여러 PC 의 기록도 스냅샷 폴더를 동기화해 합칠 수 있습니다.</li>
+      <li>웹 채팅(ChatGPT·Gemini 웹)과 IDE 확장은 로컬 기록이 없어 잡히지 않습니다.</li>
+    </ul>
+  </div>
+  <div class="box">
+    <h3>개인정보</h3>
+    <ul>
+      <li><b>사용 기록의 토큰 수(usage)만 읽습니다.</b> 대화 내용은 쓰지 않습니다.</li>
+      <li><b>읽기 전용입니다.</b> 원본 로그를 고치지 않습니다.</li>
+      <li><b>아무것도 밖으로 보내지 않습니다.</b> 게임 데이터는 내 PC 에만 저장합니다.</li>
+    </ul>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>자주 묻는 것</h2>
+  <details class="q"><summary>돈이 드나요?</summary><p>무료입니다. MIT 라이선스 오픈소스이고, 게임 안에 결제가 없습니다.</p></details>
+  <details class="q"><summary>토큰을 더 쓰게 만드는 게임인가요?</summary><p>아닙니다. 평소대로 코딩한 기록을 읽을 뿐입니다. 환생 기운에 상한이 있어서 토큰을 몰아 써도 빨라지는 데 한계가 있습니다.</p></details>
+  <details class="q"><summary>업데이트는 어떻게 하나요?</summary><p>게임 화면의 업데이트 버튼을 누르면 됩니다. 메뉴 막대 앱은 새 DMG 를 받아 앱을 직접 갈아끼웁니다. 터미널에서는 <code>token-rpg update</code> 입니다.</p></details>
+  <details class="q"><summary>예전 기록부터 세나요?</summary><p>기본은 설치한 시점부터 셉니다. <code>token-rpg since</code> 로 언제부터 셀지 바꿀 수 있습니다.</p></details>
+</div></section>
+
+<footer><div class="wrap">
+  <span>Token RPG · MIT License · <span id="ver2"></span></span>
+  <span><a href="https://github.com/YCYEOM/token-rpg">GitHub</a> · <a href="https://github.com/YCYEOM/token-rpg/releases">릴리스 노트</a> · <a href="https://pypi.org/project/token-rpg/">PyPI</a></span>
+</div></footer>
+
+<script>
+document.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
+  const t = b.previousElementSibling.textContent;
+  try { await navigator.clipboard.writeText(t); b.textContent = "복사됨"; } catch (e) { b.textContent = "실패"; }
+  setTimeout(() => b.textContent = "복사", 1400);
+});
+// 최신 버전 — 실패하면 기본 문구를 그대로 둔다
+fetch("https://api.github.com/repos/YCYEOM/token-rpg/releases/latest").then(r => r.ok ? r.json() : null).then(j => {
+  if (!j || !j.tag_name) return;
+  const d = (j.published_at || "").slice(0, 10);
+  document.getElementById("ver").textContent = `최신 ${j.tag_name}${d ? " · " + d : ""} · 무료 · 오픈소스(MIT)`;
+  document.getElementById("ver2").textContent = j.tag_name;
+}).catch(() => {});
+</script>
+</body>
+</html>

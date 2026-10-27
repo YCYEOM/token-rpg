@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.8"
+__version__ = "0.20.9"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -194,7 +194,9 @@ EARLY_MUL = 0.12                         # 1스테이지 배율 (EARLY_G 에서 
 # v0.20.4: 유물이 떨어진 층만큼 세지며(RELIC_DEPTH) 후반 벽이 3칸 -> 7칸 밀렸다. 진행 속도를 지키려고 보스를
 # 조금 세게 했다(ATK 1.24 -> 1.245, HP 1.325 -> 1.331). 같이 벽의 유산이 앞서 나가 1.25 -> 1.245 로 맞췄다.
 # 층 진입은 지금과 -6~0%, 특성 +20 방어/공격 비율 중앙 1.0. TypeSafe 판정으로 골랐다(`.studio/relic_comp.py`·`relic_trait.py`·`relic_final_ts.py`).
-B_ATK_STEP, B_HP_STEP = 1.245, 1.331
+# v0.20.9: 연타 상한을 없애며(HITS_MAX) 진행이 11% 빨라져 HP 를 1.331 -> 1.337 로 올렸다 — 진행 중앙 -2%,
+# 특성 비율 1.0, 속도 비중 10~90% 에서 벽이 거의 평평. TypeSafe 판정(`.studio/hits_cand.py`·`hits_ts.py`).
+B_ATK_STEP, B_HP_STEP = 1.245, 1.337
 # 유물 깊이 배율: 유물 수치 x (1 + RELIC_DEPTH x (떨어진 층 - 1)). 혼 유물은 빼고(혼 배수는 따로 곱해져 이미 값이 유지된다).
 # 고정 % 이던 때는 유물이 처음부터 끝까지 3~4스테이지를 밀었다 — 초반엔 진행의 15%, 13층에서는 1.6%였다.
 RELIC_DEPTH = 0.25
@@ -228,10 +230,12 @@ TRAIT_MUL  = 1.135   # 특성 1레벨당 스탯 배율 (기본값). v0.19.8 에�
 # 후보는 코드로 계산하고 TypeSafe 판정으로 골랐다(`.studio/trait_tune.py`, `trait_ts.py`).
 TRAIT_MULS = {"dfn": 1.245, "hp": 1.16}     # v0.20.4: 벽 1.25 -> 1.245 (위 B_ATK_STEP 주석)
 # 속도 (v0.19.2): 보스 SPD 는 스테이지마다 BOSS_SPD 씩만 오른다(다른 능력치는 STEP 배). 그래서 배분으로 따라잡을 수 있다.
-# 보스보다 1~2배 빠르면 그 비율만큼 확률로 2타, 2배부터 늘 2타 — 3타는 없다(HITS_MAX).
-# 신속의 유산은 레벨당 SPD +SPD_TRAIT(덧셈). 곱셈(1.2/lv)이면 2타가 금방 공짜가 된다.
+# 보스 SPD 의 배수마다 한 대씩 더 친다(배수 사이는 확률) — 2.5배면 2타 + 50% 로 3타 (v0.20.9).
+# v0.19.2~v0.20.8 은 2타가 천장이었다. 상한을 없애도 속도가 정답이 되지 않는다: 속도에 점수를 옮기면 공격이 줄고,
+# 공격이 보스 DEF 보다 낮을 때 한 대 피해는 공격의 제곱으로 준다. 지금 저장으로 속도 비중 10~90% 의 벽이 212~216 로 평평했다.
+# 신속의 유산은 레벨당 SPD +SPD_TRAIT(덧셈). 곱셈(1.2/lv)이면 속도가 금방 공짜가 된다.
 # 값은 .studio/spd_linear.py · spd_linear_typesafe.py 로 골랐다 (k=3: 초반·후반 모두 배분에 속도가 들어가고 층 진입은 3회 안에서 움직인다).
-BOSS_SPD, HITS_MAX, SPD_TRAIT = 3, 2, 0.05
+BOSS_SPD, HITS_MAX, SPD_TRAIT = 3, 10 ** 9, 0.05      # HITS_MAX: 사실상 상한 없음
 tmul_of = lambda k: TRAIT_MULS.get(k, TRAIT_MUL)
 COST_MUL   = 1.13    # 특성 1레벨당 비용 증가율
 COST_K     = 80      # 특성 1레벨 기본 비용
@@ -1587,35 +1591,29 @@ $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
 
 // 치명타율이 상한이면 배분·특성 줄에 알린다 — 더 올려도 치명타 피해로 간다
 // 이 줄에 더 넣을 수 있는 점수 — 치명타는 100% 가 되는 데까지만
-// 속도는 다음 보스(최고 기록 + 1) 기준 늘 2타가 되는 데까지만 받는다. 더 넣은 점수는 버리는 점수였다.
-// 보스 SPD 는 스테이지마다 오르니 상한도 따라 오른다. 이미 넣어 둔 점수는 빼지 않는다 — 더 깊은 보스에선 쓸모가 있다.
+// 속도 (v0.20.9): 상한이 없다 — 보스 SPD 의 배수마다 한 대씩 더 친다. 그래서 배분 상한·환불(v0.20.8)도 없앴다.
 const spdAt = a => Math.round((H.spd + a*G.spd) * (1 + K.spdTrait*save.traits.spd) * (1 + relicSum("spd")/100));
-const spdMax = () => {
-  const g = (save.best || 0) + 1;                // 저주가 붙은 보스면 깎이는 만큼 더 받는다
-  const t = K.hitsMax * boss(g).spd * (mutId(g) === "curse" ? mutPow(g) : 1);
+// SPD 가 t 가 되는 데 필요한 배분 점수 (저주 층이면 t 에 이미 곱해서 넘긴다)
+const spdPts = t => {
   let a = Math.max(0, Math.ceil((t / ((1 + K.spdTrait*save.traits.spd) * (1 + relicSum("spd")/100)) - H.spd) / G.spd));
   while (a > 0 && spdAt(a - 1) >= t) a--;
   while (spdAt(a) < t) a++;
   return a;
 };
-// v0.20.8: 속도도 치명타처럼 넘친 배분을 돌려준다. 신속의 유산을 사거나 유물·SPD 가 올라 '다음 보스 늘 2타' 에
-// 필요한 점수가 줄면, 그 위로 넣어 둔 점수는 아무 일도 안 했다 — 배분에 다시 쓸 수 있게 풀어 준다.
-const fixSpd = () => { const m = spdMax(); if (save.alloc.spd > m) { save.alloc.spd = m; return true; } return false; };
 const roomOf = k => Math.max(0, k === "crit" ? Math.min(left(), critMax() - save.alloc.crit)
-  : k === "spd" ? Math.min(left(), spdMax() - save.alloc.spd) : left());
+  : left());
 // 상한은 스탯 배분에만 있다. 영구 특성(신속의 유산)은 늘 살 수 있으니 특성 줄에는 이 안내를 달지 않는다.
 const capNote = k => k === "crit" && critRaw() >= K.critCap
   ? `<small style="color:var(--gold);white-space:normal">${K.critCap}% — ${
       H.crit + relicSum("crit") >= K.critCap ? "토큰·유물만으로 찼다, 넘친 %p는 치명타 피해로" : "더 넣을 수 없다"}</small>`
   : k === "spd" ? spdNote() : "";
-// 다음 보스 기준 2타 확률과, 늘 2타까지 남은 점수. 2타가 천장이라 그 위로 넣은 점수는 버린다.
+// 다음 보스 기준 지금 몇 타인지와, 한 대 더 치는 데까지 남은 점수
 function spdNote(){
-  const g = (save.best || 0) + 1, b = boss(g), p = Math.round(xtra(b) * 100);
-  const need = Math.max(0, spdMax() - save.alloc.spd);
-  if (!need) return `<small style="color:var(--gold);white-space:normal">${g}스테이지 보스 기준 늘 2타 — ${
-    spdMax() ? "더 넣을 수 없다" : "토큰·특성·유물만으로 찼다"}</small>`;
-  return `<small style="color:var(--dim);white-space:normal">${g}스테이지 보스 SPD ${n(b.spd)} · 2타 확률 ${p}%`
-    + ` (늘 2타까지 ${n(need)}pt)</small>`;
+  const g = (save.best || 0) + 1, b = boss(g), x = 1 + xtra(b), next = Math.floor(x) + 1;
+  const curse = mutId(g) === "curse" ? mutPow(g) : 1;
+  const need = Math.max(0, spdPts(next * b.spd * curse) - save.alloc.spd);
+  return `<small style="color:var(--dim);white-space:normal">${g}스테이지 보스 SPD ${n(b.spd)} · 지금 한 턴에 ${x.toFixed(1)}타`
+    + ` (${next}타까지 ${n(need)}pt)</small>`;
 }
 function drawHero(){
   const lv = lvNow(), e = expNow(), cur = expFor(lv), nxt = expFor(lv + 1), t = tierOf(lv);
@@ -1763,13 +1761,13 @@ $("saveLoad").onclick = () => {
 };
 
 // 추가타 확률 — 보스보다 빠른 만큼 한 번 더 친다. 파이썬 spd_extra() 와 같은 식이어야 한다.
-// 저주는 이 보스 앞에서 내 SPD 를 깎는다 — 2타 확률과 선공이 모두 이 값을 쓴다. 파이썬 turns_to_win() 과 같은 식
+// 저주는 이 보스 앞에서 내 SPD 를 깎는다 — 연타와 선공이 모두 이 값을 쓴다. 파이썬 turns_to_win() 과 같은 식
 const spdVs = b => spdNow() / (b.g && mutId(b.g) === "curse" ? mutPow(b.g) : 1);
 const goesFirst = b => spdVs(b) >= b.spd;          // 내가 먼저 친다
 const xtra = b => Math.min(K.hitsMax - 1, Math.max(0, spdVs(b) / Math.max(1, b.spd) - 1));
 // 한 턴에 치는 횟수. 보스보다 N 배 빠르면 N 번, 소수점은 확률로 한 번 더.
 const hitsOf = b => { const x = 1 + xtra(b); return Math.floor(x) + (Math.random() < x % 1 ? 1 : 0); };
-// 한 턴 피해와 치명타 여부. 지금은 2타가 천장이지만, 타격이 많아도 멎지 않게 그대로 둔다 —
+// 한 턴 피해와 치명타 여부. 연타 상한이 없어(v0.20.9) 타격이 많아도 멎지 않게 —
 // HIT_ROLL 을 넘으면 한 대를 굴려 기댓값에 곱한다. 안 그러면 자동 도전이 화면을 멎게 한다.
 const HIT_ROLL = 50;
 function turnDmg(a, d, hits, critPct){
@@ -2584,7 +2582,7 @@ function drawAch(){
   });
 }
 
-const drawAll = () => { if (fixCrit() | fixSpd()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawTabs(); };
+const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawTabs(); };
 
 // ── 탭 (v0.20.0): 카드 열넷을 한 줄로 늘어놓던 때는 메뉴 막대 창(640px)으로 13화면이었고, 던전이 9화면 아래였다.
 // 자주 쓰는 순서로 넷으로 나눈다 — 전투(던전) · 성장(환생·배분·특성·내성)
@@ -2635,7 +2633,7 @@ const newFighters = b => mutate([{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("
 function mutate(pair, g){
   const [me, foe] = pair, id = mutId(g), k = mutPow(g);
   if (id === "armor") me.div = k;                           // 내가 주는 피해 ÷k
-  // 저주(내 SPD ÷k)는 spdVs() 가 맡는다 — 선공과 2타가 그 값을 쓴다
+  // 저주(내 SPD ÷k)는 spdVs() 가 맡는다 — 선공과 연타가 그 값을 쓴다
   if (id === "fury") { foe.hp *= k; foe.max *= k; }         // 거대화: 보스 HP xk
   if (id === "pierce") me.crit /= k;                        // 실명: 내 치명타 확률 ÷k
   if (id === "numb") me.cdmg = Math.max(100, me.cdmg / k);  // 내 치명타 피해 ÷k
@@ -4306,7 +4304,7 @@ def _check_balance(h, ds, strict=True):
     atk20, atk60 = reach(h, {"atk": 20}), reach(h, {"atk": 60})
     assert atk20 > base_r, f"힘의 유산 20레벨이 도달을 못 늘린다 ({base_r} -> {atk20})"
     slack = 0 if strict else 1
-    # 신속은 뺀다 — 2타 천장(v0.19.2)이라 레벨당으로는 힘과 나란히 설 수 없다. 대신 값이 아주 싸서
+    # 신속은 뺀다 — 덧셈(+5%/lv)이라 레벨당으로는 힘과 나란히 설 수 없다(v0.19.2~v0.20.8 은 2타 천장도 있었다). 대신 값이 아주 싸서
     # (힘이 수천만 혼일 때 신속은 수백) 배분 점수를 아껴 주는 몫을 한다. 아래에서 '넘지 않는다'만 본다.
     for k, ko in (("hp", "혼"), ("dfn", "벽"), ("cdmg", "파괴")):
         near, far = reach(h, {k: 20}), reach(h, {k: 60})
@@ -4330,7 +4328,9 @@ def _check_balance(h, ds, strict=True):
         flat = reach(h)                                             # 추가타가 없던 시절의 깊이
     finally:
         globals()["spd_extra"] = _sx
-    assert base <= flat + 1 + slack, \
+    # v0.20.9: 연타 상한을 없애자 '보통' 의 무환생 벽이 9 -> 11 로 한 칸 더 밀렸다. 층 진입 측정(환생 횟수)에는
+    # 이미 들어간 효과고 보스 HP 1.337 로 진행을 맞췄다 — 한 칸 넓힌다.
+    assert base <= flat + 2 + slack, \
         f"추가타가 벽을 {flat} -> {base} 스테이지로 밀었다 — 환생 없이 너무 깊이 간다"
     # 신속의 유산은 사면 더 깊이 가야 하지만 힘의 유산을 넘어서는 안 된다 (파괴의 유산과 같은 기준).
     # 타격 수에 상한이 없으니 TRAIT_MULS["spd"] 를 올리면 넘길 수 있다 — 그래서 여기서 붙든다.
@@ -4372,8 +4372,8 @@ def _demo_rest(rec):
     #      (a) 식의 경계 (b) 평균 피해 모델이 실제로 본다 (c) 그래도 층 벽을 밀지 않는다.
     assert spd_extra(50, 100) == 0 and spd_extra(100, 100) == 0, "느린데 추가타가 붙는다"
     assert spd_extra(150, 100) == 0.5 and spd_extra(200, 100) == 1, "1~2배 구간이 2타 확률이 아니다"
-    # 천장은 2타다 (v0.19.2). 천장이 없으면 보스 SPD 가 덧셈으로 크는 지금 속도만 정답이 된다
-    assert spd_extra(10 ** 6, 1) == HITS_MAX - 1, "추가 타격 수가 천장을 넘는다"
+    # 상한 없음 (v0.20.9): 배수마다 한 대씩 — 3배 3타, 4.5배 4타 + 50%
+    assert spd_extra(300, 100) == 2 and spd_extra(450, 100) == 3.5, "배수마다 한 대씩 늘지 않는다"
     # 보스 SPD 는 덧셈으로 오른다 — 배분(1점에 GAIN['spd'])으로 따라잡을 수 있어야 한다
     assert boss(100)["spd"] == 100 * BOSS_SPD and boss(200)["spd"] == 2 * boss(100)["spd"], "보스 SPD 가 덧셈으로 안 오른다"
     # v0.19.8: 벽은 보스 ATK(x1.24) 와 힘(x1.135) 사이에 둔다 — 보스 ATK 보다 느리면 벽이 죽고, 1.28 이면 힘의 두 배를 민다

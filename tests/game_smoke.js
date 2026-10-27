@@ -84,7 +84,7 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 // 스크립트 안쪽 이름을 밖으로 꺼낸다. 게임에서 이름을 바꾸면 여기서 ReferenceError 가 난다 — 같이 고친다.
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
-  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, spdMax, spdVs, spdNow, goesFirst, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
+  n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, spdVs, spdNow, goesFirst, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, relicVal, wantPicks, relicLeft, goldLeft, missions, transOf, maxCleared };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
@@ -624,39 +624,23 @@ async function mutations() {
   ok(t.save.alloc.crit === cm && critBtn("1").disabled && critBtn("max").disabled && !g.btn("alloc", {k: "atk", d: "1"}).disabled,
      `+10 이 100% 를 넘겨 넣었거나 다른 줄까지 막혔다: ${t.save.alloc.crit}/${cm}`);
   ok(/더 넣을 수 없다/.test(g.$("alloc").html), "치명타 100% 안내가 없다");
-  // 속도: 보스 SPD 는 스테이지당 K.bspd 씩, 한 턴 최대 2타 (v0.19.2)
+  // 속도: 보스 SPD 는 스테이지당 K.bspd 씩. 상한 없이 배수마다 한 대씩 더 친다 (v0.20.9)
   ok(t.boss(100).spd === 100 * t.K.bspd && t.boss(200).spd === 2 * t.boss(100).spd, "보스 SPD 가 덧셈으로 안 오른다");
   t.save.alloc.spd = 0; t.save.traits.spd = 0; t.drawAll();
-  { const b = t.boss(10), want = Math.ceil((2 * b.spd - t.H.spd) / 3);
-    t.save.alloc = {atk: 0, hp: 0, dfn: 0, crit: 0, cdmg: 0, spd: want + 50}; t.drawAll();
-    ok(t.xtra(b) === 1 && t.hitsOf(b) === 2, `보스보다 훨씬 빨라도 2타가 아니다: ${t.xtra(b)} ${t.hitsOf(b)}`);
+  { const b = t.boss(10), pts = m => Math.ceil((m * b.spd - t.H.spd) / 3);
+    t.save.alloc = {atk: 0, hp: 0, dfn: 0, crit: 0, cdmg: 0, spd: pts(3)}; t.drawAll();
+    ok(t.xtra(b) >= 2 && t.xtra(b) < 2.1 && t.hitsOf(b) >= 3, `보스의 3배인데 3타가 아니다: ${t.xtra(b)} ${t.hitsOf(b)}`);
+    t.save.alloc.spd = pts(5); t.drawAll();
+    ok(t.xtra(b) >= 4 && t.hitsOf(b) >= 5, `보스의 5배인데 5타가 아니다: ${t.xtra(b)}`);
     t.save.alloc.spd = 0; t.drawAll();
-    ok(/2타 확률/.test(g.$("alloc").html), "속도 줄에 2타 확률 안내가 없다"); }
-  // 속도 배분은 다음 보스 기준 늘 2타가 되는 데까지만 (치명타 100% 와 같은 방식)
+    ok(/지금 한 턴에 [\d.]+타 \(\d+타까지 [\d,]+pt\)/.test(g.$("alloc").html), "속도 줄에 지금 타수·다음 타까지 점수 안내가 없다"); }
+  // 상한이 없으니 속도는 남은 점수를 다 넣을 수 있고, 넣어 둔 점수를 빼지도 않는다
   { t.save.alloc = {atk: 0, hp: 0, dfn: 0, crit: 0, cdmg: 0, spd: 0}; t.save.traits.pt = 100; t.drawAll();
-    const sm = t.spdMax(), b = t.boss((t.save.best || 0) + 1), spdBtn = d => g.btn("alloc", {k: "spd", d});
-    await g.click(spdBtn("max"));
-    ok(sm > 0 && t.save.alloc.spd === sm && t.xtra(b) === 1, `속도 최대가 늘 2타에 안 맞는다: ${t.save.alloc.spd}/${sm} → ${t.xtra(b)}`);
-    t.save.alloc.spd = sm - 1; t.drawAll();
-    ok(t.xtra(b) < 1 && !spdBtn("1").disabled, "늘 2타 한 점 앞에서 더 못 넣는다");
-    await g.click(spdBtn("10"));
-    ok(t.save.alloc.spd === sm && spdBtn("1").disabled && spdBtn("max").disabled && !g.btn("alloc", {k: "atk", d: "1"}).disabled,
-       `+10 이 늘 2타를 넘겨 넣었거나 다른 줄까지 막혔다: ${t.save.alloc.spd}/${sm}`);
-    ok(/늘 2타 — 더 넣을 수 없다/.test(g.$("alloc").html), "속도 늘 2타 안내가 없다");
-    // 늘 2타를 넘겨 넣어 둔 점수는 돌려준다 — 치명타 100% 와 같다 (v0.20.8)
-    t.save.alloc.spd = sm + 30; t.drawAll();
-    ok(t.save.alloc.spd === sm, `넘친 속도 배분을 돌려주지 않는다: ${t.save.alloc.spd}/${sm}`);
-    // 상한은 배분에만 — 늘 2타여도 신속의 유산은 산다
-    t.save.alloc.spd = sm; t.save.souls = 1e12; t.drawAll();
-    const lv = t.save.traits.spd, tb = g.$("traits").querySelectorAll("button").find(x => x.dataset.t === "spd" && x.dataset.c === "1");
-    ok(!/더 넣을 수 없다|늘 2타/.test(g.$("traits").html), "특성 줄에 속도 상한 안내가 붙었다");
-    ok(tb && !tb.disabled, "늘 2타라고 신속의 유산 구입이 막혔다");
-    await g.click(tb);
-    ok(t.save.traits.spd === lv + 1, `신속의 유산을 못 샀다: ${lv} → ${t.save.traits.spd}`);
-    // 신속의 유산을 사서 늘 2타에 드는 점수가 줄면 그만큼 배분으로 돌아온다
-    for (let i = 0; i < 40; i++) t.save.traits.spd++;
+    await g.click(g.btn("alloc", {k: "spd", d: "max"}));
+    ok(t.left() === 0 && t.save.alloc.spd === t.points(), `속도 '최대' 가 남은 점수를 다 안 넣는다: ${t.save.alloc.spd}/${t.points()}`);
+    t.save.souls = 1e12; for (let i = 0; i < 40; i++) t.save.traits.spd++;
     t.drawAll();
-    ok(t.spdMax() < sm && t.save.alloc.spd === t.spdMax(), `특성으로 줄어든 만큼 속도 배분을 돌려주지 않는다: ${t.save.alloc.spd}/${t.spdMax()}`); }
+    ok(t.save.alloc.spd === t.points(), "신속의 유산을 샀더니 속도 점수를 빼 버렸다"); }
   // 유물로 치명타가 오르면 남는 점수는 돌려준다
   t.save.alloc.crit = cm + 40; t.drawAll();
   ok(t.save.alloc.crit === cm, `넘친 치명타 배분을 돌려주지 않는다: ${t.save.alloc.crit}/${cm}`);

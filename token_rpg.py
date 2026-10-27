@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.10"
+__version__ = "0.20.11"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -194,17 +194,17 @@ EARLY_MUL = 0.12                         # 1스테이지 배율 (EARLY_G 에서 
 # v0.20.4: 유물이 떨어진 층만큼 세지며(RELIC_DEPTH) 후반 벽이 3칸 -> 7칸 밀렸다. 진행 속도를 지키려고 보스를
 # 조금 세게 했다(ATK 1.24 -> 1.245, HP 1.325 -> 1.331). 같이 벽의 유산이 앞서 나가 1.25 -> 1.245 로 맞췄다.
 # 층 진입은 지금과 -6~0%, 특성 +20 방어/공격 비율 중앙 1.0. TypeSafe 판정으로 골랐다(`.studio/relic_comp.py`·`relic_trait.py`·`relic_final_ts.py`).
-# v0.20.9: 연타 상한 제거 후 진행 속도를 보정했다. v0.20.10: 220~230레벨에서 350pt를
-# 방어·체력에 나눴을 때 다음 보스의 한 대를 버티도록 혼 배율과 보스 HP 성장을 조정했다.
-# 진행 속도 영향은 TypeSafe 판정과 selftest로 확인한다.
-B_ATK_STEP, B_HP_STEP = 1.245, 1.355
+# v0.20.9 에서 조정한 보스 HP 성장 배율을 유지한다. v0.20.11: 생존을 위해 보스 HP 를 키우지 않고
+# HP·DEF 배분 효율만 6배로 올렸다. 230레벨 특성, 350pt(HP 175·DEF 175), 224스테이지에서
+# 고정 영웅 여섯 모두 한 대를 버틴다. selftest 가 이 조건을 확인한다.
+B_ATK_STEP, B_HP_STEP = 1.245, 1.337
 # 유물 깊이 배율: 유물 수치 x (1 + RELIC_DEPTH x (떨어진 층 - 1)). 혼 유물은 빼고(혼 배수는 따로 곱해져 이미 값이 유지된다).
 # 고정 % 이던 때는 유물이 처음부터 끝까지 3~4스테이지를 밀었다 — 초반엔 진행의 15%, 13층에서는 1.6%였다.
 RELIC_DEPTH = 0.25
 PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
 # 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD(스테이지당 +BOSS_SPD)와 같은 걸음이다 —
 # 1점이 보스 한 스테이지분이다.
-GAIN = {"atk": 1, "hp": 12, "dfn": 0.6, "crit": 0.4, "cdmg": 1, "spd": 3}
+GAIN = {"atk": 1, "hp": 72, "dfn": 3.6, "crit": 0.4, "cdmg": 1, "spd": 3}
 # 보스보다 1~2배 빠르면 그 비율만큼 확률로 2타, 2배부터 늘 2타 (BOSS_SPD 아래 주석).
 # v0.19.1 까지는 천장이 없고 보스 SPD 가 STEP 배로 올라, 깊은 층에서 아무도 SPD 에 배분하지 않았다.
 CRIT_CAP  = 100      # 치명타율 상한(%). 넘친 %p 는 치명타 피해 %p 로 옮겨 간다 — 올려도 헛되지 않게
@@ -229,7 +229,7 @@ TRAIT_MUL  = 1.135   # 특성 1레벨당 스탯 배율 (기본값). v0.19.8 에�
 # v0.19.8: 보스 ATK 가 x1.24 로 늦춰지며 벽(x1.28)이 힘의 두 배 칸을 밀었다. 사용자 조건은 '특성이 한쪽으로
 # 지나치게 기울면 안 된다'. 벽 1.25 · 힘/파괴 1.135 에서 +20레벨 효과가 공격·방어 같아진다(비율 중앙 1.0).
 # 후보는 코드로 계산하고 TypeSafe 판정으로 골랐다(`.studio/trait_tune.py`, `trait_ts.py`).
-TRAIT_MULS = {"dfn": 1.245, "hp": 1.18}     # v0.20.10: 230레벨 생존을 위해 혼 1.16 -> 1.18
+TRAIT_MULS = {"dfn": 1.245, "hp": 1.18}     # v0.20.10: 혼의 유산 1.16 -> 1.18
 # 속도 (v0.19.2): 보스 SPD 는 스테이지마다 BOSS_SPD 씩만 오른다(다른 능력치는 STEP 배). 그래서 배분으로 따라잡을 수 있다.
 # 보스 SPD 의 배수마다 한 대씩 더 친다(배수 사이는 확률) — 2.5배면 2타 + 50% 로 3타 (v0.20.9).
 # v0.19.2~v0.20.8 은 2타가 천장이었다. 상한을 없애도 속도가 정답이 되지 않는다: 속도에 점수를 옮기면 공격이 줄고,
@@ -3883,8 +3883,8 @@ def _demo():
     _check_themes()
     _check_muts()
     _check_js()
-    assert B_HP_STEP >= 1.355 and tmul_of("hp") >= 1.18, \
-        "220~230레벨 한 대 생존에 필요한 보스 HP·혼 배율 기준보다 낮다"
+    assert B_HP_STEP == 1.337 and GAIN["hp"] == 72 and GAIN["dfn"] == 3.6, \
+        "보스 HP 성장이나 HP·DEF 배분 효율이 생존 조정 기준에서 벗어났다"
     assert level_of(0) == 1 and level_of(exp_for(2)) == 2 and level_of(exp_for(2) - 1) == 1
     assert len({exp_for(lv + 1) - exp_for(lv) for lv in range(1, MAX_LV)}) == 1, "레벨 구간이 같지 않다"
     assert exp_for(MAX_LV) == TRANS_EXP and 55_000_000 <= TRANS_EXP <= 65_000_000, \
@@ -4101,6 +4101,13 @@ def _demo():
         except AssertionError as e:
             raise AssertionError(f"[{name} · Lv.{h['level']} ATK {h['atk']} HP {h['hp']} DEF {h['dfn']} "
                                  f"CRIT {h['crit']} SPD {h['spd']}] {e}") from None
+
+    # 230레벨 혼·벽 특성과 HP/DEF 각 175pt(총 350pt)로 224스테이지 보스의 한 대를 버틴다.
+    test_alloc, test_traits, test_boss = {"hp": 175, "dfn": 175}, {"hp": 230, "dfn": 230}, boss(224)
+    for name, agg, _ in BALANCE_HEROES:
+        s = final_stats(hero(agg), test_alloc, test_traits)
+        margin = s["hp"] / mitigate(test_boss["atk"], s["dfn"])
+        assert margin >= 1, f"{name}: 230레벨 특성·350pt로 224스테이지 한 대 생존 실패 ({margin:.3f}배)"
 
     # 3) 원정(방치)은 보조 수입이어야 한다 — 최대 배율 8시간으로도 환생을 대체 못 함
     soul_of = lambda g: round(soul_base(g) * ds[(g - 1) % n]["soul"])      # 환생 정산
@@ -4332,7 +4339,7 @@ def _check_balance(h, ds, strict=True):
     finally:
         globals()["spd_extra"] = _sx
     # v0.20.9: 연타 상한을 없애자 '보통' 의 무환생 벽이 9 -> 11 로 한 칸 더 밀렸다. 층 진입 측정(환생 횟수)에는
-    # 이미 들어간 효과고 보스 HP 1.355 로 진행을 맞췄다 — 한 칸 넓힌다.
+    # 이미 들어간 효과고 보스 HP 1.337 로 진행을 맞췄다 — 한 칸 넓힌다.
     assert base <= flat + 2 + slack, \
         f"추가타가 벽을 {flat} -> {base} 스테이지로 밀었다 — 환생 없이 너무 깊이 간다"
     # 신속의 유산은 사면 더 깊이 가야 하지만 힘의 유산을 넘어서는 안 된다 (파괴의 유산과 같은 기준).

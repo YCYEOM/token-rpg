@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.13"
+__version__ = "0.20.14"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -201,7 +201,7 @@ B_ATK_STEP, B_HP_STEP = 1.245, 1.337
 # 유물 깊이 배율: 유물 수치 x (1 + RELIC_DEPTH x (떨어진 층 - 1)). 혼 유물은 빼고(혼 배수는 따로 곱해져 이미 값이 유지된다).
 # 고정 % 이던 때는 유물이 처음부터 끝까지 3~4스테이지를 밀었다 — 초반엔 진행의 15%, 13층에서는 1.6%였다.
 RELIC_DEPTH = 0.25
-PT_PER_LEVEL = 2                         # 레벨업당 자유 배분 포인트
+PT_PER_LEVEL = 4                         # 레벨업당 자유 배분 포인트. v0.20.14: 2 -> 4 (사용자 요청 — 보스는 그대로 두고 포인트만)
 # 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD(스테이지당 +BOSS_SPD)와 같은 걸음이다 —
 # 1점이 보스 한 스테이지분이다.
 GAIN = {"atk": 1, "hp": 72, "dfn": 3.6, "crit": 0.4, "cdmg": 1, "spd": 3}
@@ -3541,10 +3541,10 @@ def _check_trans():
     배지가 어긋나므로 여기서 표를 박아 둔다."""
     T = TRANS_EXP
     table = [                     # (누적토큰, 초월, 기대 레벨, 기대 배분pt)
-        (0, 0, 1, 2), (T - 1, 0, MAX_LV - 1, 196), (T, 0, MAX_LV, 198),
-        (T, 1, 1, 200), (2 * T, 1, MAX_LV, 396), (2 * T, 2, 1, 398),
-        (T, 5, 1, 200), (0, 3, 1, 2),             # 쓴 토큰보다 많이 초월할 수는 없다
-        (3 * T + 123_456, 2, MAX_LV, 594),
+        (0, 0, 1, 4), (T - 1, 0, MAX_LV - 1, 392), (T, 0, MAX_LV, 396),
+        (T, 1, 1, 400), (2 * T, 1, MAX_LV, 792), (2 * T, 2, 1, 796),
+        (T, 5, 1, 400), (0, 3, 1, 4),             # 쓴 토큰보다 많이 초월할 수는 없다
+        (3 * T + 123_456, 2, MAX_LV, 1188),
     ]
     for total, tr, lv, pt in table:
         h = hero({"input": total, "output": 0, "cache_read": 0, "thinking": 0, "calls": 0}, tr)
@@ -4295,7 +4295,8 @@ def _check_balance(h, ds, strict=True):
             assert need <= 16, f"{fl}층에 환생 {need}회가 든다 — 후반이 다시 느려졌다 (SOUL_LATE_MUL 이 낮다)"
             # 하한 3: v0.19.6 에서 승패가 선공을 세며 깊은 층이 빨라졌다(출력만 9층 3회). 보스를 키워 되돌리지
             # 않기로 했다 — 수동으로는 이미 그만큼 갔고, 자동이 거기에 맞춘 것이다.
-            assert need >= 3, f"{fl}층이 환생 {need}회에 열린다 — 후반이 폭주한다 (SOUL_LATE_MUL 이 높다)"
+            # 하한 2: v0.20.14 에서 레벨당 배분을 2 -> 4 로 올리며 '이 PC' 5층이 2회가 됐다. 보스는 그대로 둔다(사용자 결정).
+            assert need >= 2, f"{fl}층이 환생 {need}회에 열린다 — 후반이 폭주한다 (SOUL_LATE_MUL 이 높다)"
 
         _check_full_pace(h, n)
 

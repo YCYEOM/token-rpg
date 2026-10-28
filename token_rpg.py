@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.12"
+__version__ = "0.20.13"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1769,7 +1769,10 @@ const xtra = b => Math.min(K.hitsMax - 1, Math.max(0, spdVs(b) / Math.max(1, b.s
 // 한 턴에 치는 횟수. 보스보다 N 배 빠르면 N 번, 소수점은 확률로 한 번 더.
 const hitsOf = b => { const x = 1 + xtra(b); return Math.floor(x) + (Math.random() < x % 1 ? 1 : 0); };
 // 한 턴 피해와 치명타 여부. 연타 상한이 없어(v0.20.9) 타격이 많아도 멎지 않게 —
-// HIT_ROLL 을 넘으면 한 대를 굴려 기댓값에 곱한다. 안 그러면 자동 도전이 화면을 멎게 한다.
+// HIT_ROLL 을 넘으면 일반타 한 대와 치명타 한 대를 굴려 확률로 섞고 타수를 곱한다. 안 그러면 자동 도전이 화면을 멎게 한다.
+// v0.20.13: 예전엔 일반타 피해에 (1 + 확률 x (치명 배율 - 1)) 을 곱했다. DEF 는 공격의 제곱으로 깎으니(dmgOf)
+// 치명타는 피해를 배율보다 크게 늘린다 — 공격이 보스 DEF 보다 낮으면 배율의 제곱 가까이. 그래서 50타를 넘는 순간
+// 한 대 피해가 40~70% 로 떨어졌고, 속도를 올려 50타를 넘기면 오히려 약해졌다.
 const HIT_ROLL = 50;
 function turnDmg(a, d, hits, critPct){
   if (hits <= HIT_ROLL) {
@@ -1780,8 +1783,9 @@ function turnDmg(a, d, hits, critPct){
     }
     return [sum, crit];
   }
-  const one = dmgOf(a, d, false) * (1 + critPct/100 * (a.cdmg/100 - 1));
-  return [Math.round(hits * one), critPct > 0];
+  const q = Math.min(1, Math.max(0, critPct / 100));
+  const one = (1 - q) * dmgOf(a, d, false) + q * dmgOf(a, d, true);
+  return [Math.round(hits * one), q > 0];
 }
 
 // 이길 수 있는가 — 벽 표시와 자동 도전이 같은 기준을 쓴다. 실제 전투처럼 턴을 정수로 세고 선공을 따진다:

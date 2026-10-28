@@ -424,6 +424,14 @@ async function deepSave() {
   const {t} = g;
   const [dmg] = t.turnDmg({atk: t.F("atk"), cdmg: t.F("cdmg")}, {dfn: 5}, 5000, t.F("crit"));
   ok(Number.isFinite(dmg) && dmg > 0, "타격이 많을 때 피해가 숫자가 아니다: " + dmg);
+  // 50타를 넘어도 한 대 피해의 평균이 같아야 한다 (v0.20.13). DEF 가 공격보다 클수록 치명타가 제곱으로 커진다 —
+  // 예전 식은 그걸 배율로만 쳐서 51타부터 한 대가 절반 아래로 떨어졌다.
+  for (const [atk, dfn, cr] of [[1000, 100, 100], [1000, 10000, 100], [1000, 10000, 40], [1000, 100000, 0]]) {
+    const a = {atk, cdmg: 260}, d = {dfn};
+    let lo = 0, hi = 0;
+    for (let i = 0; i < 4000; i++) { lo += t.turnDmg(a, d, 50, cr)[0] / 50; hi += t.turnDmg(a, d, 51, cr)[0] / 51; }
+    ok(Math.abs(hi / lo - 1) < 0.03, `51타의 한 대 피해가 50타와 다르다 (ATK ${atk} DEF ${dfn} 치명 ${cr}%): ${(hi / lo).toFixed(3)}`);
+  }
   // 도감이 없던 저장: 이미 깬 스테이지(최고 120)의 보스 75종은 본 것으로 찍는다
   ok(Object.keys(t.save.dex).length === 75 && /^75\/75 · 황금 0\/75$/.test(g.$("dexCount").text),
      "옛 저장의 도감을 채우지 않았다: " + g.$("dexCount").text);

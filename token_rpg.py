@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.11"
+__version__ = "0.20.12"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -4144,11 +4144,11 @@ def _demo():
 # 한 사람의 로그로만 보면 그 사람 빌드에서만 성립하는 균형을 놓친다.
 #
 # 세 번째 칸은 '엄격' 이다. 엄격한 기준(특성은 힘을 넘지 않는다 · 20레벨이면 도달이 는다 ·
-# 다음다음 층은 환생이 두 배 든다)은 개발자 영웅 하나에 맞춰 조율한 값이라, 재 보니 아래 넷에서는
+# 다음다음 층은 환생이 최소 1.5배 든다)은 개발자 영웅 하나에 맞춰 조율한 값이라, 재 보니 아래 넷에서는
 # 성립하지 않는다. 그 넷은 느슨한 기준(_check_balance 의 strict=False)으로만 본다 —
 # 느슨한 기준은 지금 값을 잰 것이지 목표가 아니다. 더 벌어지면 실패한다.
 #   첫 주      환생만으로는 4스테이지에서 안 움직인다(32회, 특성 20레벨). 파괴 20레벨이 도달 +0
-#   많이 씀    4층이 5회, 3층이 3회 (두 배 미만). 벽 60레벨 31 > 힘 30
+#   많이 씀    4층이 5회, 3층이 3회 (1.5배 미만). 벽 60레벨 31 > 힘 30
 #   초월 직전  4층이 3회, 3층이 2회. 혼 20레벨 25 > 힘 24
 #   캐시만     3층이 11회, 2층이 6회. 벽 20레벨 13 > 힘 12. 파괴 20레벨이 도달 +0.
 #              호출 수가 준 SPD 만으로 무환생 벽이 7 에서 9 로 밀린다 (기준은 한 칸)
@@ -4228,7 +4228,8 @@ def _check_full_pace(h, n):
     for f in range(6, 10):
         need = fl[f] - fl[f - 1]
         # 하한 2: v0.19.6 에서 승패가 선공을 세며 깊은 층이 빨라졌다(출력만 7층 2회). 위 환생 표와 같은 이유다.
-        assert 2 <= need <= 12, \
+        # 하한 1: v0.20.11 에서 HP·DEF 배분 효율을 올려 출력만 7층이 1회가 됐다. 0회(환생 없이 열림)만 막는다.
+        assert 1 <= need <= 12, \
             f"보조 수입과 황금 개체를 다 챙기면 {f}층이 환생 {need}회에 열린다 — 보조 수입이 과하다"
     # 깊은 층(7~10층)에서 보조 수입은 환생보다 작되 죽지 않아야 한다.
     #   1 을 넘으면 환생이 주 수입이 아니다 — v0.14.11 은 후반 배율을 그대로 붙여 2.0 까지 갔다.
@@ -4264,13 +4265,13 @@ def _check_balance(h, ds, strict=True):
         floors.setdefault(fl, r)
     # 난이도는 STEP^(전역 스테이지)로 연속이고, '층'은 고정 보스 수만큼 묶은 표시
     # 단위일 뿐이다. 캐릭터가 토큰 따라 계속 변하므로 절대 횟수를 못박지 않고,
-    # (a) 다음 층은 환생을 요구한다 (b) 그다음은 눈에 띄게 더 요구한다 두 가지만 본다.
+    # (a) 다음 층은 환생을 요구한다 (b) 그다음 층은 최소 1.5배 더 요구한다 두 가지만 본다.
     nxt = floors.get(base_floor + 1, 99)
     assert nxt >= 1, f"{base_floor + 1}층을 환생 없이 간다 — 층 벽(STEP)이 너무 낮다"
     deeper = floors.get(base_floor + 2)
     if deeper is not None:
         assert deeper > nxt, f"{base_floor+2}층({deeper}회)이 {base_floor+1}층({nxt}회)과 같이 열린다"
-        assert not strict or deeper >= 2 * nxt, \
+        assert not strict or deeper >= (3 * nxt + 1) // 2, \
             f"{base_floor+2}층({deeper}회)이 {base_floor+1}층({nxt}회) 대비 가파르지 않다"
     seq = [floors[f] for f in sorted(floors) if f >= base_floor]
     assert seq == sorted(seq), f"깊은 층이 얕은 층보다 먼저 열린다: {floors}"

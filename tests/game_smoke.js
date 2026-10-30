@@ -86,7 +86,7 @@ const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
   n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, spdVs, spdNow, goesFirst, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
   encodeSave, decodeSave, validSave, left, points, picks, relicVal, wantPicks, relicLeft, goldLeft, missions, transOf, maxCleared,
-  CARDS, cardOk, cardOffer, hasCard, rbCharges };`;
+  CARDS, cardOk, cardOffer, hasCard, rbCharges, PETS, petPicks, rollEgg, hatchPets, petEff, petThemesDone, picks };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
 const NOON = new Date(Y, M - 1, DAY, 12).getTime();     // 현지 정오 — 어느 시간대에서도 같은 날짜가 나온다
@@ -772,6 +772,50 @@ async function rebirthCards() {
   for (let i = 0; i < 30; i++) ok(!t.cardOffer().includes("gold"), "다 잡았는데 황금 카드를 냈다");
 }
 
+// ── 펫 (v0.22.0): 황금을 이기면 알, 시간이 지나면 부화, 한 마리를 데리고 다닌다. 자동 도전의 '펫 알 사냥' 버튼
+async function pets() {
+  const g = await boot("펫", {rev: 3, seed: 9, save: {
+    alloc: {atk: 20, hp: 10, dfn: 10, crit: 5, cdmg: 5, spd: 5}, souls: 5, rebirths: 30, auto: false,
+    cleared: Array.from({length: 76}, (_, i) => i + 1), best: 76,
+    traits: {atk: 80, hp: 80, dfn: 70, crit: 0, cdmg: 60, spd: 0, soul: 20, pt: 10},
+    exped: {since: NOON, seenExp: 1}, relics: {}, rbExp: 1, shards: 200, res: {armor: 10}}});
+  const {t} = g;
+  ok(/0\/15/.test(g.$("petHead").text) && !g.$("petLine").html, "펫이 없는데 펫 칸이 비어 있지 않다");
+  // 부화: 4시간이 지나면 그 테마의 펫이 나오고 바로 데리고 다닌다. 다음 알이 이어서 부화한다
+  t.save.hatch = {t: 2, since: NOON - 5 * 3600 * 1000}; t.save.eggs = [3]; t.drawAll();
+  const got = Object.keys(t.save.pets || {});
+  ok(got.length === 1 && t.PETS.find(p => p[0] === got[0])[1] === 2 && t.save.pet === got[0], "AI 알이 AI 펫으로 부화하지 않았다: " + got);
+  ok(t.save.hatch && t.save.hatch.t === 3 && t.save.hatch.since === NOON - 3600 * 1000 && !t.save.eggs.length, "다음 알이 이어서 부화하지 않는다");
+  ok(/동행 펫/.test(g.$("petLine").html) && /부화 중/.test(g.$("petEggs").html), "부화한 펫이 화면에 안 보인다");
+  g.clean("부화");
+  // 효과: 5레벨이면 두 배
+  const base = k => { t.save.pet = ""; return t.F(k); };
+  const atk = base("atk"), sl = t.soulOf(40);
+  t.save.pets = {ai_l: {lv: 5, dup: 0}, co_l: {lv: 5, dup: 0}, bug_c: {lv: 1, dup: 0}};
+  t.save.pet = "ai_l"; ok(same(t.F("atk"), atk * 1.24), "추론 정령 5레벨이 ATK +24% 가 아니다");
+  t.save.pet = "co_l"; ok(t.newFighters(t.boss(5))[0].shield === 2, "야근 사자 5레벨이 2대를 못 막는다");
+  t.save.pet = "bug_c"; ok(Math.abs(t.soulOf(40) / sl - 1.03) < 0.005, "디버그 애벌레가 혼 +3% 가 아니다");
+  t.save.pets = {bug_c: {lv: 1}, bug_r: {lv: 1}, bug_l: {lv: 1}}; t.save.pet = "";
+  ok(t.petThemesDone() === 1 && Math.abs(t.soulOf(40) / sl - 1.01) < 0.005, "테마 완성 보너스가 혼 +1% 가 아니다");
+  // 알: 황금을 이기면 가끔 나온다. 부화 중이면 줄을 서고, 줄이 차면 혼으로 바꾼다
+  t.save.hatch = {t: 0, since: NOON}; t.save.eggs = [];
+  let tries = 0; while (!t.rollEgg(77) && tries < 500) tries++;
+  ok(tries < 500 && t.save.eggs.length === 1 && t.save.eggs[0] === 0, "알이 안 나오거나 6층(코드 버그 테마) 알이 아니다");
+  t.save.eggs = [0, 0, 0]; const before = t.save.souls;
+  while (!t.rollEgg(77)) {}
+  ok(t.save.eggs.length === 3 && t.save.souls > before, "알이 넘쳤는데 혼으로 안 바꿨다");
+  // 펫 알 사냥: 모을 펫이 남은 테마마다 이길 수 있는 가장 깊은 스테이지 하나
+  t.save.pets = {}; t.drawAll();
+  const want = t.petPicks();
+  ok(want.length === 5 && new Set(want.map(x => t.slotOf(x).ti)).size === 5 && want.every(x => x <= 76 && t.beatable(t.boss(x))),
+     "펫 알 사냥이 테마마다 하나씩 고르지 않는다: " + want);
+  await g.click(g.$("pickPet"));
+  ok(JSON.stringify(t.picks()) === JSON.stringify(want), "펫 알 사냥 버튼이 반복 목록을 안 채운다");
+  t.save.pets = Object.fromEntries(t.PETS.map(p => [p[0], {lv: 5, dup: 0}])); t.drawAll();
+  ok(!t.petPicks().length && g.$("pickPet").disabled && /펫 다 모음/.test(g.$("auto").html), "다 모았는데 펫 알 사냥이 켜져 있다");
+  g.clean("펫 다 모음");
+}
+
 async function transcend() {
   const g = await boot("초월", {page: "maxed", seed: 4}), {t} = g;
   for (const want of fx.expect.trans) {
@@ -807,5 +851,5 @@ async function fileMode() {
 
 (async () => {
   process.on("unhandledRejection", e => { throw e; });
-  for (const run of [playthrough, oldSave, deepSave, mutations, rebirthCards, achievements, transcend, zeroHero, fileMode]) await run();
+  for (const run of [playthrough, oldSave, deepSave, mutations, rebirthCards, pets, achievements, transcend, zeroHero, fileMode]) await run();
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });

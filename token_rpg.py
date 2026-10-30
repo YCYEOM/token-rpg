@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1164,6 +1164,11 @@ padding:0 9px;font-size:11px;margin-right:5px}
 .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:6px}
 .card-pick{display:flex;flex-direction:column;gap:3px;text-align:left;padding:8px;white-space:normal;height:auto}
 .card-pick small{color:var(--dim);font-size:11px;line-height:1.35}
+.petrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.petc{display:flex;flex-direction:column;gap:2px;text-align:left;padding:7px;white-space:normal;height:auto;font-size:12px;border:1px solid var(--line);border-radius:8px}
+.petc small{font-size:10.5px;line-height:1.3;color:var(--dim)}
+.petc.on{border-color:var(--gold)}
+.petc.none{opacity:.45}
 #alloc{grid-template-columns:minmax(0,1fr) auto auto auto auto auto auto}#traits{grid-template-columns:minmax(0,1fr) auto auto auto auto}
 .alloc small{display:block;color:var(--dim);font-size:11px;white-space:normal;overflow-wrap:anywhere}
 .alloc>b{min-width:34px;text-align:right}.alloc button{white-space:nowrap;padding:2px 7px}
@@ -1247,6 +1252,7 @@ margin-top:10px;padding-top:8px}
     <div id="relicIn" style="margin-top:6px;font-size:11px"></div>
     <div id="rbBonus" style="margin-top:6px;font-size:12px"></div>
     <div id="cardBox" style="margin-top:6px;font-size:12px"></div>
+    <div id="petLine" style="margin-top:4px;font-size:12px"></div>
   </div>
 </div>
 
@@ -1304,6 +1310,8 @@ margin-top:10px;padding-top:8px}
 <div class="pane" data-pane="collect">
 <details class="card" data-k="relics" open><summary><h2>유물 도감 <span class="gold" id="relicCount"></span></h2></summary>
   <div id="relicNews"></div><div id="relicOdds"></div><div id="relics"></div></details>
+<details class="card" data-k="pet" id="petCard" open><summary><h2>펫 <span class="gold" id="petHead"></span></h2></summary>
+  <div id="petNews"></div><div id="petEggs"></div><div id="pets"></div></details>
 <details class="card" data-k="dex" open><summary><h2>보스 도감 <span class="gold" id="dexCount"></span></h2></summary>
   <div id="dexNews"></div><div id="dex"></div></details>
 <details class="card" data-k="ach" open><summary><h2>업적 <span class="gold" id="achHead"></span></h2></summary>
@@ -1354,7 +1362,7 @@ const achSoul = () => K.achSoul * ACH.filter(a => achOf(save)[a[0]]).length;
 const stOf = () => (save.st && typeof save.st === "object") ? save.st : (save.st = {});
 const tally = (k, d = 1) => { const t = stOf(); t[k] = (t[k] | 0) + d; };
 const dexPts = s => THEMES.filter((_, ti) => dexRare(s, ti) === N).length * K.dexPt;
-const rollRare = () => Math.random() < K.rareRate * (hasCard("gold") ? 2 : 1);
+const rollRare = () => Math.random() < K.rareRate * (hasCard("gold") ? 2 : 1) * (1 + petEff("gold"));
 const rareOf = slot => ({...slot, name: "황금 " + slot.name, emoji: slot.emoji + "✨"});
 // 특성 배율은 스탯마다 다르다 (파이썬 tmul_of). TRAITS 가 로드 시점에 부르므로 여기 있어야 한다 —
 // 아래에 두면 TDZ 로 스크립트 전체가 죽는다. node --check 는 문법만 보므로 이걸 못 잡는다.
@@ -1504,15 +1512,44 @@ const CARDS = {
   shard:   ["🧩", "조각",     "변이 조각 드롭 2배"],
 };
 const hasCard = id => save.card === id;
-const sideCard = () => hasCard("allside") ? 1.3 : 1;     // 보조 수입 전체
+const sideCard = () => (hasCard("allside") ? 1.3 : 1) * (1 + petEff("allside"));     // 보조 수입 전체 (카드 · 펫)
 const CARD_SHIELD = 2;
+// ── 펫 (v0.22.0): 황금 개체를 이기면 가끔 알이 나온다. 알은 시간이 지나면 부화하고, 한 마리를 데리고 다닌다.
+// 테마마다 세 마리(일반·희귀·전설). 같은 펫이 또 나오면 레벨이 오른다(최대 5, 효과 2배). 테마의 셋을 다 모으면 혼 +1%.
+// 수치는 .studio/pet_balance.py · pet_typesafe.py 로 쟀다 — 카드와 합쳐 10층 이후 16~17% 빨라짐, 카드만 대비 +6%.
+const PETS = [
+  ["bug_c", 0, 0, "🐛", "디버그 애벌레",  "soul",    0.03], ["bug_r", 0, 1, "🦆", "고무 오리",      "relic",   0.15],
+  ["bug_l", 0, 2, "🐉", "리팩터 드래곤",  "soul",    0.08], ["inf_c", 1, 0, "🐹", "핑 햄스터",      "exped",   0.10],
+  ["inf_r", 1, 1, "🦉", "온콜 부엉이",    "slot",    0.20], ["inf_l", 1, 2, "🐋", "쿠버 고래",      "allside", 0.12],
+  ["ai_c",  2, 0, "🤖", "토큰 로봇",      "atk",     0.05], ["ai_r",  2, 1, "🦜", "프롬프트 앵무",  "cdmg",    0.08],
+  ["ai_l",  2, 2, "🧠", "추론 정령",      "atk",     0.12], ["co_c",  3, 0, "🐱", "회의실 고양이",  "hp",      0.05],
+  ["co_r",  3, 1, "🐢", "결재 거북",      "dfn",     0.08], ["co_l",  3, 2, "🦁", "야근 사자",      "shield",  1],
+  ["sec_c", 4, 0, "🦊", "방화벽 여우",    "gold",    0.15], ["sec_r", 4, 1, "🐝", "패치 벌",        "shard",   0.20],
+  ["sec_l", 4, 2, "🦅", "제로데이 독수리", "weaken",  0.50],
+];
+const PET_RARITY = [["일반", 0.70, "var(--dim)"], ["희귀", 0.25, "#6ab7ff"], ["전설", 0.05, "var(--gold)"]];
+const PET_EGG = 0.10, PET_HATCH_H = 4, PET_EGG_CAP = 3, PET_MAX_LV = 5, PET_THEME_SOUL = 0.01;
+const petById = id => PETS.find(p => p[0] === id);
+const petsOf = s => (s && s.pets && typeof s.pets === "object") ? s.pets : {};
+const petLv = id => (petsOf(save)[id] || {}).lv | 0;
+const petMul = lv => 1 + 0.25 * (lv - 1);
+// 데리고 다니는 펫의 효과 값 (그 효과가 아니면 0). 방어막은 막는 대수다(5레벨이면 2대)
+const petVal = (id, lv) => { const p = petById(id); return p[5] === "shield" ? (lv >= PET_MAX_LV ? 2 : 1) : p[6] * petMul(lv); };
+const petEff = kind => { const id = save.pet, lv = petLv(id); return id && lv && petById(id) && petById(id)[5] === kind ? petVal(id, lv) : 0; };
+const petThemesDone = () => THEMES.filter((_, t) => PETS.filter(p => p[1] === t).every(p => petLv(p[0]))).length;
+const PET_TEXT = {soul: "얻는 혼", relic: "유물 드롭", exped: "원정 보상", slot: "슬롯 보상", allside: "보조 수입 전체",
+  atk: "ATK", cdmg: "치명타 피해", hp: "HP", dfn: "DEF", gold: "황금 확률", shard: "조각 드롭"};
+const petDesc = (id, lv) => { const p = petById(id), v = petVal(id, Math.max(1, lv));
+  return p[5] === "shield" ? `전투마다 보스 공격 ${v}대 막기` : p[5] === "weaken" ? `앞길의 변이 세기 ÷${+(1 + v).toFixed(2)}`
+    : `${PET_TEXT[p[5]]} +${+(v * 100).toFixed(1)}%`; };
 const mutOf = g => { const fl = Math.floor((g - 1) / N) - THEMES.length;
   if (!(fl >= 0) || !MUTS.length) return null;
   const m = MUTS[fl % MUTS.length];
   return {id: m[0], name: m[1], emoji: m[2], base: m[3], tmpl: m[4], lap: Math.floor(fl / MUTS.length) + 1}; };
 const resOf = id => (save.res || {})[id] | 0;
 // 지금 내성으로 몇 배짜리인가 (1 이면 사라졌다). 내성이 남아도 덤은 없다
-const mutPow = g => { const m = mutOf(g); if (m && hasCard("purge") && save.cardMut === m.id) return 1; return m ? Math.max(1, Math.pow(m.base, m.lap - resOf(m.id) / K.mutLv)) : 1; };
+const petWeak = m => m && petEff("weaken") && (mutOf((save.best || 0) + 1) || {}).id === m.id ? 1 + petEff("weaken") : 1;
+const mutPow = g => { const m = mutOf(g); if (m && hasCard("purge") && save.cardMut === m.id) return 1; return m ? Math.max(1, Math.pow(m.base, m.lap - resOf(m.id) / K.mutLv) / petWeak(m)) : 1; };
 const mutId = g => mutPow(g) > 1 ? mutOf(g).id : "";      // 아직 살아 있는 변이의 id
 // 관문: 변종 층의 마지막 보스는 그 층의 변이를 다 지워야(겹마다 K.mutLv 레벨) 싸울 수 있다. 파이썬 gated() 와 같은 식
 const gateLv = g => { const m = mutOf(g); return m && g % N === 0 ? m.lap * K.mutLv : 0; };
@@ -1530,7 +1567,7 @@ const soulRaw = (g, late) => Math.round(Math.pow(g, K.soulExp) * (late ? lateMul
                                 * SLOTS[(g-1)%N].soul
                                 * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths)
                                 * (1 + K.tsoul/100 * save.traits.soul) * (1 + dexSoul()/100) * (1 + achSoul()/100)
-                                * (hasCard("soul") ? 1.2 : 1));
+                                * (hasCard("soul") ? 1.2 : 1) * (1 + petEff("soul")) * (1 + PET_THEME_SOUL * petThemesDone()));
 // 환생할 때 정산되는 혼. 후반 배율은 여기에만 붙는다.
 const soulOf = g => soulRaw(g, true);
 // 보조 수입(원정·미션·슬롯·유물 중복·황금 개체)이 쓰는 혼. 파이썬 side_base().
@@ -1568,7 +1605,7 @@ const tokenMul = () => 1 + Math.min(K.idleTokenMax,
   Math.max(0, H.exp - save.exped.seenExp) / K.idleTokenDiv);
 const idleRate = () => {                      // 초당 혼
   const g = save.best;          // 역대 최고 — 환생해도 원정은 여기서 계속 캔다
-  return g ? sideSoul(g) / K.idleDiv * tokenMul() * (hasCard("exped") ? 1.5 : 1) * sideCard() : 0;
+  return g ? sideSoul(g) / K.idleDiv * tokenMul() * (hasCard("exped") ? 1.5 : 1 + petEff("exped")) * sideCard() : 0;
 };
 const idleSecs = () => Math.min(CAP_S, Math.max(0, (Date.now() - save.exped.since) / 1000));
 const pending  = () => idleRate() * idleSecs();
@@ -1599,7 +1636,8 @@ const F0 = k => k === "crit" ? Math.min(K.critCap, critRaw())
     * (1 + relicSum(k)/100);
 // 전투 카드가 곱해지는 최종 스탯
 const F = k => F0(k) * (k === "atk" && hasCard("gamble") ? 2 : k === "hp" && hasCard("gamble") ? 0.7
-  : k === "spd" && hasCard("swift") ? 2 : k === "cdmg" && hasCard("focus") ? 1.5 : 1);
+  : k === "spd" && hasCard("swift") ? 2 : k === "cdmg" && hasCard("focus") ? 1.5 : 1)
+  * (k === "atk" || k === "hp" || k === "dfn" || k === "cdmg" ? 1 + petEff(k) : 1);
 
 // 카드 접기 — 접어 둔 카드는 이 브라우저(창)에 기억한다. 저장 파일과는 무관
 const FOLD = "trpg.fold";
@@ -1731,6 +1769,68 @@ function drawRebirth(){
     save.cleared = [];   // 배분은 그대로 둔다. 포인트는 레벨·각성에서 오므로 환생해도 줄지 않는다
     put(); drawAll(); window.scrollTo({top:0, behavior:"smooth"});
   };
+}
+
+// ── 펫: 알 얻기 · 부화 · 데리고 다니기 ──
+let petNews = "";
+// 황금 개체를 이기면 PET_EGG 확률로 그 층 테마의 알. 부화 중이 아니면 바로 부화를 시작하고, 넘친 알은 혼으로 바꾼다
+function rollEgg(g){
+  if (Math.random() >= PET_EGG) return "";
+  const t = slotOf(g).ti;
+  save.eggs = Array.isArray(save.eggs) ? save.eggs : [];
+  if (!save.hatch) { save.hatch = {t, since: Date.now()}; return petNews = `🥚 ${THEMES[t][0]} 알을 얻었다 — 부화를 시작한다`; }
+  if (save.eggs.length < PET_EGG_CAP) { save.eggs.push(t); return petNews = `🥚 ${THEMES[t][0]} 알을 얻었다 (대기 ${save.eggs.length}/${PET_EGG_CAP})`; }
+  const pay = sideSoul(Math.max(1, g)); save.souls += pay;
+  return petNews = `🥚 알이 가득 차 혼 ${n(pay)}로 바꿨다`;
+}
+// 부화는 시간으로 센다 — 꺼 둔 시간도 친다. 하나가 끝나면 다음 알이 그 자리에서 이어서 부화한다
+function hatchPets(){
+  let changed = false;
+  const ms = PET_HATCH_H * 3600 * 1000;
+  while (save.hatch && Date.now() - save.hatch.since >= ms) {
+    const t = save.hatch.t, end = save.hatch.since + ms;
+    let x = Math.random(), r = 0;
+    while (r < 2 && x >= PET_RARITY[r][1]) { x -= PET_RARITY[r][1]; r++; }
+    const p = PETS.find(q => q[1] === t && q[2] === r), pets = {...petsOf(save)}, o = pets[p[0]];
+    if (!o) { pets[p[0]] = {lv: 1, dup: 0}; petNews = `${p[3]} ${p[4]} 부화! (${PET_RARITY[r][0]}) — ${petDesc(p[0], 1)}`; }
+    else if (o.lv < PET_MAX_LV) {
+      const d = (o.dup | 0) + 1, up = d >= o.lv;
+      pets[p[0]] = up ? {lv: o.lv + 1, dup: 0} : {lv: o.lv, dup: d};
+      petNews = `${p[3]} ${p[4]} 또 부화 — ${up ? `Lv.${o.lv + 1} 로 올랐다` : `레벨업까지 ${o.lv - d}마리`}`;
+    } else { const pay = sideSoul(Math.max(1, save.best || 1)); save.souls += pay; petNews = `${p[3]} ${p[4]} 는 이미 최고 레벨 — 혼 ${n(pay)}`; }
+    save.pets = pets;
+    if (!save.pet) save.pet = p[0];                       // 첫 펫은 바로 데리고 다닌다
+    const nx = (save.eggs || []).shift();
+    save.hatch = nx === undefined ? null : {t: nx, since: end};
+    changed = true;
+  }
+  return changed;
+}
+function drawPets(){
+  if (!$("pets")) return;
+  const pets = petsOf(save), own = PETS.filter(p => pets[p[0]]).length;
+  $("petHead").textContent = `${own}/${PETS.length}` + (petThemesDone() ? ` · 테마 완성 ${petThemesDone()} (혼 +${petThemesDone()}%)` : "");
+  $("petNews").innerHTML = petNews ? `<div class="banner">${petNews}</div>` : "";
+  const ms = PET_HATCH_H * 3600 * 1000;
+  const h = save.hatch, left = h ? Math.max(0, ms - (Date.now() - h.since)) : 0;
+  $("petEggs").innerHTML = `<div class="dim" style="font-size:12px;margin-bottom:6px">${h
+    ? `🥚 ${THEMES[h.t][0]} 알 부화 중 — ${Math.floor(left / 3600000)}시간 ${Math.floor(left / 60000) % 60}분 남음`
+    : "부화 중인 알 없음"} · 대기 알 ${(save.eggs || []).length}/${PET_EGG_CAP}</div>
+    <div class="dim" style="font-size:11px;margin-bottom:8px">황금 개체를 이기면 ${PET_EGG * 100}% 확률로 그 층 테마의 알이 나온다.
+      알은 ${PET_HATCH_H}시간에 하나씩 부화한다(꺼 둔 시간 포함). 같은 펫이 또 나오면 레벨이 오른다(최대 ${PET_MAX_LV}, 효과 2배).
+      한 테마의 셋을 다 모으면 얻는 혼 +1%.</div>`;
+  $("pets").innerHTML = THEMES.map((th, t) => `<div style="margin:6px 0 2px;font-size:12px" class="dim">${th[0]}</div>
+    <div class="petrow">${PETS.filter(p => p[1] === t).map(p => {
+      const o = pets[p[0]], on = save.pet === p[0];
+      return o ? `<button class="petc${on ? " on" : ""}" data-pet="${p[0]}">
+          <b>${p[3]} ${p[4]}</b><small style="color:${PET_RARITY[p[2]][2]}">${PET_RARITY[p[2]][0]} · Lv.${o.lv}${o.lv < PET_MAX_LV ? ` (${o.dup | 0}/${o.lv})` : " 최고"}</small>
+          <small>${petDesc(p[0], o.lv)}</small><small>${on ? "데리고 다니는 중" : "눌러서 데리고 다니기"}</small></button>`
+        : `<div class="petc none"><b>❔ ???</b><small style="color:${PET_RARITY[p[2]][2]}">${PET_RARITY[p[2]][0]}</small></div>`;
+    }).join("")}</div>`).join("");
+  $("pets").querySelectorAll("button[data-pet]").forEach(b => b.onclick = () => { save.pet = b.dataset.pet; put(); drawAll(); });
+  const cur = save.pet && pets[save.pet] && petById(save.pet);
+  $("petLine").innerHTML = cur ? `<span class="dim">동행 펫</span> <b style="font-size:inherit">${cur[3]} ${cur[4]} Lv.${pets[save.pet].lv}</b>
+    <span class="dim">— ${petDesc(save.pet, pets[save.pet].lv)}</span>` : "";
 }
 
 // ── 환생 카드 고르기 ──
@@ -1871,7 +1971,7 @@ const beatable = b => {
   const eff = F("atk") * (1 + cr/100 * (cd/100 - 1));
   const mit = (atk, dfn) => atk * atk / (atk + dfn);
   const kill = b.hp * (id === "fury" ? k : 1) / (mit(eff, b.dfn) / (id === "armor" ? k : 1) * (1 + xtra(b)));
-  const die = F("hp") / mit(b.atk, F("dfn")) + (hasCard("shield") ? CARD_SHIELD : 0);
+  const die = F("hp") / mit(b.atk, F("dfn")) + (hasCard("shield") ? CARD_SHIELD : 0) + petEff("shield");
   const kill2 = hasCard("first") && kill > 1 ? kill - 1 : kill;     // 첫 턴 2배 = 한 턴을 번다
   const nh = Math.max(1, Math.ceil(kill2 - 1e-9)), nb = Math.max(1, Math.ceil(die - 1e-9));   // 누구든 한 대는 쳐야 끝난다
   return goesFirst(b) ? nh <= nb : nh < nb;
@@ -1926,6 +2026,17 @@ function wantPicks(){
   }
   return out.sort((a, b) => a - b);
 }
+// 펫 알 사냥: 아직 못 모았거나 최고 레벨이 아닌 펫이 있는 테마마다, 그 테마에서 이길 수 있는 가장 깊은 스테이지 하나.
+// 알은 황금 개체에서만 나오고 황금은 어느 스테이지든 같은 확률이라, 테마만 맞추면 된다 — 깊을수록 혼이 많다.
+const petThemesLeft = () => THEMES.map((_, t) => t).filter(t => PETS.some(p => p[1] === t && petLv(p[0]) < PET_MAX_LV));
+function petPicks(){
+  const best = save.best || 0, out = [];
+  for (const t of petThemesLeft()) {
+    for (let g = best; g >= 1; g--)
+      if (slotOf(g).ti === t && !gated(g) && beatable(boss(g))) { out.push(g); break; }
+  }
+  return out.sort((a, b) => a - b);
+}
 // 버튼 글자: '못 모은 곳' 은 무엇을 못 모았는지 몰랐다 — 유물 강화와 황금을 따로 센다
 function wantLabel(want){
   if (!want.length) return "유물·황금 다 모음";
@@ -1948,8 +2059,8 @@ function drawAuto(){
   const ps = picks(), on = new Set(ps), best = save.best || 0;
   const top = Math.max(1, Math.ceil(best / N));
   if (!floorsOpen) floorsOpen = new Set([top]);
-  const want = wantPicks();
-  const key = `${save.auto}|${ps.join()}|${best}|${[...floorsOpen].join()}|${wantSig()}`;
+  const want = wantPicks(), petWant = petPicks();
+  const key = `${save.auto}|${ps.join()}|${best}|${[...floorsOpen].join()}|${wantSig()}|${petWant.join()}`;
   if (key !== autoKey || !$("autoMsg")) {
     autoKey = key;
     // 스테이지마다 유물 속성이 다르다 — 여러 곳을 골라 돌려야 속성이 골고루 모인다
@@ -1974,6 +2085,9 @@ function drawAuto(){
       <button id="pickWant" ${want.length ? "" : "disabled"} class="${want.length && want.join() === ps.join() ? "on" : ""}"
         title="유물 강화: 여기서 지금보다 센 유물이 나올 수 있는 칸(깊은 층 유물일수록 세다) · 황금: 아직 못 잡은 황금 개체. 칸마다 이길 수 있는 가장 깊은 스테이지 하나씩 골라 반복한다">${
         wantLabel(want)}</button>
+      <button id="pickPet" ${petWant.length ? "" : "disabled"} class="${petWant.length && petWant.join() === ps.join() ? "on" : ""}"
+        title="펫 알은 황금 개체에서 나온다. 모을 펫이 남은 테마마다 이길 수 있는 가장 깊은 스테이지 하나씩 골라 반복한다">${
+        petThemesLeft().length ? `🥚 펫 알 사냥 ${petWant.length}테마` : "🥚 펫 다 모음"}</button>
       <details id="picksBox" ${picksOpen ? "open" : ""}><summary>${ps.length
         ? `고른 ${ps.length}곳을 차례로 반복` : "끝까지 오르고 가장 깊은 곳 반복"} — 눌러서 고르기</summary>
         <div class="dim" style="font-size:11px;margin:4px 0 2px">◆ 여기서 지금보다 센 유물이 나올 수 있다(색 = 지금 등급, ◇ = 유물 없음) ·
@@ -1984,6 +2098,7 @@ function drawAuto(){
     $("pickAll").onclick = () => setPicks(ps.length === best
       ? [] : Array.from({length: best}, (_, i) => i + 1));
     $("pickWant").onclick = () => setPicks(want);
+    $("pickPet").onclick = () => setPicks(petWant);
     $("picksBox").ontoggle = e => { picksOpen = e.target.open; };
     $("picks").onclick = e => {                       // 칸 하나하나가 아니라 묶어서 듣는다
       // 머리줄 안의 글자(span)를 눌러도 머리줄로 친다
@@ -2010,7 +2125,7 @@ function autoStep(){
     const rare = rollRare();
     if (quickFight(boss(next))) {
       winStage(next); autoMsg = `${next}. ${slotOf(next).name} 격파`;
-      if (rare) { dexNews = catchRare(next); aput(); }
+      if (rare) { dexNews = catchRare(next); rollEgg(next); aput(); }
       if (rollShard(next)) aput();
       adraw();
     } else {
@@ -2037,7 +2152,7 @@ function autoStep(){
     farmW++; winTally();
     const drop = rollRelic(g, slotOf(g), false);
     if (drop) relicNews = drop;
-    if (rare) dexNews = catchRare(g);
+    if (rare) { dexNews = catchRare(g); rollEgg(g); }
     const shard = rollShard(g);
     if (drop || rare || shard) { aput(); adraw(); }
   } else { farmL++; tally("losses"); }
@@ -2340,7 +2455,7 @@ const slotDay = () => { const t = save.slot || {}; return t.day === daysBack(0) 
 const slotLeft = () => Math.max(0, K.slotTries - (slotDay().n | 0));
 // 한 판 지급 = 하루 예산 / (판수 x 평균 배당) x 이번 배당. 운이 나빠도 좋아도 하루 기대값은 그대로다
 const slotPay = mul => Math.round(sideSoul(Math.max(1, save.best)) * K.slotBudget
-                                  / (K.slotTries * K.slotAvg) * mul * (hasCard("luck") ? 4 : 1) * sideCard());
+                                  / (K.slotTries * K.slotAvg) * mul * (hasCard("luck") ? 4 : 1) * (1 + petEff("slot")) * sideCard());
 
 function slotScore(){
   let sum = 0;
@@ -2422,7 +2537,7 @@ const RELIC_FIRST = 0.3, RELIC_AGAIN = 0.01;
 // demo() 가 RELIC_AGAIN / RELIC_DUP 를 붙들고 있다.
 const RELIC_DUP = 20;
 function rollRelic(g, slot, first, sure){       // sure = 확률 문을 건너뛴다 (레이드 격파 보상)
-  if (!sure && Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN) * (hasCard("relic") ? 2 : 1)) return "";
+  if (!sure && Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN) * (hasCard("relic") ? 2 : 1) * (1 + petEff("relic"))) return "";
   let x = Math.random() * 100, r = 0;
   while (r < RARITY.length - 1 && x >= RARITY[r][1]) { x -= RARITY[r][1]; r++; }
   const a = slot.affix;                           // 능력치는 보스가 정한다 — 무작위는 등급뿐
@@ -2591,6 +2706,9 @@ function drawRbBonus(){
   add("수확", K.tsoul * save.traits.soul);
   add("도감", dexSoul());
   add("업적", achSoul());
+  add("카드", hasCard("soul") ? 20 : 0);
+  add("펫", petEff("soul") * 100);
+  add("펫 테마", PET_THEME_SOUL * petThemesDone() * 100);
   $("rbBonus").innerHTML = parts.length
     ? `<span class="dim">얻는 혼</span> <span class="soul">x${mul.toFixed(2)}</span>
        <span class="dim">(${parts.join(" · ")})</span>` : "";
@@ -2660,7 +2778,7 @@ function drawAch(){
   });
 }
 
-const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawCards(); drawTabs(); };
+const drawAll = () => { if (fixCrit()) put(); if (hatchPets()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawCards(); drawPets(); drawTabs(); };
 
 // ── 탭 (v0.20.0): 카드 열넷을 한 줄로 늘어놓던 때는 메뉴 막대 창(640px)으로 13화면이었고, 던전이 9화면 아래였다.
 // 자주 쓰는 순서로 넷으로 나눈다 — 전투(던전) · 성장(환생·배분·특성·내성)
@@ -2706,7 +2824,7 @@ const dmgOf = (a, d, crit) => {
   return Math.max(1, Math.round(p * p / (p + d.dfn) / (a.div || 1)));      // div = 철갑 변이
 };
 const newFighters = b => mutate([{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit"), cdmg:F("cdmg"),
-                                   shield: hasCard("shield") ? CARD_SHIELD : 0},
+                                   shield: (hasCard("shield") ? CARD_SHIELD : 0) + petEff("shield")},
                                   {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}], b.g);
 // 변이를 두 싸움꾼에게 건다. beatable() 과 파이썬 turns_to_win() 이 같은 규칙을 쓴다
 function mutate(pair, g){
@@ -2721,7 +2839,7 @@ function mutate(pair, g){
 // 변이 조각: 변종 층의 보스를 이기면 가끔 나온다. 반복 전투가 주된 길이다 — 켜 둔 시간이 내성이 된다.
 // 혼이 아니라 '변이를 지우는 힘' 만 사므로, 다 모아도 변이가 없던 때보다 빨라지지 않는다 (selftest 가 붙든다).
 let shardNews = "";
-const rollShard = g => { if (!mutOf(g) || Math.random() >= K.shardRate * (hasCard("shard") ? 2 : 1)) return false;
+const rollShard = g => { if (!mutOf(g) || Math.random() >= K.shardRate * (hasCard("shard") ? 2 : 1) * (1 + petEff("shard"))) return false;
   save.shards = (save.shards | 0) + 1; return true; };
 // 승리 처리 (수동·자동 공통). 유물이 나오면 그 안내 문구를 돌려준다.
 const winTally = () => { tally("kills"); const h = new Date().getHours(); if (h >= 3 && h < 5) stOf().night = 1; };
@@ -2806,7 +2924,8 @@ function end(won, me, foe, g, slot, why){
     say(`<span class="win">승리! ${slot.name} 정복. 혼 ${n(soulOf(g))} 예약.</span>`);
     const drop = winStage(g);
     if (drop) say(`<span class="gold">${drop}</span>`);
-    if (fightRare) { dexNews = catchRare(g); put(); say(`<span class="gold">${dexNews}</span>`); }
+    if (fightRare) { dexNews = catchRare(g); put(); say(`<span class="gold">${dexNews}</span>`);
+      const egg = rollEgg(g); if (egg) { put(); say(`<span class="soul">${egg}</span>`); } }
     if (rollShard(g)) { put(); say(`<span class="soul">변이 조각 +1 (보유 ${n(save.shards)})</span>`); }
     if (g % N === 0) say(`<span class="win">${g/N}층 완주 — ${g/N+1}층 ${slotOf(g+1).theme} 이 열렸다.</span>`);
     say(`<span class="dim">혼은 환생할 때 정산된다.</span>`);

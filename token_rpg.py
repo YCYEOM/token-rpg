@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.20.14"
+__version__ = "0.21.0"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1161,6 +1161,9 @@ font-size:11px;margin-top:6px;max-width:400px}.sheet>span{white-space:nowrap;ove
 .badge{display:inline-block;border:1px solid var(--line);border-radius:20px;
 padding:0 9px;font-size:11px;margin-right:5px}
 .alloc{display:grid;gap:6px;align-items:center;font-size:13px}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:6px}
+.card-pick{display:flex;flex-direction:column;gap:3px;text-align:left;padding:8px;white-space:normal;height:auto}
+.card-pick small{color:var(--dim);font-size:11px;line-height:1.35}
 #alloc{grid-template-columns:minmax(0,1fr) auto auto auto auto auto auto}#traits{grid-template-columns:minmax(0,1fr) auto auto auto auto}
 .alloc small{display:block;color:var(--dim);font-size:11px;white-space:normal;overflow-wrap:anywhere}
 .alloc>b{min-width:34px;text-align:right}.alloc button{white-space:nowrap;padding:2px 7px}
@@ -1243,6 +1246,7 @@ margin-top:10px;padding-top:8px}
     <div class="sheet" id="sheet"></div>
     <div id="relicIn" style="margin-top:6px;font-size:11px"></div>
     <div id="rbBonus" style="margin-top:6px;font-size:12px"></div>
+    <div id="cardBox" style="margin-top:6px;font-size:12px"></div>
   </div>
 </div>
 
@@ -1350,7 +1354,7 @@ const achSoul = () => K.achSoul * ACH.filter(a => achOf(save)[a[0]]).length;
 const stOf = () => (save.st && typeof save.st === "object") ? save.st : (save.st = {});
 const tally = (k, d = 1) => { const t = stOf(); t[k] = (t[k] | 0) + d; };
 const dexPts = s => THEMES.filter((_, ti) => dexRare(s, ti) === N).length * K.dexPt;
-const rollRare = () => Math.random() < K.rareRate;
+const rollRare = () => Math.random() < K.rareRate * (hasCard("gold") ? 2 : 1);
 const rareOf = slot => ({...slot, name: "황금 " + slot.name, emoji: slot.emoji + "✨"});
 // 특성 배율은 스탯마다 다르다 (파이썬 tmul_of). TRAITS 가 로드 시점에 부르므로 여기 있어야 한다 —
 // 아래에 두면 TDZ 로 스크립트 전체가 죽는다. node --check 는 문법만 보므로 이걸 못 잡는다.
@@ -1480,13 +1484,35 @@ const boss = g => { let p = Math.pow(K.step, g-1);
 // 변이 조각으로 내성을 올리면 배수가 줄고, K.mutLv 레벨이면 한 겹이 사라진다. 11층부터는 두 겹이다.
 // 파이썬 mut_of() · mut_power() · turns_to_win() 과 같은 규칙이어야 한다.
 const MUTS = D.muts;                             // [id, 이름, 이모지, 세기, 설명틀]
+// ── 환생 카드 (v0.21.0): 환생할 때마다 세 장 중 하나를 골라 다음 환생까지 쓴다. 겹치지 않는다.
+// 수치는 .studio/card_balance.py · card_typesafe.py 로 쟀다 — 진행 10~14% 빨라짐, 한 장이 독점하지 않는다(TypeSafe).
+// 수집 카드는 모을 것이 남았을 때만, 정화는 살아 있는 변이 앞에서만 나온다. 다 모은 사람도 열한 장에서 고른다.
+const CARDS = {
+  shield:  ["🛡️", "보호막",   "전투마다 보스 공격 2대를 막는다"],
+  first:   ["⚡", "선공",     "늘 먼저 치고, 첫 턴 피해 2배"],
+  purge:   ["✨", "정화",     "변이 하나를 이번 판 동안 지운다 (관문 조건은 그대로)"],
+  gamble:  ["🎲", "맞바꾸기", "ATK +100% · HP −30%"],
+  swift:   ["💨", "신속",     "SPD ×2"],
+  focus:   ["🎯", "집중",     "치명타 피해 ×1.5"],
+  soul:    ["👻", "혼",       "얻는 혼 +20%"],
+  exped:   ["⛏️", "원정",     "원정 보상 +50%"],
+  mission: ["📜", "의뢰",     "미션 보상 2배"],
+  luck:    ["🍀", "행운",     "슬롯 보상 4배"],
+  allside: ["💰", "부업",     "원정·미션·슬롯·레이드 보상 +30%"],
+  relic:   ["💎", "유물",     "유물 드롭 2배"],
+  gold:    ["⭐", "황금",     "황금 개체 확률 2배"],
+  shard:   ["🧩", "조각",     "변이 조각 드롭 2배"],
+};
+const hasCard = id => save.card === id;
+const sideCard = () => hasCard("allside") ? 1.3 : 1;     // 보조 수입 전체
+const CARD_SHIELD = 2;
 const mutOf = g => { const fl = Math.floor((g - 1) / N) - THEMES.length;
   if (!(fl >= 0) || !MUTS.length) return null;
   const m = MUTS[fl % MUTS.length];
   return {id: m[0], name: m[1], emoji: m[2], base: m[3], tmpl: m[4], lap: Math.floor(fl / MUTS.length) + 1}; };
 const resOf = id => (save.res || {})[id] | 0;
 // 지금 내성으로 몇 배짜리인가 (1 이면 사라졌다). 내성이 남아도 덤은 없다
-const mutPow = g => { const m = mutOf(g); return m ? Math.max(1, Math.pow(m.base, m.lap - resOf(m.id) / K.mutLv)) : 1; };
+const mutPow = g => { const m = mutOf(g); if (m && hasCard("purge") && save.cardMut === m.id) return 1; return m ? Math.max(1, Math.pow(m.base, m.lap - resOf(m.id) / K.mutLv)) : 1; };
 const mutId = g => mutPow(g) > 1 ? mutOf(g).id : "";      // 아직 살아 있는 변이의 id
 // 관문: 변종 층의 마지막 보스는 그 층의 변이를 다 지워야(겹마다 K.mutLv 레벨) 싸울 수 있다. 파이썬 gated() 와 같은 식
 const gateLv = g => { const m = mutOf(g); return m && g % N === 0 ? m.lap * K.mutLv : 0; };
@@ -1503,7 +1529,8 @@ const sideScale = (() => { const late = [0], flat = [0];
 const soulRaw = (g, late) => Math.round(Math.pow(g, K.soulExp) * (late ? lateMul(g) : sideScale(g))
                                 * SLOTS[(g-1)%N].soul
                                 * (1 + relicSum("soul")/100) * (1 + K.rbSoul * save.rebirths)
-                                * (1 + K.tsoul/100 * save.traits.soul) * (1 + dexSoul()/100) * (1 + achSoul()/100));
+                                * (1 + K.tsoul/100 * save.traits.soul) * (1 + dexSoul()/100) * (1 + achSoul()/100)
+                                * (hasCard("soul") ? 1.2 : 1));
 // 환생할 때 정산되는 혼. 후반 배율은 여기에만 붙는다.
 const soulOf = g => soulRaw(g, true);
 // 보조 수입(원정·미션·슬롯·유물 중복·황금 개체)이 쓰는 혼. 파이썬 side_base().
@@ -1541,7 +1568,7 @@ const tokenMul = () => 1 + Math.min(K.idleTokenMax,
   Math.max(0, H.exp - save.exped.seenExp) / K.idleTokenDiv);
 const idleRate = () => {                      // 초당 혼
   const g = save.best;          // 역대 최고 — 환생해도 원정은 여기서 계속 캔다
-  return g ? sideSoul(g) / K.idleDiv * tokenMul() : 0;
+  return g ? sideSoul(g) / K.idleDiv * tokenMul() * (hasCard("exped") ? 1.5 : 1) * sideCard() : 0;
 };
 const idleSecs = () => Math.min(CAP_S, Math.max(0, (Date.now() - save.exped.since) / 1000));
 const pending  = () => idleRate() * idleSecs();
@@ -1565,11 +1592,14 @@ const critRaw = () => H.crit + save.alloc.crit*G.crit + relicSum("crit");
 // 유물로 치명타가 오르면 남는 점수는 배분으로 돌려준다 (fixCrit). 토큰·유물만으로 넘친 몫은 예전처럼 치명타 피해로 간다.
 const critMax = () => Math.max(0, Math.ceil((K.critCap - H.crit - relicSum("crit")) / G.crit - 1e-9));
 const fixCrit = () => { if (save.alloc.crit > critMax()) { save.alloc.crit = critMax(); return true; } return false; };
-const F = k => k === "crit" ? Math.min(K.critCap, critRaw())
+const F0 = k => k === "crit" ? Math.min(K.critCap, critRaw())
   : k === "cdmg" ? (K.cdmgBase + save.alloc.cdmg*G.cdmg + Math.max(0, critRaw() - K.critCap))
                    * Math.pow(TM("cdmg"), save.traits.cdmg)
   : (H[k] + save.alloc[k]*G[k]) * (k === "spd" ? 1 + K.spdTrait*save.traits.spd : Math.pow(TM(k), save.traits[k]))
     * (1 + relicSum(k)/100);
+// 전투 카드가 곱해지는 최종 스탯
+const F = k => F0(k) * (k === "atk" && hasCard("gamble") ? 2 : k === "hp" && hasCard("gamble") ? 0.7
+  : k === "spd" && hasCard("swift") ? 2 : k === "cdmg" && hasCard("focus") ? 1.5 : 1);
 
 // 카드 접기 — 접어 둔 카드는 이 브라우저(창)에 기억한다. 저장 파일과는 무관
 const FOLD = "trpg.fold";
@@ -1697,9 +1727,50 @@ function drawRebirth(){
     rbArmed = false;
     save.rbExp = rbBase() + K.rbExp;                        // 기운 하나 소모
     save.souls += gain; save.rebirths++;
+    save.card = ""; save.cardMut = ""; save.cardOffer = cardOffer();   // 이번 판 카드는 끝났다 — 새 판의 카드를 고른다
     save.cleared = [];   // 배분은 그대로 둔다. 포인트는 레벨·각성에서 오므로 환생해도 줄지 않는다
     put(); drawAll(); window.scrollTo({top:0, behavior:"smooth"});
   };
+}
+
+// ── 환생 카드 고르기 ──
+// 쓸모가 있는 카드만 낸다: 수집 카드는 모을 것이 남았을 때, 정화는 다음 보스에 살아 있는 변이가 있을 때.
+const frontMut = () => mutId((save.best || 0) + 1);
+function cardOk(id){
+  const best = save.best || 0, upto = Array.from({length: best}, (_, i) => i + 1);
+  if (id === "purge") return !!frontMut();
+  if (id === "relic") return upto.some(relicLeft);
+  if (id === "gold") return upto.some(goldLeft);
+  if (id === "shard") return mutLaps() > 0 && MUTS.some(m => resOf(m[0]) < mutCap());
+  return true;
+}
+function cardOffer(){
+  const pool = Object.keys(CARDS).filter(cardOk), out = [];
+  while (out.length < 3 && pool.length) out.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  return out;
+}
+const cardDesc = id => id === "purge" && (save.cardMut || frontMut())
+  ? `변이 ${MUTS.find(m => m[0] === (save.cardMut || frontMut()))[1]}를 이번 판 동안 지운다 (관문 조건은 그대로)` : CARDS[id][2];
+function drawCards(){
+  const box = $("cardBox");
+  if (!box) return;
+  const offer = (save.cardOffer || []).filter(id => CARDS[id]);
+  if (offer.length) {
+    box.innerHTML = `<div class="banner" style="margin:4px 0">환생 카드 — 이번 판에 쓸 카드를 하나 고른다 (다음 환생까지)
+      <div class="cards">${offer.map(id => `<button class="card-pick" data-card="${id}">
+        <b>${CARDS[id][0]} ${CARDS[id][1]}</b><small>${cardDesc(id)}</small></button>`).join("")}</div></div>`;
+    box.querySelectorAll("button[data-card]").forEach(b => b.onclick = () => {
+      const id = b.dataset.card;
+      save.cardMut = id === "purge" ? frontMut() : "";      // 고르는 순간의 변이를 지운다
+      save.card = id; delete save.cardOffer;
+      put(); drawAll();
+    });
+    return;
+  }
+  box.innerHTML = save.card && CARDS[save.card]
+    ? `<span class="dim">이번 판 카드</span> <b style="font-size:inherit">${CARDS[save.card][0]} ${CARDS[save.card][1]}</b>
+       <span class="dim">— ${cardDesc(save.card)}</span>`
+    : "";
 }
 
 function drawTrans(){
@@ -1764,7 +1835,7 @@ $("saveLoad").onclick = () => {
 // 추가타 확률 — 보스보다 빠른 만큼 한 번 더 친다. 파이썬 spd_extra() 와 같은 식이어야 한다.
 // 저주는 이 보스 앞에서 내 SPD 를 깎는다 — 연타와 선공이 모두 이 값을 쓴다. 파이썬 turns_to_win() 과 같은 식
 const spdVs = b => spdNow() / (b.g && mutId(b.g) === "curse" ? mutPow(b.g) : 1);
-const goesFirst = b => spdVs(b) >= b.spd;          // 내가 먼저 친다
+const goesFirst = b => hasCard("first") || spdVs(b) >= b.spd;          // 내가 먼저 친다
 const xtra = b => Math.min(K.hitsMax - 1, Math.max(0, spdVs(b) / Math.max(1, b.spd) - 1));
 // 한 턴에 치는 횟수. 보스보다 N 배 빠르면 N 번, 소수점은 확률로 한 번 더.
 const hitsOf = b => { const x = 1 + xtra(b); return Math.floor(x) + (Math.random() < x % 1 ? 1 : 0); };
@@ -1800,8 +1871,9 @@ const beatable = b => {
   const eff = F("atk") * (1 + cr/100 * (cd/100 - 1));
   const mit = (atk, dfn) => atk * atk / (atk + dfn);
   const kill = b.hp * (id === "fury" ? k : 1) / (mit(eff, b.dfn) / (id === "armor" ? k : 1) * (1 + xtra(b)));
-  const die = F("hp") / mit(b.atk, F("dfn"));
-  const nh = Math.max(1, Math.ceil(kill - 1e-9)), nb = Math.max(1, Math.ceil(die - 1e-9));   // 누구든 한 대는 쳐야 끝난다
+  const die = F("hp") / mit(b.atk, F("dfn")) + (hasCard("shield") ? CARD_SHIELD : 0);
+  const kill2 = hasCard("first") && kill > 1 ? kill - 1 : kill;     // 첫 턴 2배 = 한 턴을 번다
+  const nh = Math.max(1, Math.ceil(kill2 - 1e-9)), nb = Math.max(1, Math.ceil(die - 1e-9));   // 누구든 한 대는 쳐야 끝난다
   return goesFirst(b) ? nh <= nb : nh < nb;
 };
 
@@ -2060,7 +2132,8 @@ function missions(){
   const today = daysBack(0), dow = (new Date().getDay() + 6) % 7;          // 월요일 = 0
   const week = Array.from({length: dow + 1}, (_, i) => daysBack(dow - i)), wk = daysBack(dow);
   const weekTok = week.reduce((s, d) => s + dayTok(d), 0);
-  const reward = m => Math.round(Math.max(50, sideSoul(Math.max(1, save.best))) * m * streakMul());
+  const reward = m => Math.round(Math.max(50, sideSoul(Math.max(1, save.best))) * m * streakMul()
+                                 * (hasCard("mission") ? 2 : 1) * sideCard());
   const tools = Object.keys((D.daily || {})[today] || {}).length;
   // 예산을 가중치로 나눠 갖는다 — 미션을 늘려도 하루 수입 총합은 K.dayBudget 그대로다
   const share = (budget, list) => {
@@ -2130,7 +2203,7 @@ const raidBoss = () => RAID[raidIdx(raidWk()) % RAID.length];
 const raidOpen = () => (save.best || 0) >= K.raidMinBest;
 const raidGot = () => { const r = save.raid || {}; return r.wk === raidWk() && Array.isArray(r.got) ? r.got : []; };
 // 네 단계가 한 주 예산(K.raidBudget)을 똑같이 나눈다. 연속 사용 배율은 없다 — 레이드가 이미 한 주의 사용량을 잰다
-const raidPay = () => Math.round(Math.max(50, sideSoul(Math.max(1, save.best))) * K.raidBudget / 4);
+const raidPay = () => Math.round(Math.max(50, sideSoul(Math.max(1, save.best))) * K.raidBudget / 4 * sideCard());
 let raidNews = "";
 function raidClaim(i){
   const got = raidGot();
@@ -2267,7 +2340,7 @@ const slotDay = () => { const t = save.slot || {}; return t.day === daysBack(0) 
 const slotLeft = () => Math.max(0, K.slotTries - (slotDay().n | 0));
 // 한 판 지급 = 하루 예산 / (판수 x 평균 배당) x 이번 배당. 운이 나빠도 좋아도 하루 기대값은 그대로다
 const slotPay = mul => Math.round(sideSoul(Math.max(1, save.best)) * K.slotBudget
-                                  / (K.slotTries * K.slotAvg) * mul);
+                                  / (K.slotTries * K.slotAvg) * mul * (hasCard("luck") ? 4 : 1) * sideCard());
 
 function slotScore(){
   let sum = 0;
@@ -2349,7 +2422,7 @@ const RELIC_FIRST = 0.3, RELIC_AGAIN = 0.01;
 // demo() 가 RELIC_AGAIN / RELIC_DUP 를 붙들고 있다.
 const RELIC_DUP = 20;
 function rollRelic(g, slot, first, sure){       // sure = 확률 문을 건너뛴다 (레이드 격파 보상)
-  if (!sure && Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN)) return "";
+  if (!sure && Math.random() >= (first ? RELIC_FIRST : RELIC_AGAIN) * (hasCard("relic") ? 2 : 1)) return "";
   let x = Math.random() * 100, r = 0;
   while (r < RARITY.length - 1 && x >= RARITY[r][1]) { x -= RARITY[r][1]; r++; }
   const a = slot.affix;                           // 능력치는 보스가 정한다 — 무작위는 등급뿐
@@ -2587,7 +2660,7 @@ function drawAch(){
   });
 }
 
-const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawTabs(); };
+const drawAll = () => { if (fixCrit()) put(); if (checkAch()) put(); drawHero(); drawRbBonus(); drawMissions(); drawRaid(); drawSlot(); drawExped(); drawStages(); drawRelics(); drawDex(); drawAch(); drawMuts(); drawCards(); drawTabs(); };
 
 // ── 탭 (v0.20.0): 카드 열넷을 한 줄로 늘어놓던 때는 메뉴 막대 창(640px)으로 13화면이었고, 던전이 9화면 아래였다.
 // 자주 쓰는 순서로 넷으로 나눈다 — 전투(던전) · 성장(환생·배분·특성·내성)
@@ -2632,7 +2705,8 @@ const dmgOf = (a, d, crit) => {
   const p = a.atk * (0.85 + Math.random()*0.3) * (crit ? a.cdmg / 100 : 1);
   return Math.max(1, Math.round(p * p / (p + d.dfn) / (a.div || 1)));      // div = 철갑 변이
 };
-const newFighters = b => mutate([{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit"), cdmg:F("cdmg")},
+const newFighters = b => mutate([{hp:F("hp"), max:F("hp"), atk:F("atk"), dfn:F("dfn"), crit:F("crit"), cdmg:F("cdmg"),
+                                   shield: hasCard("shield") ? CARD_SHIELD : 0},
                                   {hp:b.hp, max:b.hp, atk:b.atk, dfn:b.dfn}], b.g);
 // 변이를 두 싸움꾼에게 건다. beatable() 과 파이썬 turns_to_win() 이 같은 규칙을 쓴다
 function mutate(pair, g){
@@ -2647,7 +2721,7 @@ function mutate(pair, g){
 // 변이 조각: 변종 층의 보스를 이기면 가끔 나온다. 반복 전투가 주된 길이다 — 켜 둔 시간이 내성이 된다.
 // 혼이 아니라 '변이를 지우는 힘' 만 사므로, 다 모아도 변이가 없던 때보다 빨라지지 않는다 (selftest 가 붙든다).
 let shardNews = "";
-const rollShard = g => { if (!mutOf(g) || Math.random() >= K.shardRate) return false;
+const rollShard = g => { if (!mutOf(g) || Math.random() >= K.shardRate * (hasCard("shard") ? 2 : 1)) return false;
   save.shards = (save.shards | 0) + 1; return true; };
 // 승리 처리 (수동·자동 공통). 유물이 나오면 그 안내 문구를 돌려준다.
 const winTally = () => { tally("kills"); const h = new Date().getHours(); if (h >= 3 && h < 5) stOf().night = 1; };
@@ -2664,12 +2738,15 @@ const winStage = g => {
 };
 
 // 연출 없는 즉시 전투 (자동 도전용). 규칙은 fightStart 와 같다.
+// 카드: 보호막은 보스 공격을 막고, 선공 카드는 내 첫 턴 피해를 두 배로 한다
+const cardHit = (me, foe, dmg) => { if (me.shield > 0) { me.shield--; return 0; } return dmg; };
+const firstX2 = (me, dmg) => { if (!me.struck) { me.struck = true; if (hasCard("first")) return dmg * 2; } return dmg; };
 function quickFight(b){
   const [me, foe] = newFighters(b);
   let myTurn = goesFirst(b);
   for (let turn = 1; turn <= 200; turn++) {
-    if (myTurn) foe.hp -= turnDmg(me, foe, hitsOf(b), me.crit)[0];
-    else me.hp -= dmgOf(foe, me, false);
+    if (myTurn) foe.hp -= firstX2(me, turnDmg(me, foe, hitsOf(b), me.crit)[0]);
+    else me.hp -= cardHit(me, foe, dmgOf(foe, me, false));
     if (foe.hp <= 0) return true;
     if (me.hp <= 0) return false;
     myTurn = !myTurn;
@@ -2698,9 +2775,12 @@ function fightStart(g, slot, b){
     const [a, d, an, tag] = myTurn ? [me, foe, "나", "fb"] : [foe, me, slot.name, "fh"];
     // 내 턴은 타격 수만큼 몰아 친다 — 한 줄에 합쳐 적는다. 스무 번을 스무 줄로 쓰면 못 읽는다.
     const hits = myTurn ? hitsOf(b) : 1;
-    const [dmg, crit] = turnDmg(a, d, hits, myTurn ? me.crit : 0);
+    let [dmg, crit] = turnDmg(a, d, hits, myTurn ? me.crit : 0);
+    const blocked = !myTurn && me.shield > 0;
+    dmg = myTurn ? firstX2(me, dmg) : cardHit(me, foe, dmg);
     d.hp -= dmg;
-    say(`T${turn} ${an}${hits > 1 ? ` <span class='gold'>x${n(hits)}타</span>` : ""} → ${n(dmg)} 피해`
+    say(blocked ? `T${turn} ${an} → <span class='soul'>🛡️ 보호막이 막았다</span>`
+        : `T${turn} ${an}${hits > 1 ? ` <span class='gold'>x${n(hits)}타</span>` : ""} → ${n(dmg)} 피해`
         + (crit ? " <span class='crit'>치명타!</span>" : ""), crit);
     const el = $(tag); el.classList.remove("hit"); void el.offsetWidth; el.classList.add("hit");
     paint(me, foe);

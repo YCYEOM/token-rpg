@@ -85,7 +85,8 @@ const PRELUDE = `(() => { const R = Date, now = __now;
 const TAIL = `
 ;globalThis.__t = { get save() { return save; }, set save(v) { save = v; }, K, H, fresh,
   n, boss, slotOf, catchRare, dexKey, sideSoul, idleRate, slotPay, raidHp, raidPay, raidClaim, raidRelic, weekSum, raidWk, critMax, spdVs, spdNow, goesFirst, xtra, hitsOf, ACH, achCur, achSoul, winStage, catchRare, mutOf, mutPow, mutId, gated, gateLv, fill, buyRes, shardCost, rollShard, newFighters, F, expFor, levelOf, lvNow, costOf, soulOf, pointsOf, beatable, turnDmg, drawAll,
-  encodeSave, decodeSave, validSave, left, points, picks, relicVal, wantPicks, relicLeft, goldLeft, missions, transOf, maxCleared };`;
+  encodeSave, decodeSave, validSave, left, points, picks, relicVal, wantPicks, relicLeft, goldLeft, missions, transOf, maxCleared,
+  CARDS, cardOk, cardOffer, hasCard, rbCharges };`;
 
 const [Y, M, DAY] = fx.today.split("-").map(Number);
 const NOON = new Date(Y, M - 1, DAY, 12).getTime();     // 현지 정오 — 어느 시간대에서도 같은 날짜가 나온다
@@ -723,6 +724,54 @@ async function mutations() {
 }
 
 // ── 초월: Lv.99 에서 레벨만 되돌린다. 식이 파이썬 hero() 와 같아야 메뉴 막대 배지가 안 어긋난다
+// ── 환생 카드 (v0.21.0): 환생하면 쓸모 있는 카드 세 장이 나오고, 고른 한 장만 다음 환생까지 걸린다
+async function rebirthCards() {
+  const g = await boot("환생 카드", {rev: 3, seed: 8, save: {
+    alloc: {atk: 20, hp: 10, dfn: 10, crit: 5, cdmg: 5, spd: 5}, souls: 5, rebirths: 30, auto: false,
+    cleared: Array.from({length: 76}, (_, i) => i + 1), best: 76,
+    traits: {atk: 80, hp: 80, dfn: 70, crit: 0, cdmg: 60, spd: 0, soul: 20, pt: 10},
+    exped: {since: NOON, seenExp: 1}, relics: {}, rbExp: 1, shards: 200}});
+  const {t} = g;
+  ok(!g.$("cardBox").html, "환생 전인데 카드가 보인다");
+  // 환생 -> 세 장, 서로 다르고 모두 쓸모 있다
+  t.save.rbExp = t.H.exp - 2 * t.K.rbExp; t.drawAll();
+  await g.click(g.$("rbBtn")); await g.click(g.$("rbBtn"));
+  const offer = t.save.cardOffer;
+  ok(offer && offer.length === 3 && new Set(offer).size === 3 && offer.every(t.cardOk), "환생 카드가 세 장이 아니다: " + offer);
+  ok(g.$("cardBox").querySelectorAll("button[data-card]").length === 3, "카드 고르기 버튼이 세 개가 아니다");
+  g.clean("환생 카드 고르기");
+  // 정화: 고르는 순간 다음 보스(77, 철갑)의 변이를 지운다. 관문은 내성으로만 열린다
+  t.save.cardOffer = ["purge", "shield", "soul"]; t.drawAll();
+  ok(t.mutId(77) === "armor", "픽스처: 77스테이지에 철갑이 없다");
+  await g.click(g.btn("cardBox", {card: "purge"}));
+  ok(t.save.card === "purge" && !t.save.cardOffer && t.mutPow(77) === 1 && !t.newFighters(t.boss(77))[0].div,
+     "정화 카드가 변이를 안 지운다");
+  ok(/이번 판 카드/.test(g.$("cardBox").html) && /철갑/.test(g.$("cardBox").html), "고른 카드가 안 보인다: " + g.$("cardBox").html);
+  g.clean("정화");
+  // 스탯 카드
+  const base = k => { t.save.card = ""; return t.F(k); };
+  const atk = base("atk"), hp = base("hp"), spd = base("spd"), cd = base("cdmg"), sl = t.soulOf(40), idle = t.idleRate(), slot = t.slotPay(1);
+  t.save.card = "gamble"; ok(same(t.F("atk"), atk * 2) && same(t.F("hp"), hp * 0.7), "맞바꾸기가 ATK x2 · HP x0.7 이 아니다");
+  t.save.card = "swift"; ok(same(t.F("spd"), spd * 2), "신속이 SPD x2 가 아니다");
+  t.save.card = "focus"; ok(same(t.F("cdmg"), cd * 1.5), "집중이 치명타 피해 x1.5 가 아니다");
+  t.save.card = "soul"; ok(Math.abs(t.soulOf(40) / sl - 1.2) < 0.01, "혼 카드가 +20% 가 아니다");
+  t.save.card = "exped"; ok(same(t.idleRate(), idle * 1.5), "원정 카드가 +50% 가 아니다");
+  t.save.card = "luck"; ok(Math.abs(t.slotPay(1) / slot - 4) < 0.01, "행운 카드가 슬롯 x4 가 아니다");
+  t.save.card = "allside"; ok(same(t.idleRate(), idle * 1.3) && Math.abs(t.slotPay(1) / slot - 1.3) < 0.01, "부업 카드가 +30% 가 아니다");
+  // 전투 카드는 벽을 민다 — 보호막(보스 공격 2대)과 선공(늘 먼저, 첫 턴 2배)
+  const wall = () => { let w = 1; while (w < 400 && t.beatable(t.boss(w))) w++; return w; };
+  t.save.card = ""; t.save.cardMut = ""; const w0 = wall();
+  t.save.card = "shield"; const ws = wall();
+  ok(t.newFighters(t.boss(5))[0].shield === 2 && ws >= w0, `보호막이 벽을 못 민다 (${w0} -> ${ws})`);
+  t.save.card = "first"; ok(t.goesFirst({spd: 1e30, g: 1}) && wall() >= w0, "선공 카드가 먼저 못 친다");
+  // 보호막을 든 실제 전투도 끝까지 돈다
+  t.save.card = "shield"; t.drawAll(); await g.fight(0); g.clean("보호막 전투");
+  // 다 모은 사람: 황금이 다 잡혔으면 황금 카드는 안 나온다
+  const dex = {}; for (let s = 1; s <= 76; s++) dex[t.dexKey(s)] = 2;
+  t.save.dex = dex; ok(!t.cardOk("gold"), "다 잡았는데 황금 카드가 나온다");
+  for (let i = 0; i < 30; i++) ok(!t.cardOffer().includes("gold"), "다 잡았는데 황금 카드를 냈다");
+}
+
 async function transcend() {
   const g = await boot("초월", {page: "maxed", seed: 4}), {t} = g;
   for (const want of fx.expect.trans) {
@@ -758,5 +807,5 @@ async function fileMode() {
 
 (async () => {
   process.on("unhandledRejection", e => { throw e; });
-  for (const run of [playthrough, oldSave, deepSave, mutations, achievements, transcend, zeroHero, fileMode]) await run();
+  for (const run of [playthrough, oldSave, deepSave, mutations, rebirthCards, achievements, transcend, zeroHero, fileMode]) await run();
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });

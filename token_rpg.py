@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.22.0"
+__version__ = "0.22.1"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -532,10 +532,24 @@ def _day(ts):
         return str(ts)[:10]
 
 
+# 입력은 "대화가 직전 호출보다 늘어난 만큼"만 센다 (v0.22.1). 호출마다 보내는 대화 전체(ctx) 가운데
+# 캐시에 없던 몫(fresh)을 세던 때는, 되돌리기·이어 열기·5분 넘게 쉰 뒤처럼 캐시가 비면 같은 대화를
+# 통째로 다시 셌다 — 실제 기록에서 호출 하나가 48만을 더했는데 새로 늘어난 대화는 1,872 였다.
+# input_v1 은 옛 방식 값이다. 업데이트 순간의 차이를 보정값으로 남겨 쌓인 EXP 를 지킨다(collect_all).
+COUNT_V = 2
+
+
+def _grown(fresh, ctx, prev):
+    """새로 처리한 입력 중 대화가 실제로 늘어난 몫. 같은 대화를 다시 보내면 0."""
+    return min(fresh, max(0, ctx - prev))
+
+
 def read_claude(path):
     """Claude Code: ~/.claude/projects/<프로젝트>/<세션>.jsonl
-    message.usage 를 읽고 message.id 로 중복(재시도·사이드체인)을 제거한다."""
+    message.usage 를 읽고 message.id 로 중복(재시도·사이드체인)을 제거한다.
+    입력은 대화가 늘어난 만큼만 센다 — 줄기(본 대화·서브에이전트)마다 따로 잰다."""
     agg, days, models, seen = collections.Counter(), collections.Counter(), collections.Counter(), set()
+    last = {}
     for line in _lines(path):
         if '"usage"' not in line:
             continue
@@ -552,7 +566,13 @@ def read_claude(path):
             if mid in seen:
                 continue
             seen.add(mid)
-        agg["input"] += u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+        fresh = (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+        ctx = fresh + (u.get("cache_read_input_tokens") or 0)
+        key = (d.get("isSidechain"), d.get("agentId"))
+        new = _grown(fresh, ctx, last.get(key, 0))
+        last[key] = ctx
+        agg["input"] += new
+        agg["input_v1"] += fresh
         agg["output"] += u.get("output_tokens", 0)
         agg["cache_read"] += u.get("cache_read_input_tokens", 0)
         agg["thinking"] += (u.get("output_tokens_details") or {}).get("thinking_tokens", 0)
@@ -560,8 +580,7 @@ def read_claude(path):
         models[msg.get("model") or "unknown"] += 1
         ts = d.get("timestamp") or ""
         if ts:                          # 날짜별 사용량 (미션용) — 자정을 넘긴 세션도 날짜대로 나뉜다
-            days[_day(ts)] += (u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
-                               + u.get("output_tokens", 0))
+            days[_day(ts)] += new + u.get("output_tokens", 0)
     proj = os.path.basename(os.path.dirname(path))
     return agg, proj, days, models
 
@@ -591,6 +610,8 @@ def read_codex(path):
     """
     last, days, models, cwd, n_events = None, collections.Counter(), collections.Counter(), None, 0
     seen_v = 0
+    # 호출마다 오는 last_token_usage 로 대화가 늘어난 만큼을 잰다 (v0.22.1). 없는 옛 로그는 누적값 방식 그대로.
+    grown, grown_days, prev_ctx, per_call = 0, collections.Counter(), 0, False
     for line in _lines(path):
         if '"token_count"' not in line and '"session_meta"' not in line:
             continue
@@ -609,6 +630,15 @@ def read_codex(path):
             continue
         n_events += 1
         info = p.get("info") or {}
+        lt = info.get("last_token_usage")
+        if isinstance(lt, dict) and lt.get("input_tokens"):     # 세부 항목이 빈(total 만 있는) 기록은 옛 방식 그대로
+            per_call = True
+            ctx = lt.get("input_tokens", 0)
+            new = _grown(_codex_fresh(lt), ctx, prev_ctx)
+            prev_ctx = ctx
+            grown += new
+            if d.get("timestamp"):
+                grown_days[_day(d["timestamp"])] += new + lt.get("output_tokens", 0)
         tot = info.get("total_token_usage")
         if isinstance(tot, dict):
             last = tot
@@ -629,6 +659,10 @@ def read_codex(path):
         # 이므로 분해가 없으면 통째로 input 으로 넣는다 (EXP 는 맞고 ATK 는 과장하지 않는다).
         if not any(agg[k] for k in ("input", "output", "cache_read", "thinking")):
             agg["input"] = last.get("total_tokens", 0)
+        agg["input_v1"] = agg["input"]
+        if per_call and agg["input"] and grown_days:
+            agg["input"] = min(agg["input"], grown)
+            days = grown_days
         agg["calls"] = n_events
     if not agg["input"] and not agg["output"]:
         return collections.Counter(), "codex", collections.Counter(), models
@@ -658,18 +692,22 @@ def read_gemini(path):
         if isinstance(d.get("tokens"), dict):
             msgs[d.get("id") or len(msgs)] = d
     agg, days, models = collections.Counter(), collections.Counter(), collections.Counter()
+    prev = 0
     for d in msgs.values():
         t = d["tokens"]
         cached = t.get("cached", 0)
-        agg["input"] += max(0, t.get("input", 0) - cached) + t.get("tool", 0)
+        fresh = max(0, t.get("input", 0) - cached)
+        new = _grown(fresh, t.get("input", 0), prev)       # input 은 보낸 대화 전체다 — 늘어난 만큼만
+        prev = t.get("input", 0)
+        agg["input"] += new + t.get("tool", 0)
+        agg["input_v1"] += fresh + t.get("tool", 0)
         agg["output"] += t.get("output", 0) + t.get("thoughts", 0)
         agg["cache_read"] += cached
         agg["thinking"] += t.get("thoughts", 0)
         agg["calls"] += 1
         models[d.get("model") or "unknown"] += 1
         if d.get("timestamp"):
-            days[_day(d["timestamp"])] += (max(0, t.get("input", 0) - cached) + t.get("tool", 0)
-                                           + t.get("output", 0) + t.get("thoughts", 0))
+            days[_day(d["timestamp"])] += new + t.get("tool", 0) + t.get("output", 0) + t.get("thoughts", 0)
     if not agg["input"] and not agg["output"]:
         return collections.Counter(), "gemini", collections.Counter(), models
     proj_dir = os.path.dirname(os.path.dirname(path))
@@ -738,8 +776,8 @@ def collect(root=None, pid="claude-code", roots=None, since=0, ledger=None):
             except OSError:
                 continue
             e = (ledger or {}).get(pid + "\t" + path)
-            if not (e and e["mt"] == st.st_mtime and e["sz"] == st.st_size):
-                e = {"mt": st.st_mtime, "sz": st.st_size, "r": spec["read"](path)}
+            if not (e and e["mt"] == st.st_mtime and e["sz"] == st.st_size and e.get("v") == COUNT_V):
+                e = {"mt": st.st_mtime, "sz": st.st_size, "r": spec["read"](path), "v": COUNT_V}
             found[path] = e
     if ledger is not None:
         prefix = pid + "\t"
@@ -748,6 +786,7 @@ def collect(root=None, pid="claude-code", roots=None, since=0, ledger=None):
                 found.setdefault(path[len(prefix):], e)
         for path, e in found.items():
             ledger[prefix + path] = e
+    v1diff = 0
     for path, e in found.items():
         if since and e["mt"] < since:
             continue
@@ -755,18 +794,23 @@ def collect(root=None, pid="claude-code", roots=None, since=0, ledger=None):
         if not a:
             continue
         a = collections.Counter(a)
+        # 옛 방식 입력과의 차이. 지워진 옛 로그(장부에 옛 값만 남음)는 차이 0 — 이미 옛 방식으로 센다
+        v1diff += a.pop("input_v1", a["input"]) - a["input"]
         files += 1
         agg.update(a); days.update(d); models.update(m)
         projects[pid + "\t" + proj] += a["input"] + a["output"]
     agg["sessions"] = files
+    collect.v1diff = v1diff
     return agg, projects, models, days
 
 
 def collect_all(cfg=None):
     """켜져 있는 프로바이더 전부를 합산한다. days = {날짜: {프로바이더: 토큰}}"""
+    own_cfg = cfg is None
     cfg = cfg if cfg is not None else load_config()
     agg = collections.Counter()
     projects, models, days, per = collections.Counter(), collections.Counter(), {}, {}
+    migrate = cfg.get("count_v") != COUNT_V
     try:
         ledger = _load_sealed(ledger_path())
     except OSError:
@@ -779,7 +823,13 @@ def collect_all(cfg=None):
         roots = provider_roots(pid, cfg)
         if not roots:
             continue
+        had = bool(ledger) and any(k.startswith(pid + "\t") for k in ledger)
         a, p, m, d = collect(pid=pid, roots=roots, since=since_ts(cfg), ledger=ledger)
+        # v0.22.1 업데이트 순간: 옛 방식과의 차이를 보정값으로 한 번 남긴다 — 쌓인 EXP·레벨이 줄지 않는다.
+        # 새로 설치한 PC(장부가 없음)는 처음부터 새 방식이다.
+        if migrate and had and ledger is not None:
+            cfg.setdefault("input_offset", {})[pid] = max(0, collect.v1diff)
+        a["input"] += (cfg.get("input_offset") or {}).get(pid, 0)
         if not a.get("calls"):
             continue
         agg.update(a); projects.update(p); models.update(m)
@@ -788,6 +838,9 @@ def collect_all(cfg=None):
         per[pid] = a["input"] + a["output"]
     if ledger is not None:
         _dump_sealed(ledger_path(), ledger)
+        if migrate and own_cfg:
+            cfg["count_v"] = COUNT_V
+            save_config(cfg)
     return agg, projects, models, days, per
 
 
@@ -4108,6 +4161,27 @@ def _demo():
         assert agg["calls"] == 1 and agg["input"] == 15 and agg["output"] == 20
         assert agg["thinking"] == 7 and len(days) == 1 and projects["claude-code\tproj"] == 35
         assert sum(days.values()) == 35, dict(days)             # 날짜별 합 = EXP 기여
+        # v0.22.1: 대화가 늘어난 만큼만 입력으로 센다. 되돌리기·이어 열기·캐시 만료로 같은 대화를
+        # 통째로 캐시에 다시 쓰면 예전엔 그만큼 EXP 가 뛰었다(실제 로그에서 호출 하나에 48만).
+        os.makedirs(os.path.join(d, "rw"))
+        def _cu(mid, inp, cw, cr, out=10, side=None):
+            return json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **({"isSidechain": True, "agentId": side} if side else {}),
+                "message": {"id": mid, "usage": {"input_tokens": inp, "output_tokens": out,
+                "cache_creation_input_tokens": cw, "cache_read_input_tokens": cr}}})
+        with open(os.path.join(d, "rw", "s.jsonl"), "w", encoding="utf-8") as f:
+            f.write(_cu("m1", 5, 20_000, 0) + "\n")            # 첫 호출: 시스템 프롬프트 포함 2만이 새 대화
+            f.write(_cu("m2", 5, 1_000, 20_000) + "\n")        # 평소: 대화가 1,000 늘었다
+            f.write(_cu("m3", 5, 21_005, 0) + "\n")            # 캐시 만료 — 같은 대화를 다시 썼다 -> 새 입력 5 만
+            f.write(_cu("m4", 5, 0, 12_000) + "\n")            # 되돌리기 — 대화가 줄었다 -> 0
+            f.write(_cu("m5", 5, 2_000, 12_000) + "\n")        # 되돌린 뒤 새로 쓴 대화 2,000
+            f.write(_cu("s1", 5, 3_000, 0, side="a1") + "\n")  # 서브에이전트는 자기 줄기로 잰다
+        a_rw, _, _, _ = read_claude(os.path.join(d, "rw", "s.jsonl"))
+        assert a_rw["input"] == 20_005 + 1_000 + 5 + 0 + 2_000 + 3_005, dict(a_rw)   # 늘어난 대화(ctx 차이)만
+        assert a_rw["input_v1"] == 20_005 + 1_005 + 21_010 + 5 + 2_005 + 3_005, dict(a_rw)
+        a_all, _, _, _ = collect(d)                               # proj/ 와 rw/ 두 세션
+        assert a_all["input"] == 15 + 26_015 and "input_v1" not in a_all, dict(a_all)
+        assert collect.v1diff == 47_035 - 26_015, collect.v1diff         # 업데이트 때 보정값으로 남길 차이
+        shutil.rmtree(os.path.join(d, "rw"))                       # 아래 스냅샷 검사는 proj/ 하나만 본다
         snaps = os.path.join(d, "snaps")
         _, s1 = save_snapshot(d, snaps)
         _dump_sealed(os.path.join(snaps, "otherpc.json"), {**s1, "host": "otherpc"})
@@ -4220,6 +4294,23 @@ def _demo():
         assert (a1["cache_read"], a1["thinking"]) == (150, 8), dict(a1)
         assert a1["calls"] == 2 and proj == "myproj" and dict(days) == {"2026-09-10": 125}, dict(days)
 
+        # v0.22.1: 호출마다 오는 last_token_usage 가 있으면 대화가 늘어난 만큼만 센다
+        def _tl(inp, cached, out, t_inp, t_cached, t_out):
+            return json.dumps({"timestamp": "2026-09-10T12:00:00Z", "type": "event_msg",
+                "payload": {"type": "token_count", "info": {
+                    "last_token_usage": {"input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out},
+                    "total_token_usage": {"input_tokens": t_inp, "cached_input_tokens": t_cached,
+                                          "output_tokens": t_out, "reasoning_output_tokens": 0}}}})
+        pc = os.path.join(cx, "rollout-percall.jsonl")
+        with open(pc, "w", encoding="utf-8") as f:
+            f.write(_tl(10_000, 0, 50, 10_000, 0, 50) + "\n")                # 첫 호출 1만
+            f.write(_tl(10_600, 10_000, 50, 20_600, 10_000, 100) + "\n")     # 600 늘었다
+            f.write(_tl(10_600, 0, 50, 31_200, 10_000, 150) + "\n")          # 캐시가 비어 다시 보냈다 -> 0
+        ap, _, apd, _ = read_codex(pc)
+        assert ap["input"] == 10_600 and ap["input_v1"] == 21_200 and ap["output"] == 150, dict(ap)
+        assert dict(apd) == {"2026-09-10": 10_600 + 150}, dict(apd)
+        os.remove(pc)
+
         # 캐시가 input 을 거의 다 차지해도 EXP 가 부풀지 않는다 (실제 로그의 97% 재사용 재현)
         hot = os.path.join(cx, "rollout-hot.jsonl")
         with open(hot, "w", encoding="utf-8") as f:
@@ -4234,6 +4325,13 @@ def _demo():
             f.write(_tc(0, 0, 0, 0, 17647) + "\n")
         a2, _, _, _ = read_codex(deg)
         assert a2["input"] == 17647 and a2["output"] == 0, dict(a2)
+        # 같은 세션에 total 만 든 last_token_usage 가 와도 빠지지 않는다 (v0.22.1 첫 판이 24세션을 잃었다)
+        with open(deg, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"timestamp": "2026-09-10T12:00:00Z", "type": "event_msg", "payload": {"type": "token_count",
+                "info": {"last_token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 17647},
+                         "total_token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 17647}}}}) + "\n")
+        a2, _, _, _ = read_codex(deg)
+        assert a2["input"] == 17647, dict(a2)
 
         # 토큰이 전혀 없는 세션은 통계에서 빠진다
         zero = os.path.join(cx, "rollout-zero.jsonl")
@@ -4272,10 +4370,12 @@ def _demo():
             f.write(json.dumps({"id": "u1", "type": "user", "content": "hi"}) + "\n")
             f.write(_gm("g1", 100, 10, 40, 5, 2) + "\n")
             f.write(_gm("g1", 100, 10, 40, 5, 2) + "\n")   # 같은 id 재기록 -> 한 번만
-            f.write(_gm("g2", 50, 4, 0, 0, 0) + "\n")
+            f.write(_gm("g2", 150, 4, 100, 0, 0) + "\n")  # 대화가 50 늘었다 (100 은 캐시)
+            f.write(_gm("g3", 150, 0, 0, 0, 0) + "\n")    # 캐시가 비어 같은 대화를 다시 보냈다 -> 0
         ag, gproj, gdays, _ = read_gemini(os.path.join(gs, "session-a.jsonl"))
         assert (ag["input"], ag["output"]) == (62 + 50, 15 + 4), f"Gemini 합산 실패: {dict(ag)}"
-        assert (ag["cache_read"], ag["thinking"], ag["calls"]) == (40, 5, 2), dict(ag)
+        assert (ag["cache_read"], ag["thinking"], ag["calls"]) == (140, 5, 3), dict(ag)
+        assert ag["input_v1"] == 62 + 50 + 150, dict(ag)          # 옛 방식은 재전송 150 을 셌다
         assert gproj == "gproj" and dict(gdays) == {"2026-09-10": 131}, (gproj, dict(gdays))
         agg, projects, _, _ = collect(pid="gemini", roots=[gt])
         assert projects["gemini\tgproj"] == 131 and agg["sessions"] == 1, (dict(agg), dict(projects))

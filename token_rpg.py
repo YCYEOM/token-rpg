@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.22.1"
+__version__ = "0.22.2"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -201,6 +201,10 @@ B_ATK_STEP, B_HP_STEP = 1.245, 1.337
 # 유물 깊이 배율: 유물 수치 x (1 + RELIC_DEPTH x (떨어진 층 - 1)). 혼 유물은 빼고(혼 배수는 따로 곱해져 이미 값이 유지된다).
 # 고정 % 이던 때는 유물이 처음부터 끝까지 3~4스테이지를 밀었다 — 초반엔 진행의 15%, 13층에서는 1.6%였다.
 RELIC_DEPTH = 0.25
+# 혼 유물 깊이 배율 (v0.22.2): 층마다 +1%. 혼은 영구 특성을 사는 재화라 복리로 불어난다 — 스탯처럼 +25% 를 주면
+# 혼 수입이 4배가 된다. +1% 는 카드·펫 위에 얹어도 10층 이후 18~21% (카드·펫만 16~17%), +2% 는 TypeSafe 가
+# '혼 유물 변경이 너무 세다'(보통 0.71)고 봤다. .studio/soul_relic_depth.py · soul_relic_typesafe.py.
+SOUL_RELIC_DEPTH = 0.01
 PT_PER_LEVEL = 4                         # 레벨업당 자유 배분 포인트. v0.20.14: 2 -> 4 (사용자 요청 — 보스는 그대로 두고 포인트만)
 # 포인트 1점당 상승치 (cdmg 는 %p). SPD 3 은 보스 SPD(스테이지당 +BOSS_SPD)와 같은 걸음이다 —
 # 1점이 보스 한 스테이지분이다.
@@ -1147,7 +1151,7 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
             "hosts": list(hosts),
             "providers": list(providers), "models": list(models), "daily": daily or {},
             "k": {"step": STEP, "bhp": B_HP, "atkStep": B_ATK_STEP, "hpStep": B_HP_STEP, "batk": B_ATK, "bdef": B_DEF, "bspd": BOSS_SPD, "hitsMax": HITS_MAX, "spdTrait": SPD_TRAIT,
-                  "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "relicDepth": RELIC_DEPTH,
+                  "earlyG": EARLY_G, "earlyMul": EARLY_MUL, "relicDepth": RELIC_DEPTH, "soulRelicDepth": SOUL_RELIC_DEPTH,
                   "tmul": TRAIT_MUL, "cmul": COST_MUL, "ck": COST_K,
                   "soulExp": SOUL_EXP, "soulLateG": SOUL_LATE_G, "soulLateMul": SOUL_LATE_MUL, "tpt": TRAIT_PT, "tsoul": TRAIT_SOUL,
                   "critCap": CRIT_CAP, "cdmgBase": CDMG_BASE,
@@ -2235,7 +2239,7 @@ function drawStages(){
         : xtra(b) ? ` · <span style="color:var(--on);white-space:nowrap">한 턴에 ${(1 + xtra(b)).toFixed(1)}회</span>` : ""}
       <br>격파 시 혼 ${n(soulOf(g))} · 유물 ${AFFIX[slot.affix][0]}${(() => {
         const r = (save.relics || {})[relicKey(slot)];
-        return relicOk(r) ? ` <span style="color:${RARITY[r.r][2]}">(${RARITY[r.r][0]}${r.a === "soul" ? "" : ` ${relicFloor(r)}층`})</span>` : ' <span class="dim">(없음)</span>'; })()}${
+        return relicOk(r) ? ` <span style="color:${RARITY[r.r][2]}">(${RARITY[r.r][0]} ${relicFloor(r)}층)</span>` : ' <span class="dim">(없음)</span>'; })()}${
         goldLeft(g) ? ' · <span class="gold">★ 황금 미포획</span>' : ""}</small></div>`;
     const btn = document.createElement("button");
     const shut = gated(g);                       // 관문 — 내성을 채우기 전에는 도전도 못 한다
@@ -2411,10 +2415,12 @@ function raidPlan(){
     const ratio = relicVal(old) / maxV;
     if (ratio >= 1 - 1e-9) continue;
     // v0.20.6: 먼저 그 유물을 얻을 수 있는 가장 깊은 층으로 옮긴다(등급 그대로). 이미 거기면 등급 +1.
-    // 혼 유물은 층과 상관없어 늘 등급 +1 이다. (v0.20.5 는 둘 중 센 쪽을 골랐다 — 사용자: '기본은 가장 깊은 층으로')
+    // 혼 유물은 층마다 +1% 뿐이라 등급 +1(두 배)이 먼저다 — 신화가 된 뒤에만 깊은 층으로 옮긴다 (v0.22.2).
+    // (v0.20.5 는 둘 중 센 쪽을 골랐다 — 사용자: '기본은 가장 깊은 층으로')
     // 한 층만 깊어지면 수치가 거의 안 오른다(12층 -> 13층 DEF +90 -> +96%). 그때는 등급 +1 — 단 이미 신화면 옮긴다.
-    const gap = old.a === "soul" ? 0 : relicFloor({g}) - relicFloor(old);
-    const move = gap >= 2 || (gap === 1 && old.r >= top) ? {...old, g} : null;
+    const gap = relicFloor({g}) - relicFloor(old);
+    const move = old.a === "soul" ? (old.r >= top && gap >= 1 ? {...old, g} : null)
+      : gap >= 2 || (gap === 1 && old.r >= top) ? {...old, g} : null;
     const nu = move || (old.r < top ? {...old, r: old.r + 1} : null);
     if (nu) cand.push({slot, k, old, nu, ratio, max, gap, kind: move ? "move" : "up"});
   }
@@ -2422,7 +2428,7 @@ function raidPlan(){
   return cand.length ? {...cand[0], next: cand[1] || null} : null;
 }
 // 레이드 강화 설명 — 무엇이(지금) · 어떻게 바뀌고(강화 후) · 왜 이것인지. 카드 미리보기와 격파 알림이 같은 글을 쓴다
-const relicTag = r => `${RARITY[r.r][0]}${r.a === "soul" ? "" : " · " + relicFloor(r) + "층"} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}`;
+const relicTag = r => `${RARITY[r.r][0]} · ${relicFloor(r)}층 · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}`;
 const relicName = slot => { const from = (floorNow() - 1) * N + slot.slot; return `${slotOf(from).emoji} ${from}. ${slotOf(from).name}`; };
 function raidPlanText(p){
   if (!p) return "유물 15칸이 모두 가장 깊은 층 신화다 — 강화 대신 혼을 준다.";
@@ -2431,7 +2437,7 @@ function raidPlanText(p){
     <br><small class="dim">왜: 빈 칸이 가장 약하다.</small>`;
   const how = p.kind === "move"
     ? `이 유물을 얻을 수 있는 가장 깊은 층(${relicFloor(p.nu)}층)으로 옮긴다 — 등급은 그대로`
-    : p.old.a === "soul" ? "등급 +1 — 혼 유물은 층과 상관없다"
+    : p.old.a === "soul" ? "등급 +1 — 혼 유물은 층마다 +1% 뿐이라 등급이 먼저다"
     : p.gap === 1 ? `등급 +1 — 가장 깊은 층(${relicFloor(p.max)}층)과 한 층 차이라 옮겨도 거의 안 오른다`
     : `등급 +1 — 이미 가장 깊은 층(${relicFloor(p.old)}층)이다`;
   return `${relicName(p.slot)}
@@ -2577,7 +2583,7 @@ const relicKey = slot => "boss" + slot.slot;                    // 고정 보스
 const relicOk = r => !!r && !!RARITY[r.r] && !!AFFIX[r.a];      // 고친 저장의 이상한 값은 무시
 // 유물이 떨어진 층(g 로 센다). g 가 없는 옛 유물은 1층으로 친다
 const relicFloor = r => Math.max(1, Math.ceil((r.g | 0) / N));
-const relicDepth = r => r.a === "soul" ? 1 : 1 + K.relicDepth * (relicFloor(r) - 1);
+const relicDepth = r => 1 + (r.a === "soul" ? K.soulRelicDepth : K.relicDepth) * (relicFloor(r) - 1);   // 혼은 층마다 +1% (v0.22.2)
 const relicVal = r => +(AFFIX[r.a][1] * Math.pow(2, r.r) * relicDepth(r)).toFixed(1);
 const relicSum = a => Object.values(save.relics || {}).filter(relicOk)
   .reduce((s, r) => s + (r.a === a ? relicVal(r) : 0), 0);
@@ -2619,7 +2625,7 @@ function drawRelics(){
      (처음 이길 때 ${RELIC_FIRST*100}%, 다시 이길 때 ${RELIC_AGAIN*100}%).${sum ? " 합계: " + sum : ""}
      <br>이름은 <b>지금 ${floorNow()}층</b> 보스 기준이다. 다른 층에서도 같은 자리 보스가 같은 능력치 유물을 준다.
      <br><b>깊은 층에서 나온 유물일수록 세다</b> — 층마다 +${K.relicDepth * 100}% (지금 ${floorNow()}층이면 x${+(1 + K.relicDepth * (floorNow() - 1)).toFixed(2)}).
-     더 센 유물이 나와야 바뀐다. 혼 유물은 깊이와 상관없다.</div>`;
+     더 센 유물이 나와야 바뀐다. 혼 유물은 층마다 +${K.soulRelicDepth * 100}% 만 커진다 — 혼 수입이 이미 깊이만큼 불어나서다.</div>`;
   $("relics").innerHTML = SLOTS.map(slot => {
     const r = rs[relicKey(slot)];
     // 유물은 칸마다 하나인데 보스 이름은 층마다 다르다. 늘 지금 층에서 그 칸을 지키는 보스로 적는다 —
@@ -2630,7 +2636,7 @@ function drawRelics(){
     // 긴 이름은 한 줄에서 말줄임 — 오른쪽 등급이 줄바꿈되지 않게
     return `<div class="row" style="font-size:12px;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;
         text-overflow:ellipsis;white-space:nowrap" title="${s.name}">${s.emoji} ${from}. ${s.name}</span>${relicOk(r)
-      ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]}${r.a === "soul" ? "" : ` ${relicFloor(r)}층`} · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
+      ? `<span style="color:${RARITY[r.r][2]};white-space:nowrap">${RARITY[r.r][0]} ${relicFloor(r)}층 · ${AFFIX[r.a][0]} +${relicVal(r)}${AFFIX[r.a][2]}</span>`
       : `<span class="dim" style="white-space:nowrap">? · ${AFFIX[s.affix][0]}</span>`}</div>`;
   }).join("");
 }
@@ -2652,10 +2658,10 @@ function drawRelicOdds(){
       ${["등급", "확률", "첫 격파", "재격파", deep ? `${fl}층 스탯` : "스탯", deep ? `${fl}층 CRIT` : "CRIT", ...(deep ? ["혼"] : [])].map(h => cell(h, "var(--dim)")).join("")}
       ${RARITY.map(([nm, p, c], r) => [cell(nm, c), cell(p + "%"), cell(pct(RELIC_FIRST * p)), cell(pct(RELIC_AGAIN * p)),
           cell("+" + +(AFFIX.atk[1] * 2 ** r * d).toFixed(1) + "%"), cell("+" + +(AFFIX.crit[1] * 2 ** r * d).toFixed(1) + "%p"),
-          ...(deep ? [cell("+" + AFFIX.soul[1] * 2 ** r + "%")] : [])].join("")).join("")}
+          ...(deep ? [cell("+" + +(AFFIX.soul[1] * 2 ** r * (1 + K.soulRelicDepth * (fl - 1))).toFixed(1) + "%")] : [])].join("")).join("")}
     </div>
     <div class="dim" style="margin-top:4px">능력치는 보스마다 정해져 있고 등급만 무작위다. 스탯은 떨어진 층마다 +${K.relicDepth * 100}% 씩 커진다
-      ${deep ? `— 표는 지금 가장 깊은 ${fl}층에서 나올 때(1층의 x${+d.toFixed(2)}). ` : ""}혼 유물은 층과 상관없다.
+      ${deep ? `— 표는 지금 가장 깊은 ${fl}층에서 나올 때(1층의 x${+d.toFixed(2)}). ` : ""}혼 유물은 층마다 +${K.soulRelicDepth * 100}% 만 커진다 — 혼 수입이 이미 깊이만큼 불어나서다.
       지금 것보다 센 유물이 나와야 바뀌고, 아니면 혼이 된다.</div></details>`;
   $("oddsBox").ontoggle = e => { oddsOpen = e.target.open; };
 }

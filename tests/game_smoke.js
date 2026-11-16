@@ -340,7 +340,7 @@ async function playthrough() {
   ok(!t.picks().length, "층 머리줄을 다시 눌러도 안 빠진다");
   // 못 모은 곳만: 유물을 더 올릴 수 있거나 황금이 없는 칸마다 하나씩. 칸에는 ◆·★ 가 찍힌다
   // 유물 깊이 (v0.20.4): 떨어진 층마다 +25%. 13층 신화 ATK = 48 x 4. 혼 유물은 깊이와 상관없다. g 없는 옛 유물은 1층
-  ok(t.relicVal({r: 4, a: "atk", g: 181}) === 192 && t.relicVal({r: 4, a: "soul", g: 181}) === 48 && t.relicVal({r: 4, a: "atk"}) === 48,
+  ok(t.relicVal({r: 4, a: "atk", g: 181}) === 192 && t.relicVal({r: 4, a: "soul", g: 181}) === 53.8 && t.relicVal({r: 4, a: "atk"}) === 48,
      "유물 깊이 배율이 틀렸다: " + [t.relicVal({r: 4, a: "atk", g: 181}), t.relicVal({r: 4, a: "soul", g: 181}), t.relicVal({r: 4, a: "atk"})]);
   const want = t.wantPicks();
   ok(want.length > 0 && want.every(x => t.relicLeft(x) || t.goldLeft(x)), "'못 모은 곳만' 이 다 모은 칸을 고른다: " + want);
@@ -511,9 +511,9 @@ async function raid(g) {
      && /어떻게: 이 유물을 얻을 수 있는 가장 깊은 층\(8층\)으로 옮긴다 — 등급은 그대로/.test(card) && /왜: 15칸 중 가장 약하다 — 이 칸 최고치\(신화 · 8층 · DEF \+132%\)의 7%/.test(card),
      "레이드 카드에 강화 대상·전후·이유가 안 보인다: " + card.slice(-700));
   for (let i = 0; i < 4; i++) {
-    const had = t.save.souls;
+    const had = t.save.souls, due = t.raidPay();     // 유물을 바꿔 끼웠으니 지금 유물로 센 보상 (혼 유물은 깊이를 탄다, v0.22.2)
     await g.click(g.btn("raid", {r: String(i)}));
-    ok(t.save.raid.got.includes(i) && t.save.souls === had + pay, `레이드 ${i + 1}단계 보상이 적힌 것과 다르다`);
+    ok(t.save.raid.got.includes(i) && t.save.souls === had + due, `레이드 ${i + 1}단계 보상이 적힌 것과 다르다`);
   }
   // 3층 희귀 DEF(+9%) -> 먼저 가장 깊은 층(8층)으로 옮긴다: 희귀 +16.5% (v0.20.6)
   ok(t.save.relics.boss3.r === 1 && t.save.relics.boss3.a === "dfn" && t.save.relics.boss3.g === deep(3),
@@ -533,6 +533,15 @@ async function raid(g) {
      "한 층 차이인데 등급 대신 옮겼다: " + JSON.stringify(t.save.relics.boss3));
   t.save.relics = {...maxed, boss3: {r: 4, a: "dfn", g: 93}};
   ok(/신화 · 7층 · DEF \+120% → 강화 후: <b>신화 · 8층/.test(t.raidRelic()) && t.save.relics.boss3.g === deep(3), "한 층 차이 신화를 안 옮긴다");
+  // 혼 유물 (v0.22.2): 층마다 +1% 뿐이라 등급이 먼저다. 신화가 된 뒤에만 깊은 층으로 옮긴다
+  ok(t.save.relics.boss5 && t.save.relics.boss5.a === "soul", "픽스처: 5번 칸이 혼 유물이 아니다");
+  t.save.relics = {...maxed, boss5: {r: 2, a: "soul", g: 5}};
+  ok(/등급 \+1 — 혼 유물은 층마다/.test(t.raidRelic()) && t.save.relics.boss5.r === 3 && t.save.relics.boss5.g === 5,
+     "혼 유물인데 등급 대신 옮겼다: " + JSON.stringify(t.save.relics.boss5));
+  t.save.relics = {...maxed, boss5: {r: 4, a: "soul", g: 5}};
+  t.raidRelic();
+  ok(t.save.relics.boss5.r === 4 && t.save.relics.boss5.g === deep(5) && t.relicVal(t.save.relics.boss5) > 48,
+     "신화 혼 유물을 깊은 층으로 안 옮긴다: " + JSON.stringify(t.save.relics.boss5));
   // 빈 칸이 가장 약하다 — 유물이 없으면 하나를 준다. 전부 가장 깊은 층 신화면 혼을 준다
   t.save.relics = {};
   ok(/유물/.test(t.raidRelic()) && Object.keys(t.save.relics).length === 1, "유물이 하나도 없을 때 하나를 주지 않는다");

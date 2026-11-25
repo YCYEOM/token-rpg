@@ -8,7 +8,7 @@ import argparse, base64, collections, glob, hashlib, hmac, json, math, os, shuti
 import http.server, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.22.2"
+__version__ = "0.22.3"
 
 # Claude Code가 대화 기록을 남기는 곳. 여기서 usage 필드만 읽는다.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -1169,7 +1169,9 @@ def game_data(agg, hosts=(), providers=(), models=(), daily=None):
 
 
 def render(data):
-    return TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False))
+    # <script> 안에 그대로 심는다. 기기·모델 이름에 "</script>" 가 있으면 태그가 끊기므로 <>& 를 \u 로 바꾼다.
+    js = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return TEMPLATE.replace("__DATA__", js)
 
 
 def build(root=None, out=None):    # root 는 테스트용 단일 경로
@@ -1430,6 +1432,8 @@ const TM = k => K.tmuls[k] || K.tmul;
 // K M B T 까지만 글자고, 그 위(10^15~)는 승수로 적는다 — 1.25e16. Qa · Qi · Sx 같은 약자도 넣어 봤는데
 // 뜻을 외워야 읽힌다. 승수는 숫자 하나만 견주면 된다 (e18 이 e15 보다 크다).
 const UNITS = ["K", "M", "B", "T"];
+// 바깥에서 온 글자(기기·프로바이더 이름)는 innerHTML 에 넣기 전에 꼭 거친다 — 동기화 폴더의 남의 스냅샷도 들어온다
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const n = x => { const a = Math.abs(x);
   if (!(a >= 1000) || !isFinite(a)) return String(Math.round(x));
   let u = Math.floor(Math.log10(a) / 3), v = +(a / Math.pow(1000, u)).toPrecision(3);
@@ -1711,9 +1715,9 @@ document.querySelectorAll("details[data-k]").forEach(d => {
 $("provs").innerHTML = (D.providers || []).length < 2 ? "" :
   '<div class="dim" style="margin-bottom:4px">프로바이더별</div>' +
   D.providers.map(([p,v]) =>
-    `<div class="row"><span>${p}</span><span class="gold">${n(v)}</span></div>`).join("");
+    `<div class="row"><span>${esc(p)}</span><span class="gold">${n(v)}</span></div>`).join("");
 $("hosts").innerHTML = D.hosts.map(([h,u,v]) =>
-  `<div class="row"><span>${h} <span class="dim">${u.slice(0,10)}</span></span><span class="gold">${n(v)}</span></div>`).join("");
+  `<div class="row"><span>${esc(h)} <span class="dim">${esc(String(u).slice(0,10))}</span></span><span class="gold">${n(v)}</span></div>`).join("");
 
 // 치명타율이 상한이면 배분·특성 줄에 알린다 — 더 올려도 치명타 피해로 간다
 // 이 줄에 더 넣을 수 있는 점수 — 치명타는 100% 가 되는 데까지만
@@ -4073,6 +4077,10 @@ def _check_js():
     hosts = [["test-pc", "2026-01-15T00:00:00+00:00", 26_000_000]]
     provs = [["claude-code", 20_000_000], ["codex", 6_000_000]]
     page = lambda a, d=None: render(game_data(a, hosts, provs, [], d))
+    # 남의 스냅샷이 기기 이름으로 </script> 를 넣어도 <script> 블록이 끊기지 않는다
+    evil = render(game_data(agg, [["</script><img src=x onerror=alert(1)>", "x", 1]], [["<b>p</b>", 1]], [], None))
+    assert "<img src=x" not in evil and "<b>p</b>" not in evil, "바깥 이름이 화면 코드로 새어 나간다"
+    assert evil.count("</script>") == page(agg).count("</script>"), "기기 이름이 <script> 를 끊는다"
 
     h = hero(agg)
     builds = []
